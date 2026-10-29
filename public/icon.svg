@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFE4E6" />
+      <stop offset="100%" stop-color="#FECDD3" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E11D48" />
+      <stop offset="100%" stop-color="#BE123C" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#9F1239" flood-opacity="0.18" />
+    </filter>
+  </defs>
+  <!-- Background with safe zone -->
+  <rect width="512" height="512" rx="128" fill="url(#grad)" />
+  <!-- Inner circular badge -->
+  <circle cx="256" cy="256" r="180" fill="#FFFFFF" filter="url(#shadow)" />
+  <!-- Accent emblem -->
+  <rect x="146" y="146" width="220" height="220" rx="44" fill="url(#accent)" />
+  <!-- Modern Ledger & User Icon in pure crisp white -->
+  <path d="M200 190h112c8.8 0 16 7.2 16 16v100c0 8.8-7.2 16-16 16H200c-8.8 0-16-7.2-16-16V206c0-8.8 7.2-16 16-16z" fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M224 230h64M224 266h40" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round"/>
+  <!-- Debt/Credit balance symbol -->
+  <circle cx="296" cy="286" r="18" fill="#FEE2E2" stroke="#BE123C" stroke-width="6"/>
+</svg>

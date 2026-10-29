@@ -1,0 +1,6 @@
+{
+  "name": "Savdo va Mijozlar Nazorati PWA",
+  "description": "Har qanday mobil, planshet va noutbuklarga mos, oflayn rejimda ishlovchi mijozlar, qarz-haqdorlik va mahsulot hisob-kitob tizimi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
