@@ -16,11 +16,11 @@ export const PWAInstallButton: React.FC = () => {
     return (
       <button
         onClick={install}
-        className="flex items-center gap-1.5 rounded-lg bg-rose-700 hover:bg-rose-800 text-white px-3 py-1.5 text-xs font-semibold shadow-xs transition-colors shrink-0 whitespace-nowrap min-h-[36px]"
+        className="flex items-center gap-1.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white p-2 sm:px-3 sm:py-1.5 text-xs font-semibold shadow-xs transition-colors shrink-0 whitespace-nowrap min-h-[36px] min-w-[36px] justify-center cursor-pointer"
         title="Ilovani o'rnatish (PWA)"
       >
         <Download className="w-3.5 h-3.5" />
-        <span>Ilovani o'rnatish</span>
+        <span className="hidden md:inline">Ilovani o'rnatish</span>
       </button>
     );
   }
@@ -31,11 +31,11 @@ export const PWAInstallButton: React.FC = () => {
       <>
         <button
           onClick={() => setShowIOSGuide(true)}
-          className="flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50/60 hover:bg-rose-100/80 px-2.5 py-1.5 text-xs font-medium text-rose-800 transition-colors shrink-0 whitespace-nowrap min-h-[36px]"
+          className="flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50/60 hover:bg-rose-100/80 p-2 sm:px-2.5 sm:py-1.5 text-xs font-medium text-rose-800 transition-colors shrink-0 whitespace-nowrap min-h-[36px] min-w-[36px] justify-center cursor-pointer"
           title="iPhone / iPad da ilovani o'rnatish"
         >
           <Share2 className="w-3.5 h-3.5" />
-          <span>iOS ga o'rnatish</span>
+          <span className="hidden md:inline">iOS ga o'rnatish</span>
         </button>
 
         {showIOSGuide && (

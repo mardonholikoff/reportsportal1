@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Client } from '../types';
 import { formatMoney, formatDate, formatNumber } from '../utils/format';
+import { storageService } from '../services/storage';
 import {
   X,
   Phone,
@@ -12,6 +13,7 @@ import {
   Printer,
   Package,
   History,
+  FileText,
   UserCheck,
 } from 'lucide-react';
 
@@ -22,6 +24,7 @@ interface Props {
   onEdit: (client: Client) => void;
   onDelete: (clientId: string) => void;
   onQuickPayment: (client: Client) => void;
+  userRole?: 'admin' | 'agent';
 }
 
 export const ClientDetailModal: React.FC<Props> = ({
@@ -31,7 +34,90 @@ export const ClientDetailModal: React.FC<Props> = ({
   onEdit,
   onDelete,
   onQuickPayment,
+  userRole = 'admin',
 }) => {
+  const isAgent = userRole === 'agent';
+
+  // Compute the latest note by agentp1 regarding this client
+  const latestAgentNote = useMemo(() => {
+    if (!client) return null;
+    const candidates: { text: string; author: string; date: string }[] = [];
+
+    // 1. From all daily plans for this client
+    try {
+      const allPlans = storageService.getDailyPlans().filter((p) => p.clientId === client.id);
+      allPlans.forEach((p) => {
+        // Check actionsHistory first (most specific and chronological)
+        if (p.actionsHistory && p.actionsHistory.length > 0) {
+          p.actionsHistory.forEach((act) => {
+            if (act.reportNote && act.reportNote.trim()) {
+              candidates.push({
+                text: act.reportNote.trim(),
+                author: act.author || p.agentUsername || 'agentp1',
+                date: act.timestamp || p.completedAt || p.createdAt,
+              });
+            }
+          });
+        }
+
+        // Check plan-level reportNote
+        if (p.reportNote && p.reportNote.trim()) {
+          candidates.push({
+            text: p.reportNote.trim(),
+            author: p.agentUsername || 'agentp1',
+            date: p.completedAt || p.createdAt,
+          });
+        }
+
+        // Check planNote
+        if (p.planNote && p.planNote.trim()) {
+          candidates.push({
+            text: p.planNote.trim(),
+            author: p.agentUsername || 'agentp1',
+            date: p.createdAt,
+          });
+        }
+      });
+    } catch {
+      // storage read fallback
+    }
+
+    // 2. From client audit logs
+    if (client.logs && client.logs.length > 0) {
+      client.logs.forEach((log) => {
+        if (log.details && log.details.trim()) {
+          if (log.author?.toLowerCase().includes('agent') || log.type === 'visit_action') {
+            candidates.push({
+              text: log.details.trim(),
+              author: log.author || 'agentp1',
+              date: log.timestamp,
+            });
+          }
+        }
+      });
+    }
+
+    // 3. From client.notes
+    if (client.notes && client.notes.trim()) {
+      candidates.push({
+        text: client.notes.trim(),
+        author: client.createdBy || 'agentp1',
+        date: client.updatedAt || client.createdAt,
+      });
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Sort by date descending (most recent first)
+    candidates.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Prefer candidate specifically by agentp1 if viewing as agent
+    const agentCandidate = candidates.find((c) =>
+      c.author.toLowerCase().includes('agent')
+    );
+    return agentCandidate || candidates[0];
+  }, [client]);
+
   if (!isOpen || !client) return null;
 
   const totalProductsValue = client.products.reduce(
@@ -132,7 +218,7 @@ export const ClientDetailModal: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Debt & Advance Balances */}
+          {/* Debt & Advance Balances (Only for Admin, or visible as general summary) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Joriy qarzdorlik */}
             <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200">
@@ -229,7 +315,7 @@ export const ClientDetailModal: React.FC<Props> = ({
             )}
           </div>
 
-          {/* AUDIT LOGS & O'ZGARISHLAR TARIXI (Kim o'zgartirgani va nima qilingani) */}
+          {/* AUDIT LOGS & O'ZGARISHLAR TARIXI */}
           <div className="space-y-3 pt-3 border-t border-rose-100">
             <div className="flex items-center gap-2">
               <History className="w-4 h-4 text-rose-700" />
@@ -275,12 +361,48 @@ export const ClientDetailModal: React.FC<Props> = ({
             )}
           </div>
 
-          {/* Notes and Date */}
-          {client.notes && (
-            <div className="p-3.5 rounded-2xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-700">
-              <span className="font-bold text-neutral-900 block mb-1">Qo'shimcha izoh / Kelishuv:</span>
-              <p className="whitespace-pre-line leading-relaxed">{client.notes}</p>
+          {/* ========================================================= */}
+          {/* OXIRGI IZOH: Agent ko'rganda nomi "Oxirgi izoh" bo'ladi, sana va kim kiritgani ko'rinadi */}
+          {/* ========================================================= */}
+          {isAgent ? (
+            <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200/90 text-xs text-neutral-800 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200/60 pb-2">
+                <span className="font-bold text-amber-950 text-xs uppercase tracking-wide flex items-center gap-1.5">
+                  <FileText className="w-3.5 h-3.5 text-amber-700" />
+                  Oxirgi izoh
+                </span>
+                {latestAgentNote && (
+                  <div className="text-[11px] font-mono text-neutral-600 flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
+                      Kiritdi: {latestAgentNote.author}
+                    </span>
+                    <span>Sana: {formatDate(latestAgentNote.date)}</span>
+                  </div>
+                )}
+              </div>
+
+              <p className="whitespace-pre-line leading-relaxed text-neutral-900 text-xs sm:text-sm font-medium">
+                {latestAgentNote?.text || client.notes || "Ushbu mijoz bo'yicha hali izoh kiritilmagan."}
+              </p>
             </div>
+          ) : (
+            (latestAgentNote || client.notes) && (
+              <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-700 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200/80 pb-2">
+                  <span className="font-bold text-neutral-900 block">
+                    {latestAgentNote ? 'Oxirgi izoh' : "Qo'shimcha izoh / Kelishuv"}
+                  </span>
+                  {latestAgentNote && (
+                    <span className="text-[11px] font-mono text-neutral-500">
+                      Kiritdi: {latestAgentNote.author} · {formatDate(latestAgentNote.date)}
+                    </span>
+                  )}
+                </div>
+                <p className="whitespace-pre-line leading-relaxed">
+                  {latestAgentNote?.text || client.notes}
+                </p>
+              </div>
+            )
           )}
 
           <div className="text-[11px] text-neutral-500 flex items-center justify-between border-t border-neutral-100 pt-3">
@@ -292,44 +414,61 @@ export const ClientDetailModal: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Modal Action Footer */}
+        {/* ========================================================= */}
+        {/* MODAL ACTION FOOTER: Agentda Chop etish / Chek va To'lov / Qarz o'zgartirish YO'Q */}
+        {/* ========================================================= */}
         <div className="no-print px-5 sm:px-6 py-4 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                if (window.confirm(`${client.name} ni o'chirishni tasdiqlaysizmi?`)) {
-                  onDelete(client.id);
-                  onClose();
-                }
-              }}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-700 hover:bg-rose-100/80 transition min-h-[40px]"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>O'chirish</span>
-            </button>
-            <button
-              onClick={handlePrint}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-neutral-700 hover:bg-white border border-neutral-200 transition min-h-[40px]"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Chop etish / Chek</span>
-            </button>
+            {/* O'chirish: Faqat admin uchun */}
+            {!isAgent && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`${client.name} ni o'chirishni tasdiqlaysizmi?`)) {
+                    onDelete(client.id);
+                    onClose();
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-700 hover:bg-rose-100/80 transition min-h-[40px] cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>O'chirish</span>
+              </button>
+            )}
+
+            {/* Chop etish / Chek: Agentda YO'Q BO'LSIN */}
+            {!isAgent && (
+              <button
+                type="button"
+                onClick={handlePrint}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-neutral-700 hover:bg-white border border-neutral-200 transition min-h-[40px] cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Chop etish / Chek</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
+            {/* To'lov / Qarz o'zgartirish: Agentda YO'Q BO'LSIN */}
+            {!isAgent && (
+              <button
+                type="button"
+                onClick={() => onQuickPayment(client)}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-neutral-800 bg-white hover:bg-neutral-100 border border-neutral-300 transition min-h-[40px] cursor-pointer"
+              >
+                <CreditCard className="w-3.5 h-3.5 text-neutral-700" />
+                <span>To'lov / Qarz o'zgartirish</span>
+              </button>
+            )}
+
             <button
-              onClick={() => onQuickPayment(client)}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-neutral-800 bg-white hover:bg-neutral-100 border border-neutral-300 transition min-h-[40px]"
-            >
-              <CreditCard className="w-3.5 h-3.5 text-neutral-700" />
-              <span>To'lov / Qarz o'zgartirish</span>
-            </button>
-            <button
+              type="button"
               onClick={() => {
                 onClose();
                 onEdit(client);
               }}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 transition min-h-[40px]"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 transition min-h-[40px] cursor-pointer"
             >
               <Edit className="w-3.5 h-3.5" />
               <span>Tahrirlash</span>

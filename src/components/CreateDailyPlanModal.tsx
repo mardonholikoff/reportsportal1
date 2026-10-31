@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Client } from '../types';
-import { formatMoney } from '../utils/format';
+import { formatMoney, formatDate, formatShortDate } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import {
   X,
@@ -15,6 +15,9 @@ import {
   FileText,
   RotateCcw,
   SlidersHorizontal,
+  Clock,
+  Activity,
+  History,
 } from 'lucide-react';
 
 export interface PlanSelectionItem {
@@ -45,7 +48,7 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
   const [debtFilter, setDebtFilter] = useState<DebtFilterType>('all');
   const [advanceFilter, setAdvanceFilter] = useState<AdvanceFilterType>('all');
   const [selectedProduct, setSelectedProduct] = useState<string>('all');
-  const [showFiltersPanel, setShowFiltersPanel] = useState<boolean>(true);
+  const [showFiltersPanel, setShowFiltersPanel] = useState<boolean>(false);
 
   // Selected Clients and their respective notes: { [clientId]: note }
   const [selectedClientsMap, setSelectedClientsMap] = useState<Record<string, string>>({});
@@ -151,15 +154,21 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
     });
   }, [clients, search, selectedRegion, selectedDistrict, debtFilter, advanceFilter, selectedProduct]);
 
+  // Active filters counter hook - MUST be called unconditionally before any early returns
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (selectedRegion !== 'all') count++;
+    if (selectedDistrict !== 'all') count++;
+    if (debtFilter !== 'all') count++;
+    if (advanceFilter !== 'all') count++;
+    if (selectedProduct !== 'all') count++;
+    return count;
+  }, [selectedRegion, selectedDistrict, debtFilter, advanceFilter, selectedProduct]);
+
+  // Safe early exit AFTER all hooks have executed
   if (!isOpen) return null;
 
-  const isFilterActive =
-    search.trim() !== '' ||
-    selectedRegion !== 'all' ||
-    selectedDistrict !== 'all' ||
-    debtFilter !== 'all' ||
-    advanceFilter !== 'all' ||
-    selectedProduct !== 'all';
+  const isFilterActive = search.trim() !== '' || activeFiltersCount > 0;
 
   const resetAllFilters = () => {
     setSearch('');
@@ -226,26 +235,21 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
         {/* Header */}
         <div className="px-5 sm:px-6 py-4 bg-gradient-to-r from-rose-50/80 via-white to-rose-50/50 border-b border-rose-100 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-rose-700 text-white flex items-center justify-center shadow-xs">
+            <div className="w-10 h-10 rounded-2xl bg-rose-700 text-white flex items-center justify-center shadow-xs shrink-0">
               <Calendar className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900">
-                  Bugungi kunlik reja tuzish
-                </h2>
-                <span className="text-[11px] font-bold text-rose-800 bg-rose-100/70 px-2 py-0.5 rounded-md">
-                  24 soatlik
-                </span>
-              </div>
+              <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 leading-tight">
+                Reja tuzish
+              </h2>
               <p className="text-xs text-neutral-500">
-                Joylashuv, qarz, haqdorlik va mahsulotlar bo'yicha saralab reja tuzing
+                Mijozlarni saralab tanlang va rejaga kiriting (qo'shilgan sana avtomatik belgilanadi)
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="w-9 h-9 rounded-xl bg-white hover:bg-rose-50 text-neutral-600 hover:text-neutral-900 border border-neutral-200 flex items-center justify-center transition-colors min-h-[44px] min-w-[44px]"
+            className="w-9 h-9 rounded-xl bg-white hover:bg-rose-50 text-neutral-600 hover:text-neutral-900 border border-neutral-200 flex items-center justify-center transition-colors min-h-[44px] min-w-[44px] cursor-pointer"
             aria-label="Yopish"
           >
             <X className="w-5 h-5" />
@@ -253,52 +257,168 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
         </div>
 
         {/* Filters Toolbar */}
-        <div className="p-4 sm:p-5 border-b border-neutral-100 space-y-3 bg-neutral-50/80 shrink-0">
-          {/* Main Search Input */}
+        <div className="p-3 sm:p-4 border-b border-neutral-100 space-y-2.5 bg-neutral-50/80 shrink-0">
+          {/* Main Search Input & Filter Toggle */}
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
-              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-neutral-400">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-neutral-400">
                 <Search className="w-4 h-4" />
               </div>
               <input
                 type="text"
-                placeholder="Mijoz ismi, telefon, manzil yoki tovar bo'yicha tezkor qidirish..."
+                placeholder="Mijoz ismi, telefon, manzil yoki tovar..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-white rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-1 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 outline-none"
+                className="w-full pl-9 pr-4 py-2 bg-white rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-1 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 outline-none"
               />
               {search && (
                 <button
                   onClick={() => setSearch('')}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-xs text-neutral-400 hover:text-neutral-700"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-xs text-neutral-400 hover:text-neutral-700 cursor-pointer"
                 >
-                  Tozalash
+                  ✕
                 </button>
               )}
             </div>
 
+            {/* Filter Toggle Button: Always visible with text & active badge */}
             <button
               type="button"
               onClick={() => setShowFiltersPanel(!showFiltersPanel)}
-              className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl border text-xs font-semibold transition min-h-[42px] cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition min-h-[40px] cursor-pointer shrink-0 shadow-xs ${
                 showFiltersPanel
+                  ? 'bg-rose-700 border-rose-700 text-white'
+                  : activeFiltersCount > 0
                   ? 'bg-rose-50 border-rose-300 text-rose-800'
                   : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
               }`}
             >
-              <SlidersHorizontal className="w-4 h-4 text-rose-700" />
-              <span className="hidden sm:inline">Filtrlar</span>
+              <SlidersHorizontal className={`w-3.5 h-3.5 ${showFiltersPanel ? 'text-white' : 'text-rose-700'}`} />
+              <span>Filtrlar</span>
+              {activeFiltersCount > 0 && (
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    showFiltersPanel ? 'bg-white text-rose-800' : 'bg-rose-700 text-white'
+                  }`}
+                >
+                  {activeFiltersCount}
+                </span>
+              )}
             </button>
           </div>
 
-          {/* Expanded Multi-dimensional Filters */}
+          {/* Quick Active Filter Chips: lets user see/remove applied filters without opening the panel */}
+          {activeFiltersCount > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[11px]">
+              <span className="text-neutral-500 font-medium mr-0.5">Filtrlar:</span>
+
+              {selectedRegion !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-100 text-rose-900 border border-rose-200 font-medium">
+                  <span>Viloyat: {selectedRegion}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRegion('all');
+                      setSelectedDistrict('all');
+                    }}
+                    className="hover:text-rose-950 font-bold ml-0.5 cursor-pointer"
+                    title="Olib tashlash"
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+
+              {selectedDistrict !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-100 text-rose-900 border border-rose-200 font-medium">
+                  <span>Tuman: {selectedDistrict}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDistrict('all')}
+                    className="hover:text-rose-950 font-bold ml-0.5 cursor-pointer"
+                    title="Olib tashlash"
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+
+              {debtFilter !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-100 text-rose-900 border border-rose-200 font-medium">
+                  <span>{debtFilter === 'debtors' ? 'Qarzdorlar' : "Qarzi yo'qlar"}</span>
+                  <button
+                    type="button"
+                    onClick={() => setDebtFilter('all')}
+                    className="hover:text-rose-950 font-bold ml-0.5 cursor-pointer"
+                    title="Olib tashlash"
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+
+              {advanceFilter !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-100 text-emerald-900 border border-emerald-200 font-medium">
+                  <span>{advanceFilter === 'creditors' ? 'Haqdorlar' : "Haqdorligi yo'qlar"}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAdvanceFilter('all')}
+                    className="hover:text-emerald-950 font-bold ml-0.5 cursor-pointer"
+                    title="Olib tashlash"
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+
+              {selectedProduct !== 'all' && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-100 text-rose-900 border border-rose-200 font-medium">
+                  <span>Tovar: {selectedProduct}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedProduct('all')}
+                    className="hover:text-rose-950 font-bold ml-0.5 cursor-pointer"
+                    title="Olib tashlash"
+                  >
+                    ✕
+                  </button>
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={resetAllFilters}
+                className="text-neutral-500 hover:text-rose-700 underline text-[10px] ml-1 font-semibold cursor-pointer"
+              >
+                Barchasini tozalash
+              </button>
+            </div>
+          )}
+
+          {/* Collapsible Filter Panel: Compact, max-height limited, doesn't block clients */}
           {showFiltersPanel && (
-            <div className="p-3 bg-white rounded-2xl border border-neutral-200 shadow-xs space-y-3 text-xs animate-in fade-in duration-150">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+            <div className="p-3 bg-white rounded-2xl border border-rose-200 shadow-sm space-y-2.5 text-xs animate-in fade-in duration-150 max-h-52 sm:max-h-64 overflow-y-auto">
+              <div className="flex items-center justify-between pb-1.5 border-b border-neutral-100">
+                <span className="font-bold text-neutral-900 text-[11px] flex items-center gap-1">
+                  <SlidersHorizontal className="w-3 h-3 text-rose-700" />
+                  <span>Filtr parametrlarini tanlang</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowFiltersPanel(false)}
+                  className="px-2 py-0.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 text-[11px] font-bold transition flex items-center gap-1 cursor-pointer"
+                >
+                  <Check className="w-3 h-3 text-rose-700" />
+                  <span>Yopish va Mijozlarni ko'rish</span>
+                </button>
+              </div>
+
+              {/* Responsive 2-col on mobile, 5-col on desktop */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                 {/* 1. Viloyat yoki shahar */}
                 <div>
-                  <label className="block text-[11px] font-bold text-neutral-700 mb-1 flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-rose-600" />
+                  <label className="block text-[10px] font-bold text-neutral-700 mb-0.5 flex items-center gap-1">
+                    <MapPin className="w-2.5 h-2.5 text-rose-600" />
                     <span>Viloyat / Shahar</span>
                   </label>
                   <select
@@ -307,9 +427,9 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                       setSelectedRegion(e.target.value);
                       setSelectedDistrict('all');
                     }}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 font-medium outline-none focus:border-rose-400"
+                    className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 text-xs font-medium outline-none focus:border-rose-400"
                   >
-                    <option value="all">Barcha viloyatlar</option>
+                    <option value="all">Barchasi</option>
                     {uniqueRegions.map((reg) => (
                       <option key={reg} value={reg}>
                         {reg}
@@ -320,16 +440,16 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
 
                 {/* 2. Tuman */}
                 <div>
-                  <label className="block text-[11px] font-bold text-neutral-700 mb-1 flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-neutral-500" />
+                  <label className="block text-[10px] font-bold text-neutral-700 mb-0.5 flex items-center gap-1">
+                    <MapPin className="w-2.5 h-2.5 text-neutral-500" />
                     <span>Tuman</span>
                   </label>
                   <select
                     value={selectedDistrict}
                     onChange={(e) => setSelectedDistrict(e.target.value)}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 font-medium outline-none focus:border-rose-400"
+                    className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 text-xs font-medium outline-none focus:border-rose-400"
                   >
-                    <option value="all">Barcha tumanlar</option>
+                    <option value="all">Barchasi</option>
                     {uniqueDistricts.map((dist) => (
                       <option key={dist} value={dist}>
                         {dist}
@@ -340,14 +460,14 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
 
                 {/* 3. Qarzdorlik (Debt) */}
                 <div>
-                  <label className="block text-[11px] font-bold text-neutral-700 mb-1 flex items-center gap-1">
-                    <CreditCard className="w-3 h-3 text-rose-600" />
+                  <label className="block text-[10px] font-bold text-neutral-700 mb-0.5 flex items-center gap-1">
+                    <CreditCard className="w-2.5 h-2.5 text-rose-600" />
                     <span>Qarzdorlik</span>
                   </label>
                   <select
                     value={debtFilter}
                     onChange={(e) => setDebtFilter(e.target.value as DebtFilterType)}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 font-medium outline-none focus:border-rose-400"
+                    className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 text-xs font-medium outline-none focus:border-rose-400"
                   >
                     <option value="all">Barchasi</option>
                     <option value="debtors">Faqat qarzdorlar</option>
@@ -357,14 +477,14 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
 
                 {/* 4. Haqdorlik (Advance) */}
                 <div>
-                  <label className="block text-[11px] font-bold text-neutral-700 mb-1 flex items-center gap-1">
-                    <CreditCard className="w-3 h-3 text-emerald-600" />
+                  <label className="block text-[10px] font-bold text-neutral-700 mb-0.5 flex items-center gap-1">
+                    <CreditCard className="w-2.5 h-2.5 text-emerald-600" />
                     <span>Haqdorlik</span>
                   </label>
                   <select
                     value={advanceFilter}
                     onChange={(e) => setAdvanceFilter(e.target.value as AdvanceFilterType)}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 font-medium outline-none focus:border-rose-400"
+                    className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 text-xs font-medium outline-none focus:border-rose-400"
                   >
                     <option value="all">Barchasi</option>
                     <option value="creditors">Faqat haqdorlar</option>
@@ -373,15 +493,15 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                 </div>
 
                 {/* 5. Mahsulotlar (Product) */}
-                <div>
-                  <label className="block text-[11px] font-bold text-neutral-700 mb-1 flex items-center gap-1">
-                    <Package className="w-3 h-3 text-rose-600" />
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="block text-[10px] font-bold text-neutral-700 mb-0.5 flex items-center gap-1">
+                    <Package className="w-2.5 h-2.5 text-rose-600" />
                     <span>Mahsulot turi</span>
                   </label>
                   <select
                     value={selectedProduct}
                     onChange={(e) => setSelectedProduct(e.target.value)}
-                    className="w-full px-2.5 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 font-medium outline-none focus:border-rose-400"
+                    className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-900 text-xs font-medium outline-none focus:border-rose-400"
                   >
                     <option value="all">Barcha mahsulotlar</option>
                     {uniqueProducts.map((pName) => (
@@ -393,33 +513,42 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                 </div>
               </div>
 
-              {/* Active filters status & clear */}
-              {isFilterActive && (
-                <div className="flex items-center justify-between pt-2 border-t border-neutral-100 text-[11px]">
-                  <span className="text-neutral-500 font-medium">
-                    Filtr natijasi: <strong className="text-neutral-900">{filteredClients.length}</strong> ta mijoz mos keldi
-                  </span>
+              {/* Status and Action Buttons inside panel */}
+              <div className="flex items-center justify-between pt-1.5 border-t border-neutral-100 text-[11px]">
+                <span className="text-neutral-500 font-medium">
+                  Natija: <strong className="text-neutral-900">{filteredClients.length}</strong> ta mijoz
+                </span>
+                <div className="flex items-center gap-2">
+                  {isFilterActive && (
+                    <button
+                      type="button"
+                      onClick={resetAllFilters}
+                      className="flex items-center gap-1 text-rose-700 hover:text-rose-900 font-bold transition cursor-pointer text-[10px]"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5" />
+                      <span>Tozalash</span>
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={resetAllFilters}
-                    className="flex items-center gap-1 text-rose-700 hover:text-rose-900 font-bold transition cursor-pointer"
+                    onClick={() => setShowFiltersPanel(false)}
+                    className="px-2.5 py-1 rounded-lg bg-rose-700 text-white font-bold text-[11px] cursor-pointer shadow-xs"
                   >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>Filtrlarni tozalash</span>
+                    Mijozlarni ko'rish
                   </button>
                 </div>
-              )}
+              </div>
             </div>
           )}
 
           {/* Bulk Selection and Counter Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs pt-0.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <button
                 type="button"
                 onClick={selectAllFiltered}
                 disabled={filteredClients.length === 0}
-                className="px-2.5 py-1.5 rounded-lg bg-white border border-neutral-200 hover:bg-neutral-100 text-neutral-700 font-semibold disabled:opacity-40 cursor-pointer"
+                className="px-2.5 py-1.5 rounded-xl bg-white border border-neutral-200 hover:bg-neutral-100 text-neutral-700 text-xs font-semibold disabled:opacity-40 cursor-pointer shadow-2xs"
               >
                 Topilganlarni belgilash ({filteredClients.length})
               </button>
@@ -427,14 +556,14 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                 <button
                   type="button"
                   onClick={clearAllSelected}
-                  className="px-2.5 py-1.5 rounded-lg bg-white border border-neutral-200 hover:bg-neutral-100 text-neutral-600 cursor-pointer"
+                  className="px-2.5 py-1.5 rounded-xl bg-white border border-neutral-200 hover:bg-neutral-100 text-neutral-600 text-xs cursor-pointer shadow-2xs"
                 >
-                  Tanlovni bekor qilish
+                  Bekor qilish
                 </button>
               )}
             </div>
 
-            <div className="font-bold text-rose-900 bg-rose-50 px-3 py-1 rounded-lg border border-rose-200 text-xs">
+            <div className="font-bold text-rose-900 bg-rose-50 px-2.5 py-1 rounded-xl border border-rose-200 text-xs shrink-0">
               Tanlandi: {selectedCount} ta mijoz
             </div>
           </div>
@@ -507,24 +636,67 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                           )}
                         </div>
 
-                        {/* Given Products badges preview */}
-                        {client.products && client.products.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                            {client.products.slice(0, 3).map((p) => (
-                              <span
-                                key={p.id}
-                                className="px-1.5 py-0.5 bg-neutral-100 text-neutral-700 rounded text-[10px] font-medium"
-                              >
-                                {p.name}: {p.quantity} {p.unit}
+                        {/* Given Products with Delivery Dates */}
+                        {client.products && client.products.length > 0 ? (
+                          <div className="mt-2 p-2 rounded-xl bg-neutral-50 border border-neutral-200/80 text-[11px] space-y-1">
+                            <div className="flex items-center justify-between text-neutral-600 font-semibold text-[10px]">
+                              <span className="flex items-center gap-1">
+                                <Package className="w-3 h-3 text-rose-700" />
+                                <span>Berilgan mahsulotlar ({client.products.length} ta):</span>
                               </span>
-                            ))}
-                            {client.products.length > 3 && (
-                              <span className="text-[10px] text-neutral-400">
-                                +{client.products.length - 3} ta
+                              <span className="text-neutral-500 font-normal">
+                                Berilgan sana: {formatShortDate(client.updatedAt || client.createdAt)}
                               </span>
-                            )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {client.products.map((p) => (
+                                <span
+                                  key={p.id}
+                                  className="px-2 py-0.5 bg-white border border-neutral-200 text-neutral-800 rounded-md text-[10px] font-medium"
+                                >
+                                  <strong>{p.name}</strong>: {p.quantity} {p.unit}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-[10px] text-neutral-400 italic">
+                            Hozircha berilgan mahsulotlar yo'q
                           </div>
                         )}
+
+                        {/* Oxirgi qilingan amal haqida ma'lumot */}
+                        {(() => {
+                          const lastLog = client.logs && client.logs.length > 0 ? client.logs[0] : null;
+                          if (!lastLog) {
+                            return (
+                              <div className="mt-1.5 flex items-center gap-1 text-[10px] text-neutral-400">
+                                <Clock className="w-3 h-3 text-neutral-400" />
+                                <span>Oxirgi amal: Hali amal bajarilmagan (yangi mijoz)</span>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="mt-1.5 flex items-start gap-1.5 text-[11px] text-neutral-700 bg-rose-50/50 p-2 rounded-xl border border-rose-100/90">
+                              <History className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                              <div className="flex-1">
+                                <div className="flex items-center justify-between gap-1 flex-wrap">
+                                  <span className="font-bold text-neutral-900 text-[11px]">
+                                    Oxirgi amal: {lastLog.title}
+                                  </span>
+                                  <span className="text-[10px] text-neutral-500 font-mono">
+                                    {formatDate(lastLog.timestamp)} ({lastLog.author})
+                                  </span>
+                                </div>
+                                {lastLog.details && (
+                                  <div className="text-[10px] text-neutral-600 line-clamp-1 mt-0.5">
+                                    {lastLog.details}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
 
@@ -570,7 +742,7 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
         {/* Footer Actions */}
         <div className="px-5 sm:px-6 py-4 bg-neutral-50 border-t border-neutral-200 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
           <span className="text-xs text-neutral-500 text-center sm:text-left">
-            Rejaga kiritilgan mijozlar 24 soat davomida ro'yxatda faol turadi.
+            Tanlangan mijozlar bugungi kunlik reja ro'yxatiga kiritiladi.
           </span>
           <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
             <button

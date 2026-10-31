@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
 import { DailyPlanItem } from '../types';
-import { formatMoney } from '../utils/format';
+import { formatMoney, formatDate } from '../utils/format';
 import {
   CalendarCheck,
+  Calendar,
   Plus,
-  Clock,
   CheckCircle2,
   Phone,
   MapPin,
   Edit3,
-  FileText,
-  MessageSquare,
   Check,
   X,
+  Lock,
+  AlertTriangle,
+  Package,
+  RotateCcw,
 } from 'lucide-react';
 
 interface Props {
@@ -20,28 +22,58 @@ interface Props {
   onOpenCreatePlan: () => void;
   onOpenExecuteModal: (item: DailyPlanItem) => void;
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
+  onClosePlanItem?: (planItemId: string) => void;
 }
+
+// Calculate paid and debt amounts for a plan item (including historical actions)
+const calcPlanFinancials = (item: DailyPlanItem) => {
+  let paidAmount = 0;
+  let debtAmount = 0;
+
+  if (item.actionsHistory && item.actionsHistory.length > 0) {
+    item.actionsHistory.forEach((act) => {
+      if (act.financialAction?.amount) {
+        paidAmount += act.financialAction.amount;
+      }
+      if (act.deliveryPayment) {
+        if (act.deliveryPayment.paidAmount) {
+          paidAmount += act.deliveryPayment.paidAmount;
+        }
+        if (act.deliveryPayment.debtAmount) {
+          debtAmount += act.deliveryPayment.debtAmount;
+        }
+      }
+    });
+  } else {
+    if (item.financialAction?.amount) {
+      paidAmount += item.financialAction.amount;
+    }
+    if (item.deliveryPayment) {
+      if (item.deliveryPayment.paidAmount) {
+        paidAmount += item.deliveryPayment.paidAmount;
+      }
+      if (item.deliveryPayment.debtAmount) {
+        debtAmount += item.deliveryPayment.debtAmount;
+      }
+    }
+  }
+
+  return { paidAmount, debtAmount };
+};
 
 export const AgentDailyPlanTable: React.FC<Props> = ({
   plans,
   onOpenCreatePlan,
   onOpenExecuteModal,
   onUpdatePlanNote,
+  onClosePlanItem,
 }) => {
   // State for editing plan note inline
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [tempNote, setTempNote] = useState('');
 
-  // Calculate remaining hours for 24h window
-  const getRemainingTimeStr = (createdAt: string) => {
-    const created = new Date(createdAt).getTime();
-    const expires = created + 24 * 60 * 60 * 1000;
-    const diffMs = expires - Date.now();
-    if (diffMs <= 0) return "Muddati tugagan";
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
-    const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-    return `${hours} soat ${mins} daqiqa qoldi`;
-  };
+  // State for confirming closing of plan item (Oxirgi marta yopish)
+  const [confirmCloseItem, setConfirmCloseItem] = useState<DailyPlanItem | null>(null);
 
   const handleStartEditNote = (item: DailyPlanItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -63,10 +95,17 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     setTempNote('');
   };
 
+  const handleExecuteClose = () => {
+    if (confirmCloseItem && onClosePlanItem) {
+      onClosePlanItem(confirmCloseItem.id);
+      setConfirmCloseItem(null);
+    }
+  };
+
   return (
     <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
       {/* Header */}
-      <div className="p-5 sm:p-6 bg-gradient-to-r from-rose-50/70 via-white to-rose-50/40 border-b border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="p-4 sm:p-5 bg-gradient-to-r from-rose-50/70 via-white to-rose-50/40 border-b border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-rose-700 text-white flex items-center justify-center shadow-xs shrink-0">
             <CalendarCheck className="w-5 h-5" />
@@ -74,37 +113,34 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
-                Bugungi kunlik reja (24 soat)
+                Reja
               </h2>
               <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
                 {plans.length} ta reja
               </span>
             </div>
-            <p className="text-xs text-neutral-500 mt-0.5">
-              Tanlangan mijozlar ro'yxati, amal bajarilishi, to'lov/tovar va tashrif izohlari
-            </p>
           </div>
         </div>
 
         <button
           onClick={onOpenCreatePlan}
-          className="flex items-center gap-1.5 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[44px] cursor-pointer"
+          className="flex items-center gap-1.5 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[42px] cursor-pointer"
         >
           <Plus className="w-4 h-4 stroke-[2.5]" />
-          <span>Bugungi kunlik reja tuzish</span>
+          <span>Reja tuzish</span>
         </button>
       </div>
 
       {/* Plan List */}
-      <div className="p-4 sm:p-6">
+      <div className="p-3 sm:p-4">
         {plans.length === 0 ? (
           <div className="p-8 text-center rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3">
-            <Clock className="w-8 h-8 text-neutral-400 mx-auto" />
+            <CalendarCheck className="w-8 h-8 text-neutral-400 mx-auto" />
             <h3 className="text-sm font-bold text-neutral-800">
-              Bugun uchun rejalashtirilgan mijozlar yo'q
+              Rejalashtirilgan mijozlar yo'q
             </h3>
             <p className="text-xs text-neutral-500 max-w-sm mx-auto">
-              Kunlik reja tuzish tugmasini bosing va joylashuv, qarz yoki mahsulotlar bo'yicha mijozlarni saralab reja tuzing. Ular 24 soat davomida shu yerda ko'rinadi.
+              Reja tuzish tugmasini bosing va mijozlarni saralab reja tuzing. Ular shu yerda aks etadi va amallar bajariladi.
             </p>
             <button
               onClick={onOpenCreatePlan}
@@ -115,180 +151,540 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
             </button>
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-2xl border border-rose-100">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase">
-                <tr>
-                  <th className="py-3 px-3.5">#</th>
-                  <th className="py-3 px-3.5">Mijoz ismi & Telefon</th>
-                  <th className="py-3 px-3.5">Manzili</th>
-                  <th className="py-3 px-3.5">Reja izohi</th>
-                  <th className="py-3 px-3.5">Qolgan vaqt</th>
-                  <th className="py-3 px-3.5">Holati</th>
-                  <th className="py-3 px-3.5">Qilingan amal</th>
-                  <th className="py-3 px-3.5 text-right">To'lov / Tovar</th>
-                  <th className="py-3 px-3.5 text-center">Hisobot</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-rose-100/60">
-                {plans.map((item, idx) => {
-                  const isDone = item.status === 'bajarildi';
-                  const isEditingThisNote = editingNoteId === item.id;
+          <>
+            {/* Desktop / Tablet Compact Table: NO horizontal scroll */}
+            <div className="hidden md:block rounded-2xl border border-rose-100 overflow-hidden bg-white">
+              <table className="w-full table-fixed text-left text-xs">
+                <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase text-[11px]">
+                  <tr>
+                    <th className="py-2.5 px-2.5 w-[4%] text-center">#</th>
+                    <th className="py-2.5 px-2.5 w-[24%]">Mijoz va Manzil</th>
+                    <th className="py-2.5 px-2.5 w-[18%]">Reja izohi</th>
+                    <th className="py-2.5 px-2.5 w-[11%]">Holati</th>
+                    <th className="py-2.5 px-2.5 w-[21%]">Qilingan amal va Mahsulot</th>
+                    <th className="py-2.5 px-2.5 w-[11%] text-right">To'lov / Qarz</th>
+                    <th className="py-2.5 px-2.5 w-[11%] text-center">Amallar</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-rose-100/60">
+                  {plans.map((item, idx) => {
+                    const isClosed = item.isClosed || item.status === 'yopildi';
+                    const isDone = item.status === 'bajarildi';
+                    const isEditingThisNote = editingNoteId === item.id;
+                    const { paidAmount, debtAmount } = calcPlanFinancials(item);
 
-                  return (
-                    <tr
-                      key={item.id}
-                      onClick={() => onOpenExecuteModal(item)}
-                      className="hover:bg-rose-50/30 transition-colors cursor-pointer"
-                    >
-                      <td className="py-3 px-3.5 font-mono text-neutral-500">{idx + 1}</td>
-                      <td className="py-3 px-3.5">
-                        <div className="font-bold text-neutral-900">{item.clientName}</div>
-                        <div className="flex items-center gap-1 text-neutral-500 text-[11px] font-mono mt-0.5">
-                          <Phone className="w-3 h-3" />
-                          <span>{item.clientPhone}</span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-3.5 max-w-[170px]">
-                        <div className="text-neutral-700 flex items-start gap-1">
-                          <MapPin className="w-3 h-3 text-rose-600 shrink-0 mt-0.5" />
-                          <div className="min-w-0">
-                            <span className="font-semibold text-neutral-900 block truncate" title={item.clientAddress}>
-                              {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') || item.clientAddress || "Manzil yo'q"}
-                            </span>
-                            {item.clientLandmark && (
-                              <span className="text-[10px] text-neutral-500 block truncate" title={`Mo'ljal: ${item.clientLandmark}`}>
-                                Mo'ljal: {item.clientLandmark}
+                    return (
+                      <tr
+                        key={item.id}
+                        onClick={() => {
+                          if (!isClosed) onOpenExecuteModal(item);
+                        }}
+                        className={`transition-colors ${
+                          isClosed
+                            ? 'bg-neutral-50/70 opacity-75 cursor-default'
+                            : 'hover:bg-rose-50/30 cursor-pointer'
+                        }`}
+                      >
+                        {/* 1. Index */}
+                        <td className="py-2.5 px-2.5 text-center font-mono text-neutral-400 text-[11px]">
+                          {idx + 1}
+                        </td>
+
+                        {/* 2. Client & Address */}
+                        <td className="py-2.5 px-2.5">
+                          <div className="font-bold text-neutral-900 flex items-center gap-1.5 leading-tight truncate">
+                            <span className="truncate">{item.clientName}</span>
+                            {isClosed && (
+                              <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9px] font-bold bg-neutral-200 text-neutral-700 shrink-0">
+                                <Lock className="w-2.5 h-2.5" />
+                                <span>Yopiq</span>
                               </span>
                             )}
                           </div>
-                        </div>
-                      </td>
-
-                      {/* Plan Note (Reja izohi) with inline edit */}
-                      <td
-                        className="py-3 px-3.5 max-w-[200px]"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {isEditingThisNote ? (
-                          <div className="flex items-center gap-1 min-w-[160px]">
-                            <input
-                              type="text"
-                              value={tempNote}
-                              onChange={(e) => setTempNote(e.target.value)}
-                              placeholder="Izoh yozing..."
-                              className="px-2 py-1 text-xs border border-rose-300 rounded-lg outline-none bg-white w-full"
-                              autoFocus
-                            />
-                            <button
-                              onClick={(e) => handleSaveNote(item.id, e)}
-                              className="p-1 rounded bg-rose-700 text-white hover:bg-rose-800"
-                              title="Saqlash"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={handleCancelEditNote}
-                              className="p-1 rounded bg-neutral-200 text-neutral-700 hover:bg-neutral-300"
-                              title="Bekor qilish"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
+                          <div className="flex items-center gap-1 text-neutral-500 text-[11px] font-mono mt-0.5">
+                            <Phone className="w-3 h-3 text-neutral-400 shrink-0" />
+                            <span>{item.clientPhone}</span>
                           </div>
-                        ) : (
-                          <div className="flex items-center justify-between gap-1.5 group">
-                            <span
-                              className="text-[11px] text-neutral-700 truncate"
-                              title={item.planNote || "Izoh qo'shish"}
-                            >
-                              {item.planNote ? (
-                                <span className="font-medium text-neutral-900">{item.planNote}</span>
-                              ) : (
-                                <span className="text-neutral-400 italic">Izoh yo'q</span>
-                              )}
+                          <div className="flex items-center gap-1 text-neutral-600 text-[10px] mt-0.5 truncate">
+                            <MapPin className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+                            <span className="truncate" title={item.clientAddress}>
+                              {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') || item.clientAddress || "Manzil yo'q"}
+                              {item.clientLandmark ? ` (${item.clientLandmark})` : ''}
                             </span>
+                          </div>
+                          <div className="flex items-center gap-1 text-neutral-500 text-[10px] font-mono mt-0.5">
+                            <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
+                            <span>Qo'shilgan: {formatDate(item.createdAt)}</span>
+                          </div>
+                        </td>
+
+                        {/* 3. Plan Note */}
+                        <td
+                          className="py-2.5 px-2.5"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {isEditingThisNote && !isClosed ? (
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="text"
+                                value={tempNote}
+                                onChange={(e) => setTempNote(e.target.value)}
+                                placeholder="Izoh..."
+                                className="px-2 py-1 text-[11px] border border-rose-300 rounded-lg outline-none bg-white w-full"
+                                autoFocus
+                              />
+                              <button
+                                onClick={(e) => handleSaveNote(item.id, e)}
+                                className="p-1 rounded bg-rose-700 text-white hover:bg-rose-800 shrink-0"
+                                title="Saqlash"
+                              >
+                                <Check className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={handleCancelEditNote}
+                                className="p-1 rounded bg-neutral-200 text-neutral-700 hover:bg-neutral-300 shrink-0"
+                                title="Bekor qilish"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between gap-1 group">
+                              <span
+                                className="text-[11px] text-neutral-700 truncate"
+                                title={item.planNote || "Izoh qo'shish"}
+                              >
+                                {item.planNote ? (
+                                  <span className="font-medium text-neutral-900">{item.planNote}</span>
+                                ) : (
+                                  <span className="text-neutral-400 italic">Izoh yo'q</span>
+                                )}
+                              </span>
+                              {!isClosed && (
+                                <button
+                                  onClick={(e) => handleStartEditNote(item, e)}
+                                  className="opacity-50 hover:opacity-100 p-1 rounded hover:bg-rose-50 text-rose-700 transition shrink-0"
+                                  title="Izohni tahrirlash"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+
+                        {/* 4. Status */}
+                        <td className="py-2.5 px-2.5">
+                          {isClosed ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-700 border border-neutral-300">
+                              <Lock className="w-2.5 h-2.5 text-neutral-600" />
+                              <span>Yopildi</span>
+                            </span>
+                          ) : isDone ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-700" />
+                              <span>
+                                Bajarildi {item.actionsCount && item.actionsCount > 1 ? `(${item.actionsCount})` : ''}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                              <span>Rejada</span>
+                            </span>
+                          )}
+                        </td>
+
+                        {/* 5. Action done & Products & Payment/Credit Type */}
+                        <td className="py-2.5 px-2.5">
+                          {item.actionDone ? (
+                            <div className="space-y-1">
+                              {/* Visit / Call badge */}
+                              <div className="flex flex-wrap items-center gap-1">
+                                <span
+                                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    item.actionDone === 'joyiga borildi'
+                                      ? 'bg-rose-100 text-rose-900 border border-rose-200'
+                                      : item.actionDone === 'telefon qilindi'
+                                      ? 'bg-blue-100 text-blue-900 border border-blue-200'
+                                      : 'bg-neutral-100 text-neutral-800 border border-neutral-200'
+                                  }`}
+                                >
+                                  {item.actionDone === 'joyiga borildi'
+                                    ? 'Joyiga borildi'
+                                    : item.actionDone === 'telefon qilindi'
+                                    ? 'Telefon qilindi'
+                                    : item.actionDone === 'telefon qilindi + joyiga borildi'
+                                    ? 'Telefon + Joyiga borildi'
+                                    : item.actionDone}
+                                </span>
+
+                                {/* Payment / Credit type badge */}
+                                {item.deliveryPayment && (
+                                  <span
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                      item.deliveryPayment.paymentType === 'qarzga'
+                                        ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                        : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                    }`}
+                                  >
+                                    {item.deliveryPayment.paymentType === 'qarzga'
+                                      ? "Qarzga (Nasiya)"
+                                      : `${item.deliveryPayment.paymentLabel || item.deliveryPayment.paymentType}`}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Delivered Products info */}
+                              {item.productsDelivered && item.productsDelivered.length > 0 && (
+                                <div
+                                  className="text-[11px] text-neutral-800 font-medium truncate flex items-center gap-1"
+                                  title={item.productsDelivered.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
+                                >
+                                  <Package className="w-3 h-3 text-rose-700 shrink-0" />
+                                  <span className="truncate">
+                                    {item.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Returned Products info */}
+                              {item.productsReturned && item.productsReturned.length > 0 && (
+                                <div
+                                  className="text-[10px] text-amber-800 font-medium truncate flex items-center gap-1"
+                                  title={item.productsReturned.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
+                                >
+                                  <RotateCcw className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                                  <span className="truncate">
+                                    Qaytdi: {item.productsReturned.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-neutral-400 italic text-[11px]">Amal qilinmagan</span>
+                          )}
+                        </td>
+
+                        {/* 6. Financial: To'lov / Qarz alohida */}
+                        <td className="py-2.5 px-2.5 text-right">
+                          {paidAmount > 0 && debtAmount > 0 ? (
+                            <div className="space-y-0.5">
+                              <div
+                                className="font-mono font-bold text-emerald-700 text-[11px] leading-tight"
+                                title="To'lov summasi"
+                              >
+                                To'lov: +{formatMoney(paidAmount)}
+                              </div>
+                              <div
+                                className="font-mono font-bold text-rose-700 text-[11px] leading-tight"
+                                title="Qarzga yozilgan summa"
+                              >
+                                Qarz: +{formatMoney(debtAmount)}
+                              </div>
+                            </div>
+                          ) : paidAmount > 0 ? (
+                            <div
+                              className="font-mono font-bold text-emerald-700 text-[11px]"
+                              title="To'lov summasi"
+                            >
+                              To'lov: +{formatMoney(paidAmount)}
+                            </div>
+                          ) : debtAmount > 0 ? (
+                            <div
+                              className="font-mono font-bold text-rose-700 text-[11px]"
+                              title="Qarzga yozilgan summa"
+                            >
+                              Qarz: +{formatMoney(debtAmount)}
+                            </div>
+                          ) : (
+                            <span className="text-neutral-400 text-xs">-</span>
+                          )}
+                        </td>
+
+                        {/* 7. Actions & Close */}
+                        <td
+                          className="py-2.5 px-2.5 text-center"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {isClosed ? (
+                            <div className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-neutral-100 text-neutral-500 text-[11px] font-semibold border border-neutral-200">
+                              <Lock className="w-3 h-3 text-neutral-500" />
+                              <span>Yopilgan</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => onOpenExecuteModal(item)}
+                                className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                                title="Amal bajarish"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>{isDone ? "Yana" : "Amal"}</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmCloseItem(item)}
+                                className="px-1.5 py-1 rounded-lg border border-rose-300 hover:bg-rose-50 text-rose-800 text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer"
+                                title="Oxirgi marta yopish"
+                              >
+                                <Lock className="w-3 h-3 text-rose-700" />
+                                <span>Yopish</span>
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Compact Cards View: Fits 100% of mobile screen with zero horizontal scroll */}
+            <div className="block md:hidden space-y-2.5">
+              {plans.map((item, idx) => {
+                const isClosed = item.isClosed || item.status === 'yopildi';
+                const isDone = item.status === 'bajarildi';
+                const { paidAmount, debtAmount } = calcPlanFinancials(item);
+
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => {
+                      if (!isClosed) onOpenExecuteModal(item);
+                    }}
+                    className={`p-3 rounded-2xl border transition-colors ${
+                      isClosed
+                        ? 'bg-neutral-50 border-neutral-200 opacity-80'
+                        : 'bg-white border-rose-100 hover:border-rose-300 cursor-pointer shadow-xs'
+                    }`}
+                  >
+                    {/* Top Row: #, Client Name, Status */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-[11px] text-neutral-400 font-bold shrink-0">
+                          #{idx + 1}
+                        </span>
+                        <span className="font-bold text-neutral-900 text-xs truncate">
+                          {item.clientName}
+                        </span>
+                        {isClosed && (
+                          <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9px] font-bold bg-neutral-200 text-neutral-700 shrink-0">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Yopiq</span>
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="shrink-0">
+                        {isClosed ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-700">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Yopildi</span>
+                          </span>
+                        ) : isDone ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            <span>Bajarildi</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800">
+                            Rejada
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Phone & Address */}
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-neutral-500">
+                      <span className="flex items-center gap-1 font-mono">
+                        <Phone className="w-3 h-3 text-neutral-400" />
+                        {item.clientPhone}
+                      </span>
+                      {([item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') || item.clientAddress) && (
+                        <span className="flex items-center gap-1 text-neutral-600 truncate max-w-[200px]">
+                          <MapPin className="w-2.5 h-2.5 text-rose-600 shrink-0" />
+                          <span className="truncate">
+                            {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') || item.clientAddress}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Added Date */}
+                    <div className="mt-1 flex items-center gap-1 text-[10px] text-neutral-500 font-mono">
+                      <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
+                      <span>Qo'shilgan: {formatDate(item.createdAt)}</span>
+                    </div>
+
+                    {/* Plan Note if any */}
+                    {item.planNote && (
+                      <div className="mt-1.5 text-[11px] text-neutral-700 bg-rose-50/60 px-2 py-1 rounded-lg border border-rose-100/80">
+                        <span className="font-semibold text-rose-950">Izoh: </span>
+                        <span>{item.planNote}</span>
+                      </div>
+                    )}
+
+                    {/* Action & Products info */}
+                    {item.actionDone && (
+                      <div className="mt-2 p-2 rounded-xl bg-neutral-50 border border-neutral-200/80 space-y-1 text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-bold text-neutral-900 bg-white px-1.5 py-0.5 rounded border border-neutral-200 text-[10px]">
+                            {item.actionDone === 'joyiga borildi'
+                              ? 'Joyiga borildi'
+                              : item.actionDone === 'telefon qilindi'
+                              ? 'Telefon qilindi'
+                              : item.actionDone === 'telefon qilindi + joyiga borildi'
+                              ? 'Telefon + Joyiga borildi'
+                              : item.actionDone}
+                          </span>
+                          {item.deliveryPayment && (
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                item.deliveryPayment.paymentType === 'qarzga'
+                                  ? 'bg-rose-100 text-rose-800'
+                                  : 'bg-emerald-100 text-emerald-800'
+                              }`}
+                            >
+                              {item.deliveryPayment.paymentType === 'qarzga'
+                                ? "Qarzga (Nasiya)"
+                                : `To'lov: ${item.deliveryPayment.paymentLabel || item.deliveryPayment.paymentType}`}
+                            </span>
+                          )}
+                        </div>
+
+                        {item.productsDelivered && item.productsDelivered.length > 0 && (
+                          <div className="text-neutral-800 font-medium flex items-center gap-1 truncate text-[10px]">
+                            <Package className="w-3 h-3 text-rose-700 shrink-0" />
+                            <span className="truncate">
+                              Berildi: {item.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                            </span>
+                          </div>
+                        )}
+
+                        {item.productsReturned && item.productsReturned.length > 0 && (
+                          <div className="text-amber-800 font-medium flex items-center gap-1 truncate text-[10px]">
+                            <RotateCcw className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                            <span className="truncate">
+                              Qaytdi: {item.productsReturned.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Bottom Row: Payments / Debts & Buttons */}
+                    <div className="mt-2.5 pt-2 border-t border-neutral-100 flex items-center justify-between gap-2">
+                      <div>
+                        {paidAmount > 0 && debtAmount > 0 ? (
+                          <div className="flex flex-col text-[11px] font-mono font-bold leading-tight">
+                            <span className="text-emerald-700">To'lov: +{formatMoney(paidAmount)}</span>
+                            <span className="text-rose-700">Qarz: +{formatMoney(debtAmount)}</span>
+                          </div>
+                        ) : paidAmount > 0 ? (
+                          <span className="text-emerald-700 font-mono font-bold text-[11px]">
+                            To'lov: +{formatMoney(paidAmount)}
+                          </span>
+                        ) : debtAmount > 0 ? (
+                          <span className="text-rose-700 font-mono font-bold text-[11px]">
+                            Qarz: +{formatMoney(debtAmount)}
+                          </span>
+                        ) : (
+                          <span className="text-neutral-400 text-xs">-</span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        {!isClosed ? (
+                          <>
                             <button
-                              onClick={(e) => handleStartEditNote(item, e)}
-                              className="opacity-60 hover:opacity-100 p-1 rounded hover:bg-rose-50 text-rose-700 transition"
-                              title="Izohni tahrirlash"
+                              type="button"
+                              onClick={() => onOpenExecuteModal(item)}
+                              className="px-3 py-1.5 rounded-xl bg-rose-700 text-white text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1"
                             >
                               <Edit3 className="w-3 h-3" />
+                              <span>{isDone ? "Yana amal" : "Amal bajarish"}</span>
                             </button>
-                          </div>
-                        )}
-                      </td>
-
-                      <td className="py-3 px-3.5 whitespace-nowrap">
-                        <div className="flex items-center gap-1 text-[11px] text-neutral-600 font-mono">
-                          <Clock className="w-3 h-3 text-rose-600" />
-                          <span>{getRemainingTimeStr(item.createdAt)}</span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-3.5 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold ${
-                            isDone
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}
-                        >
-                          {isDone ? (
-                            <>
-                              <CheckCircle2 className="w-3 h-3 text-emerald-700" />
-                              <span>Bajarildi</span>
-                            </>
-                          ) : (
-                            <span>Rejalashtirilgan</span>
-                          )}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3.5">
-                        {item.actionDone ? (
-                          <span className="font-semibold text-neutral-900 bg-neutral-100 px-2 py-0.5 rounded">
-                            {item.actionDone}
-                          </span>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmCloseItem(item)}
+                              className="px-2 py-1.5 rounded-xl border border-rose-300 text-rose-800 text-xs font-bold cursor-pointer"
+                            >
+                              <Lock className="w-3 h-3" />
+                              <span>Yopish</span>
+                            </button>
+                          </>
                         ) : (
-                          <span className="text-neutral-400 italic">Kutilmoqda</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-3.5 text-right whitespace-nowrap">
-                        {item.financialAction ? (
-                          <div>
-                            <span className="font-mono font-bold text-emerald-800">
-                              +{formatMoney(item.financialAction.amount)}
-                            </span>
-                            <div className="text-[10px] text-neutral-500">
-                              {item.financialAction.methodLabel}
-                            </div>
-                          </div>
-                        ) : item.productsDelivered && item.productsDelivered.length > 0 ? (
-                          <span className="text-[11px] text-rose-800 font-semibold">
-                            {item.productsDelivered.length} ta tovar
+                          <span className="text-[11px] text-neutral-500 font-medium flex items-center gap-1">
+                            <Lock className="w-3 h-3" /> Yopilgan
                           </span>
-                        ) : (
-                          <span className="text-neutral-400">-</span>
                         )}
-                      </td>
-                      <td
-                        className="py-3 px-3.5 text-center"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <button
-                          onClick={() => onOpenExecuteModal(item)}
-                          className="px-3 py-1.5 rounded-lg bg-neutral-100 hover:bg-rose-50 hover:text-rose-800 text-neutral-800 text-xs font-bold transition flex items-center justify-center gap-1 mx-auto min-h-[36px] cursor-pointer"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          <span>{isDone ? "Ko'rish / Qayta" : "Hisobot yozish"}</span>
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
+
+      {/* Confirmation Modal: Oxirgi marta yopish */}
+      {confirmCloseItem && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-rose-100 space-y-4">
+            <div className="flex items-center gap-3 text-rose-700">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                <Lock className="w-6 h-6 text-rose-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  Oxirgi marta yopish
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Rejadagi mijoz bo'yicha amallarni yakunlash
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-2">
+              <p className="font-semibold">
+                Mijoz: <span className="font-bold underline">{confirmCloseItem.clientName}</span>
+              </p>
+              <p className="text-neutral-600 leading-relaxed">
+                Haqiqatan ham ushbu mijoz bo'yicha barcha amallarni yakunlab, rejadagi kartochkani <strong>oxirgi marta yopmoqchimisiz?</strong>
+              </p>
+              <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>Yopilgandan so'ng bu mijoz ustida qaytib amal bajarib bo'lmaydi!</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmCloseItem(null)}
+                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteClose}
+                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Lock className="w-4 h-4" />
+                <span>Ha, yakunlash va yopish</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

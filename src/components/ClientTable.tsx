@@ -26,6 +26,7 @@ interface Props {
   onEditClient: (client: Client) => void;
   onDeleteClient: (clientId: string) => void;
   onQuickPayment: (client: Client) => void;
+  userRole?: 'admin' | 'agent';
 }
 
 type FilterType = 'all' | 'debtors' | 'creditors' | 'settled';
@@ -38,6 +39,7 @@ export const ClientTable: React.FC<Props> = ({
   onEditClient,
   onDeleteClient,
   onQuickPayment,
+  userRole = 'admin',
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<FilterType>('all');
@@ -515,36 +517,40 @@ export const ClientTable: React.FC<Props> = ({
                         <div className="flex items-center justify-center gap-1">
                           <button
                             onClick={() => onViewClient(client)}
-                            className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center"
+                            className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
                             title="Batafsil ko'rish"
                           >
                             <Eye className="w-4 h-4" />
                           </button>
-                          <button
-                            onClick={() => onQuickPayment(client)}
-                            className="p-1.5 rounded-lg text-rose-700 hover:bg-rose-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center"
-                            title="To'lov / Qarz kiritish"
-                          >
-                            <CreditCard className="w-4 h-4" />
-                          </button>
+                          {userRole !== 'agent' && (
+                            <button
+                              onClick={() => onQuickPayment(client)}
+                              className="p-1.5 rounded-lg text-rose-700 hover:bg-rose-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                              title="To'lov / Qarz kiritish"
+                            >
+                              <CreditCard className="w-4 h-4" />
+                            </button>
+                          )}
                           <button
                             onClick={() => onEditClient(client)}
-                            className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center"
+                            className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
                             title="Tahrirlash"
                           >
                             <Edit className="w-4 h-4" />
                           </button>
-                          <button
-                            onClick={() => {
-                              if (window.confirm(`${client.name} ni o'chirishni xohlaysizmi?`)) {
-                                onDeleteClient(client.id);
-                              }
-                            }}
-                            className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[36px] min-w-[36px] flex items-center justify-center"
-                            title="O'chirish"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          {userRole !== 'agent' && (
+                            <button
+                              onClick={() => {
+                                if (window.confirm(`${client.name} ni o'chirishni xohlaysizmi?`)) {
+                                  onDeleteClient(client.id);
+                                }
+                              }}
+                              className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                              title="O'chirish"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -664,13 +670,15 @@ export const ClientTable: React.FC<Props> = ({
                     <span>Ko'rish</span>
                   </button>
 
-                  <button
-                    onClick={() => onQuickPayment(client)}
-                    className="flex-1 py-2 text-xs font-bold rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 transition min-h-[44px] flex items-center justify-center gap-1"
-                  >
-                    <CreditCard className="w-3.5 h-3.5 text-rose-700" />
-                    <span>To'lov</span>
-                  </button>
+                  {userRole !== 'agent' && (
+                    <button
+                      onClick={() => onQuickPayment(client)}
+                      className="flex-1 py-2 text-xs font-bold rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-200 transition min-h-[44px] flex items-center justify-center gap-1"
+                    >
+                      <CreditCard className="w-3.5 h-3.5 text-rose-700" />
+                      <span>To'lov</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={() => onEditClient(client)}
@@ -680,17 +688,19 @@ export const ClientTable: React.FC<Props> = ({
                     <Edit className="w-4 h-4" />
                   </button>
 
-                  <button
-                    onClick={() => {
-                      if (window.confirm(`${client.name} ni o'chirishni xohlaysizmi?`)) {
-                        onDeleteClient(client.id);
-                      }
-                    }}
-                    className="p-2 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[44px] min-w-[44px] flex items-center justify-center"
-                    title="O'chirish"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {userRole !== 'agent' && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`${client.name} ni o'chirishni xohlaysizmi?`)) {
+                          onDeleteClient(client.id);
+                        }
+                      }}
+                      className="p-2 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
+                      title="O'chirish"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             );

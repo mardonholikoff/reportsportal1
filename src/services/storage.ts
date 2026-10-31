@@ -1,4 +1,13 @@
-import { Client, ClientAuditLog, DailyPlanItem, PlanActionType, FinancialMethodType, ProductItem } from '../types';
+import {
+  Client,
+  ClientAuditLog,
+  DailyPlanItem,
+  PlanActionType,
+  FinancialMethodType,
+  ProductItem,
+  WarehouseProduct,
+  DeliveryPaymentInfo,
+} from '../types';
 import { parseLegacyAddress, formatAddress } from '../utils/location';
 
 const STORAGE_KEY = 'savdo_clients_data_v1';
@@ -6,6 +15,60 @@ const SYNC_QUEUE_KEY = 'savdo_sync_queue_v1';
 const FIREBASE_CONFIG_KEY = 'savdo_firebase_config_v1';
 const SYNC_TIMESTAMP_KEY = 'savdo_last_synced_at';
 const DAILY_PLANS_KEY = 'savdo_daily_plans_v1';
+const WAREHOUSE_KEY = 'savdo_warehouse_products_v1';
+
+const INITIAL_WAREHOUSE_PRODUCTS: WarehouseProduct[] = [
+  {
+    id: 'wh_1',
+    brand: 'Castrol',
+    name: 'Magnatec Motor moyi',
+    mark1: '5W-40',
+    mark2: 'Sintetika',
+    extraMarks: ['A3/B4'],
+    baseUnit: 'litr',
+    pieceUnitName: '1 idish',
+    volumePerPiece: 5,
+    packageUnitName: 'korobka',
+    piecesPerPackage: 4,
+    pricingUnitType: 'piece',
+    currency: 'UZS',
+    price: 380000,
+    intakeDate: new Date().toISOString().slice(0, 10),
+    intakeUnitType: 'package',
+    intakeQuantity: 20,
+    totalSum: 30400000,
+    totalPieces: 80,
+    totalVolume: 400,
+    createdBy: 'adminc',
+    createdAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
+    notes: "Boshlang'ich ombor zaxirasi",
+  },
+  {
+    id: 'wh_2',
+    brand: 'Knauf',
+    name: 'Gipsokarton',
+    mark1: '9.5 mm',
+    mark2: 'Namlikka chidamli (yashil)',
+    extraMarks: ['2500x1200'],
+    baseUnit: 'metr kvadrat',
+    pieceUnitName: '1 dona',
+    volumePerPiece: 3,
+    packageUnitName: 'blok',
+    piecesPerPackage: 10,
+    pricingUnitType: 'piece',
+    currency: 'UZS',
+    price: 54000,
+    intakeDate: new Date().toISOString().slice(0, 10),
+    intakeUnitType: 'package',
+    intakeQuantity: 15,
+    totalSum: 8100000,
+    totalPieces: 150,
+    totalVolume: 450,
+    createdBy: 'adminc',
+    createdAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
+    notes: "To'g'ridan-to'g'ri zavoddan keltirildi",
+  },
+];
 
 // Sample initial data with createdBy, location breakdown and audit logs
 const INITIAL_CLIENTS: Client[] = [
@@ -251,6 +314,10 @@ class StorageService {
     this.notify();
   }
 
+  public getClientById(id: string): Client | undefined {
+    return this.getClients().find((c) => c.id === id);
+  }
+
   public addClient(
     clientData: Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'logs'>,
     author: string = 'adminc'
@@ -471,6 +538,15 @@ class StorageService {
         note?: string;
       };
       productsDelivered?: ProductItem[];
+      deliveryPayment?: DeliveryPaymentInfo;
+      productsReturned?: Array<{
+        productId: string;
+        name: string;
+        unit: string;
+        quantity: number;
+        unitPrice?: number;
+        warehouseId?: string;
+      }>;
       reportNote?: string;
     }
   ): { success: boolean; client?: Client } {
@@ -479,6 +555,9 @@ class StorageService {
     if (planIndex === -1) return { success: false };
 
     const plan = plans[planIndex];
+    if (plan.isClosed) {
+      return { success: false }; // Yopilgan mijoz ustida qaytib amal bajarib bo'lmaydi
+    }
     const nowStr = new Date().toISOString();
 
     // 1. Update plan item
@@ -487,7 +566,29 @@ class StorageService {
     plan.actionDone = report.actionDone;
     plan.financialAction = report.financialAction;
     plan.productsDelivered = report.productsDelivered;
+    plan.deliveryPayment = report.deliveryPayment;
+    plan.productsReturned = report.productsReturned;
     plan.reportNote = report.reportNote;
+    plan.actionsCount = (plan.actionsCount || 0) + 1;
+    plan.actionsHistory = [
+      {
+        timestamp: nowStr,
+        author,
+        actionDone: report.actionDone,
+        financialAction: report.financialAction
+          ? {
+              methodLabel: report.financialAction.methodLabel,
+              amount: report.financialAction.amount,
+              currency: report.financialAction.currency,
+            }
+          : undefined,
+        productsDelivered: report.productsDelivered,
+        deliveryPayment: report.deliveryPayment,
+        productsReturned: report.productsReturned,
+        reportNote: report.reportNote,
+      },
+      ...(plan.actionsHistory || []),
+    ];
     plans[planIndex] = plan;
     this.saveDailyPlans(plans);
 
@@ -499,7 +600,7 @@ class StorageService {
     let newAdvance = client.currentAdvance;
     const clientLogs = client.logs || [];
 
-    // Financial payment operation
+    // Financial payment operation (Section 2)
     if (report.financialAction && report.financialAction.amount > 0) {
       const amt = report.financialAction.amount;
       if (amt <= newDebt) {
@@ -521,15 +622,64 @@ class StorageService {
       });
     }
 
-    // Products delivered operation
+    // Products delivered operation (Section 3)
     let updatedProducts = [...client.products];
     if (report.productsDelivered && report.productsDelivered.length > 0) {
       const validProds = report.productsDelivered.filter((p) => p.name.trim() !== '');
       if (validProds.length > 0) {
         updatedProducts = [...validProds, ...updatedProducts];
+
+        // Deduct products from warehouse inventory
+        validProds.forEach((vp) => {
+          if (vp.warehouseId) {
+            this.deductProductFromWarehouse(vp.warehouseId, vp.quantity, vp.unit);
+          }
+        });
+
+        const totalDeliveredValue = validProds.reduce(
+          (sum, p) => sum + (p.totalPrice || p.quantity * p.unitPrice),
+          0
+        );
+
+        const deliveryPay = report.deliveryPayment;
+        const payType = deliveryPay?.paymentType || 'qarzga';
+        const paidAmt =
+          deliveryPay?.paidAmount !== undefined
+            ? deliveryPay.paidAmount
+            : payType === 'qarzga'
+            ? 0
+            : totalDeliveredValue;
+        const debtAdded = Math.max(0, totalDeliveredValue - paidAmt);
+        const overpaid = Math.max(0, paidAmt - totalDeliveredValue);
+
+        // Apply debtAdded: reduces advance first, then adds to debt
+        if (debtAdded > 0) {
+          if (newAdvance >= debtAdded) {
+            newAdvance -= debtAdded;
+          } else {
+            newDebt += (debtAdded - newAdvance);
+            newAdvance = 0;
+          }
+        }
+
+        // Apply overpaid (if customer paid more than delivered value)
+        if (overpaid > 0) {
+          if (overpaid <= newDebt) {
+            newDebt -= overpaid;
+          } else {
+            newAdvance += (overpaid - newDebt);
+            newDebt = 0;
+          }
+        }
+
         const prodSumStr = validProds
           .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
           .join(', ');
+
+        const payDesc =
+          payType === 'qarzga'
+            ? `Qarzga berildi (+${new Intl.NumberFormat('uz-UZ').format(debtAdded)} so'm qarzga yozildi)`
+            : `To'lov shakli: ${deliveryPay?.paymentLabel || payType} (${new Intl.NumberFormat('uz-UZ').format(paidAmt)} ${deliveryPay?.currency || "so'm"})${debtAdded > 0 ? `, qoldiq qarz: +${new Intl.NumberFormat('uz-UZ').format(debtAdded)} so'm` : ''}`;
 
         clientLogs.unshift({
           id: 'log_' + Date.now() + '_prod',
@@ -538,7 +688,67 @@ class StorageService {
           timestamp: nowStr,
           type: 'product_added',
           title: "Yangi mahsulotlar topshirildi",
-          details: `${author} tomonidan topshirildi: ${prodSumStr}`,
+          details: `${author} tomonidan topshirildi: ${prodSumStr}. Qiymati: ${new Intl.NumberFormat('uz-UZ').format(totalDeliveredValue)} so'm. ${payDesc}`,
+          amountChanged: debtAdded > 0 ? debtAdded : paidAmt,
+        });
+      }
+    }
+
+    // Products returned operation (Mahsulotlarni qaytarish va omborga qo'shish)
+    if (report.productsReturned && report.productsReturned.length > 0) {
+      const validReturns = report.productsReturned.filter((r) => r.quantity > 0);
+      if (validReturns.length > 0) {
+        let totalReturnedValue = 0;
+
+        validReturns.forEach((retItem) => {
+          // Deduct from client's products
+          const pIndex = updatedProducts.findIndex(
+            (p) => p.id === retItem.productId || p.name === retItem.name
+          );
+          if (pIndex !== -1) {
+            const existing = updatedProducts[pIndex];
+            const newQty = Math.max(0, existing.quantity - retItem.quantity);
+            const price = existing.unitPrice || retItem.unitPrice || 0;
+            totalReturnedValue += retItem.quantity * price;
+
+            if (newQty <= 0) {
+              updatedProducts.splice(pIndex, 1);
+            } else {
+              updatedProducts[pIndex] = {
+                ...existing,
+                quantity: newQty,
+                totalPrice: Math.round(newQty * price),
+              };
+            }
+          }
+
+          // Return back into warehouse inventory
+          this.returnProductToWarehouse(retItem, author);
+        });
+
+        // Deduct from client debt if applicable
+        if (totalReturnedValue > 0) {
+          if (newDebt >= totalReturnedValue) {
+            newDebt -= totalReturnedValue;
+          } else {
+            newAdvance += totalReturnedValue - newDebt;
+            newDebt = 0;
+          }
+        }
+
+        const returnedStr = validReturns
+          .map((r) => `${r.name} (${r.quantity} ${r.unit})`)
+          .join(', ');
+
+        clientLogs.unshift({
+          id: 'log_' + Date.now() + '_ret',
+          clientId: client.id,
+          author,
+          timestamp: nowStr,
+          type: 'product_added',
+          title: "Mahsulot omborga qaytarildi",
+          details: `${author} tomonidan qabul qilindi va omborga qo'shildi: ${returnedStr}. Qarz ${new Intl.NumberFormat('uz-UZ').format(totalReturnedValue)} so'm kamaytirildi.`,
+          amountChanged: totalReturnedValue,
         });
       }
     }
@@ -563,6 +773,42 @@ class StorageService {
     });
 
     return { success: true, client: updatedClient || undefined };
+  }
+
+  // Rejadagi mijoz bo'yicha amallarni to'liq yakunlash (Oxirgi marta yopish)
+  public closeDailyPlanItem(planItemId: string, author: string): boolean {
+    const plans = this.getDailyPlans();
+    const planIndex = plans.findIndex((p) => p.id === planItemId);
+    if (planIndex === -1) return false;
+
+    const plan = plans[planIndex];
+    const nowStr = new Date().toISOString();
+    plan.isClosed = true;
+    plan.status = 'yopildi';
+    plan.closedAt = nowStr;
+    plans[planIndex] = plan;
+    this.saveDailyPlans(plans);
+
+    // Audit logga yozish
+    const client = this.getClients().find((c) => c.id === plan.clientId);
+    if (client) {
+      const clientLogs = client.logs || [];
+      clientLogs.unshift({
+        id: 'log_' + Date.now() + '_close',
+        clientId: client.id,
+        author,
+        timestamp: nowStr,
+        type: 'visit_action',
+        title: 'Reja yakunlandi va yopildi',
+        details: `${author} tomonidan ushbu mijoz bo'yicha amallar yakunlandi va reja to'liq yopildi.`,
+      });
+      this.updateClient(client.id, {
+        logs: clientLogs,
+        updatedAt: nowStr,
+      });
+    }
+
+    return true;
   }
 
   // --- Offline Sync Queue ---
@@ -686,6 +932,140 @@ class StorageService {
     } catch (e: any) {
       return { success: false, count: 0, error: e?.message || "JSON faylni o'qishda xatolik" };
     }
+  }
+
+  // ==========================================
+  // WAREHOUSE MANAGEMENT (Ombor zaxirasi)
+  // ==========================================
+  public getWarehouseProducts(): WarehouseProduct[] {
+    try {
+      const data = localStorage.getItem(WAREHOUSE_KEY);
+      if (!data) {
+        localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(INITIAL_WAREHOUSE_PRODUCTS));
+        return INITIAL_WAREHOUSE_PRODUCTS;
+      }
+      return JSON.parse(data);
+    } catch {
+      return INITIAL_WAREHOUSE_PRODUCTS;
+    }
+  }
+
+  public saveWarehouseProducts(items: WarehouseProduct[]): void {
+    try {
+      localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(items));
+    } catch (e) {
+      console.error('Failed to save warehouse products to localStorage:', e);
+    }
+  }
+
+  public addWarehouseProduct(
+    productData: Omit<WarehouseProduct, 'id' | 'createdAt'>
+  ): WarehouseProduct {
+    const products = this.getWarehouseProducts();
+    const newProduct: WarehouseProduct = {
+      ...productData,
+      id: `wh_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: new Date().toISOString(),
+    };
+    products.unshift(newProduct);
+    this.saveWarehouseProducts(products);
+    return newProduct;
+  }
+
+  public deleteWarehouseProduct(id: string): void {
+    const products = this.getWarehouseProducts();
+    const updated = products.filter((p) => p.id !== id);
+    this.saveWarehouseProducts(updated);
+  }
+
+  public deductProductFromWarehouse(
+    warehouseId: string,
+    quantity: number,
+    unit: string
+  ): void {
+    const warehouse = this.getWarehouseProducts();
+    const found = warehouse.find((w) => w.id === warehouseId);
+    if (!found) return;
+
+    const isPkg = unit === found.packageUnitName;
+    const piecesToDeduct = isPkg
+      ? quantity * (found.piecesPerPackage || 1)
+      : quantity;
+    const volToDeduct = piecesToDeduct * (found.volumePerPiece || 0);
+
+    found.totalPieces = Math.max(0, found.totalPieces - piecesToDeduct);
+    found.totalVolume = Math.max(0, found.totalVolume - volToDeduct);
+    this.saveWarehouseProducts(warehouse);
+  }
+
+  public returnProductToWarehouse(
+    item: {
+      productId: string;
+      name: string;
+      unit: string;
+      quantity: number;
+      unitPrice?: number;
+      warehouseId?: string;
+    },
+    author: string
+  ): void {
+    const warehouse = this.getWarehouseProducts();
+    const itemNorm = item.name.toLowerCase().trim();
+
+    // Try finding warehouse product by warehouseId or matching name
+    let found = warehouse.find((w) => w.id === item.warehouseId);
+    if (!found) {
+      found = warehouse.find(
+        (w) =>
+          itemNorm.includes(w.name.toLowerCase()) ||
+          w.name.toLowerCase().includes(itemNorm) ||
+          itemNorm.includes(w.brand.toLowerCase())
+      );
+    }
+
+    if (found) {
+      const isPkg = item.unit === found.packageUnitName;
+      const piecesToAdd = isPkg
+        ? item.quantity * (found.piecesPerPackage || 1)
+        : item.quantity;
+      const volToAdd = piecesToAdd * (found.volumePerPiece || 0);
+
+      found.totalPieces += piecesToAdd;
+      found.totalVolume += volToAdd;
+      found.intakeQuantity += isPkg
+        ? item.quantity
+        : Math.ceil(piecesToAdd / (found.piecesPerPackage || 1));
+      found.notes = `${found.notes ? found.notes + '; ' : ''}+${item.quantity} ${item.unit} qaytarildi (${author})`;
+    } else {
+      // Create new warehouse stock entry for the returned item
+      const newWh: WarehouseProduct = {
+        id: `wh_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        brand: 'Mijozdan qaytgan',
+        name: item.name,
+        mark1: 'Qaytarilgan',
+        mark2: '',
+        baseUnit: item.unit || 'dona',
+        pieceUnitName: item.unit || 'dona',
+        volumePerPiece: 1,
+        packageUnitName: item.unit || 'dona',
+        piecesPerPackage: 1,
+        pricingUnitType: 'piece',
+        currency: "so'm",
+        price: item.unitPrice || 0,
+        intakeDate: new Date().toISOString().slice(0, 10),
+        intakeUnitType: 'piece',
+        intakeQuantity: item.quantity,
+        totalSum: Math.round((item.unitPrice || 0) * item.quantity),
+        totalPieces: item.quantity,
+        totalVolume: item.quantity,
+        createdBy: author,
+        createdAt: new Date().toISOString(),
+        notes: `${author} tomonidan mijozdan qaytarib olindi`,
+      };
+      warehouse.unshift(newWh);
+    }
+
+    this.saveWarehouseProducts(warehouse);
   }
 }
 

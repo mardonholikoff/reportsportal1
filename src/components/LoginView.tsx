@@ -54,11 +54,22 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   required
                   autoComplete="username"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setUsername(val);
+                    if (val.trim() === 'adminc1') {
+                      setPassword('');
+                    }
+                  }}
                   placeholder="Login"
                   className="w-full pl-10 pr-3.5 py-3 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-sm text-neutral-900 font-medium placeholder:text-neutral-400 outline-none transition bg-neutral-50/40 focus:bg-white"
                 />
               </div>
+              {username.trim() === 'adminc1' && (
+                <p className="mt-1 text-[11px] text-amber-700 font-medium">
+                  adminc1 uchun parol avtomatik to'ldirilmaydi (qo'lda kiriting)
+                </p>
+              )}
             </div>
 
             {/* Password input */}
@@ -102,6 +113,55 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
             >
               {isLoading ? <span>Tekshirilmoqda...</span> : <span>Kirish</span>}
             </button>
+
+            {/* Quick Login Profiles */}
+            <div className="pt-2 border-t border-neutral-100 space-y-1.5 text-center">
+              <span className="text-[10px] uppercase font-bold text-neutral-400 tracking-wider block">
+                Tezkor kirish
+              </span>
+              <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsername('agentc1');
+                    setPassword('1cagent');
+                  }}
+                  className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
+                >
+                  agentc1
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsername('agentp1');
+                    setPassword('1pagent');
+                  }}
+                  className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
+                >
+                  agentp1
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsername('adminc');
+                    setPassword('cadmin');
+                  }}
+                  className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-neutral-100 text-neutral-800 hover:bg-neutral-200 border border-neutral-200 transition cursor-pointer"
+                >
+                  adminc
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUsername('adminc1');
+                    setPassword(''); // adminc1 uchun avtomatik to'ldirilmaydi!
+                  }}
+                  className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-neutral-100 text-neutral-800 hover:bg-neutral-200 border border-neutral-200 transition cursor-pointer"
+                >
+                  adminc1
+                </button>
+              </div>
+            </div>
           </form>
         </div>
       </div>

@@ -1,0 +1,125 @@
+{
+  "entities": {
+    "Client": {
+      "title": "Client",
+      "description": "Mijoz ma'lumotlari, qarzdorlik va haqdorlik hisobi",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "region": { "type": "string", "maxLength": 100 },
+        "district": { "type": "string", "maxLength": 100 },
+        "landmark": { "type": "string", "maxLength": 200 },
+        "address": { "type": "string", "maxLength": 300 },
+        "debt": { "type": "number" },
+        "advancePayment": { "type": "number" },
+        "products": { "type": "array" },
+        "paymentHistory": { "type": "array" },
+        "auditLogs": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "name", "phone"]
+    },
+    "DailyPlan": {
+      "title": "DailyPlan",
+      "description": "Agentlarning kunlik rejalari va mijozlar bilan bajarilgan amallari",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "agentUsername": { "type": "string", "maxLength": 100 },
+        "clientId": { "type": "string", "maxLength": 128 },
+        "clientName": { "type": "string", "maxLength": 200 },
+        "clientPhone": { "type": "string", "maxLength": 50 },
+        "clientAddress": { "type": "string", "maxLength": 300 },
+        "clientRegion": { "type": "string", "maxLength": 100 },
+        "clientDistrict": { "type": "string", "maxLength": 100 },
+        "clientLandmark": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["rejalashtirilgan", "bajarildi", "yopildi"] },
+        "isClosed": { "type": "boolean" },
+        "closedAt": { "type": "string", "maxLength": 100 },
+        "actionDone": { "type": "string", "enum": ["telefon qilindi", "joyiga borildi", "telefon qilindi + joyiga borildi"] },
+        "financialAction": { "type": "object" },
+        "productsDelivered": { "type": "array" },
+        "deliveryPayment": { "type": "object" },
+        "productsReturned": { "type": "array" },
+        "completedAt": { "type": "string", "maxLength": 100 },
+        "reportNote": { "type": "string", "maxLength": 1000 },
+        "planNote": { "type": "string", "maxLength": 1000 },
+        "actionsCount": { "type": "number" },
+        "actionsHistory": { "type": "array" }
+      },
+      "required": ["id", "agentUsername", "clientId", "clientName", "status", "createdAt"]
+    },
+    "WarehouseProduct": {
+      "title": "WarehouseProduct",
+      "description": "Ombordagi mahsulotlar zaxirasi",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "brand": { "type": "string", "maxLength": 100 },
+        "name": { "type": "string", "maxLength": 200 },
+        "mark1": { "type": "string", "maxLength": 100 },
+        "mark2": { "type": "string", "maxLength": 100 },
+        "extraMarks": { "type": "array" },
+        "baseUnit": { "type": "string", "maxLength": 50 },
+        "pieceUnitName": { "type": "string", "maxLength": 50 },
+        "volumePerPiece": { "type": "number" },
+        "packageUnitName": { "type": "string", "maxLength": 50 },
+        "piecesPerPackage": { "type": "number" },
+        "pricingUnitType": { "type": "string", "enum": ["piece", "package"] },
+        "currency": { "type": "string", "maxLength": 20 },
+        "price": { "type": "number" },
+        "intakeDate": { "type": "string", "maxLength": 50 },
+        "intakeUnitType": { "type": "string", "enum": ["package", "piece"] },
+        "intakeQuantity": { "type": "number" },
+        "totalSum": { "type": "number" },
+        "totalPieces": { "type": "number" },
+        "totalVolume": { "type": "number" },
+        "createdBy": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "notes": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["id", "brand", "name", "baseUnit", "price", "createdAt"]
+    },
+    "SystemLog": {
+      "title": "SystemLog",
+      "description": "Barcha foydalanuvchilar harakatlari va xavfsizlik audit loglari",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "maxLength": 100 },
+        "userId": { "type": "string", "maxLength": 100 },
+        "userRole": { "type": "string", "enum": ["admin", "agent"] },
+        "actionType": { "type": "string", "maxLength": 100 },
+        "actionTitle": { "type": "string", "maxLength": 200 },
+        "details": { "type": "string", "maxLength": 2000 },
+        "ipAddress": { "type": "string", "maxLength": 100 },
+        "metadata": { "type": "object" },
+        "createdAt": { "type": "string", "maxLength": 100 }
+      },
+      "required": ["id", "timestamp", "userId", "userRole", "actionType", "actionTitle"]
+    }
+  },
+  "firestore": {
+    "/clients/{clientId}": {
+      "schema": "Client",
+      "description": "Mijozlar ro'yxati va ularning balansi"
+    },
+    "/dailyPlans/{planId}": {
+      "schema": "DailyPlan",
+      "description": "Agentlar kunlik rejalari va hisobotlari"
+    },
+    "/warehouseProducts/{productId}": {
+      "schema": "WarehouseProduct",
+      "description": "Ombor mahsulotlari qoldig'i"
+    },
+    "/systemLogs/{logId}": {
+      "schema": "SystemLog",
+      "description": "Tizim audit va amallar loglari"
+    }
+  }
+}

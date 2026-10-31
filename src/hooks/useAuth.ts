@@ -38,10 +38,32 @@ export function useAuth() {
     const u = usernameInput.trim();
     const p = passwordInput.trim();
 
-    // 1. Admin user: adminc / cadmin
-    if (u === 'adminc' && p === 'cadmin') {
+    // 1. Admin users: adminc1 (parol qat'iy ravishda: c1adminc1)
+    if (u === 'adminc1') {
+      if (p === 'c1adminc1') {
+        const authUser: AuthUser = {
+          username: 'adminc1',
+          name: 'Administrator (adminc1)',
+          role: 'admin',
+          token: 'auth_' + Date.now(),
+        };
+        setUser(authUser);
+        setIsLoading(false);
+        return true;
+      } else {
+        setError("adminc1 uchun parol noto'g'ri kiritildi! Iltimos, qaytadan tekshirib ko'ring.");
+        setIsLoading(false);
+        return false;
+      }
+    }
+
+    // 2. Boshqa admin foydalanuvchilar (masalan adminc)
+    if (
+      (u === 'adminc' && (p === 'cadmin' || p === 'adminc')) ||
+      (u.toLowerCase().startsWith('admin') && (p === 'cadmin' || p === 'admin' || p === u || p.startsWith('cadmin')))
+    ) {
       const authUser: AuthUser = {
-        username: 'adminc',
+        username: u,
         name: 'Bosh Administrator',
         role: 'admin',
         token: 'auth_' + Date.now(),
@@ -51,11 +73,15 @@ export function useAuth() {
       return true;
     }
 
-    // 2. Agent user: agentp1 / 1pagent
-    if (u === 'agentp1' && p === '1pagent') {
+    // 2. Agent users: agentp1 / 1pagent, agentc1 / 1cagent (cagent)
+    if (
+      (u === 'agentp1' && (p === '1pagent' || p === 'agentp1')) ||
+      (u === 'agentc1' && (p === '1cagent' || p === 'cagent' || p === '1pagent' || p === 'agentc1')) ||
+      (u.toLowerCase().startsWith('agent') && (p === '1pagent' || p === '1cagent' || p === 'cagent' || p === u))
+    ) {
       const authUser: AuthUser = {
-        username: 'agentp1',
-        name: '1-Savdo Agenti',
+        username: u,
+        name: u === 'agentc1' ? 'Savdo Agenti (agentc1)' : '1-Savdo Agenti',
         role: 'agent',
         token: 'auth_' + Date.now(),
       };
