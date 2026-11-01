@@ -200,3 +200,28 @@ export interface SystemLog {
   metadata?: Record<string, any>;
   createdAt?: string;
 }
+
+export interface SystemLogMonthlyArchiveRecord {
+  id: string;
+  monthKey: string;
+  monthLabel: string;
+  logsCount: number;
+  exportedAt: string;
+  exportedBy: string;
+  fileName: string;
+}
+
+export interface SystemLogPeriodArchive {
+  id: string;
+  periodKey: string;
+  periodLabel: string;
+  startDate: string;
+  endDate: string;
+  logsCount: number;
+  archivedAt: string;
+  exportedBy: string;
+  fileName: string;
+  logs: SystemLog[];
+}
+
+

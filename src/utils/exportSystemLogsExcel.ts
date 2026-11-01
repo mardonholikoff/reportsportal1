@@ -3,17 +3,18 @@ import { SystemLog } from '../types';
 
 export async function exportSystemLogsToExcel(
   logs: SystemLog[],
-  filterTitle = "Barcha tizim harakatlari"
-): Promise<void> {
+  filterTitle = "Barcha tizim harakatlari",
+  customFileName?: string
+): Promise<string> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Savdo Boshqaruv Tizimi';
+  workbook.creator = 'Savdo Boshqaruv Tizimi (adminc1)';
   workbook.created = new Date();
 
-  const sheet = workbook.addWorksheet('Tizim Loglari', {
+  const sheet = workbook.addWorksheet('Audit Loglari', {
     views: [{ showGridLines: true }],
   });
 
-  const blackBorder: Partial<ExcelJS.Borders> = {
+  const thinBorder: Partial<ExcelJS.Borders> = {
     top: { style: 'thin', color: { argb: 'FF000000' } },
     left: { style: 'thin', color: { argb: 'FF000000' } },
     bottom: { style: 'thin', color: { argb: 'FF000000' } },
@@ -25,40 +26,47 @@ export async function exportSystemLogsToExcel(
   // Title Row (Row 1)
   sheet.mergeCells(1, 1, 1, totalCols);
   const titleCell = sheet.getCell(1, 1);
-  titleCell.value = 'BUTUN TIZIM FOYDALANUVCHILARI HARAKATLARI VA AUDIT LOGLARI';
-  titleCell.font = { name: 'Arial', size: 13, bold: true, color: { argb: 'FFFFFFFF' } };
+  titleCell.value = 'BUTUN TIZIM FOYDALANUVCHILARI HARAKATLARI VA AUDIT LOGLARI ARXIVI';
+  titleCell.font = { name: 'Arial', size: 12, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.fill = {
     type: 'pattern',
     pattern: 'solid',
-    fgColor: { argb: 'FF1E293B' },
+    fgColor: { argb: 'FF0F172A' }, // Slate 900
   };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  titleCell.border = blackBorder;
-  sheet.getRow(1).height = 28;
+  titleCell.border = thinBorder;
+  sheet.getRow(1).height = 30;
 
   // Subtitle (Row 2)
   sheet.mergeCells(2, 1, 2, totalCols);
   const subCell = sheet.getCell(2, 1);
-  subCell.value = `Filtr: ${filterTitle} | Eksport vaqti: ${new Date().toLocaleString('uz-UZ')} | Jami yozuvlar: ${logs.length} ta`;
-  subCell.font = { name: 'Arial', size: 10, italic: true, color: { argb: 'FF334155' } };
+  const nowFormatted = new Date().toLocaleString('uz-UZ', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  subCell.value = `Davr / Filtr: ${filterTitle} | Arxivlangan sana: ${nowFormatted} | Jami yozuvlar: ${logs.length} ta | Mas'ul: adminc1`;
+  subCell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF334155' } };
   subCell.fill = {
     type: 'pattern',
     pattern: 'solid',
     fgColor: { argb: 'FFF1F5F9' },
   };
   subCell.alignment = { horizontal: 'center', vertical: 'middle' };
-  subCell.border = blackBorder;
-  sheet.getRow(2).height = 22;
+  subCell.border = thinBorder;
+  sheet.getRow(2).height = 24;
 
   // Column Headers (Row 3)
   const headers = [
-    { text: '№', width: 6, col: 1 },
-    { text: 'Sana va Vaqt', width: 22, col: 2 },
-    { text: 'Foydalanuvchi', width: 18, col: 3 },
-    { text: 'Rol', width: 14, col: 4 },
-    { text: 'IP Manzil', width: 20, col: 5 },
-    { text: 'Harakat Turi', width: 22, col: 6 },
-    { text: 'Batafsil ma\'lumotlar', width: 45, col: 7 },
+    { text: '№', width: 6, col: 1, align: 'center' as const },
+    { text: 'Sana va Vaqt', width: 22, col: 2, align: 'center' as const },
+    { text: 'Foydalanuvchi', width: 18, col: 3, align: 'center' as const },
+    { text: 'Tizimdagi Rol', width: 15, col: 4, align: 'center' as const },
+    { text: 'IP Manzil', width: 20, col: 5, align: 'center' as const },
+    { text: 'Harakat Sarlavhasi', width: 28, col: 6, align: 'left' as const },
+    { text: 'Batafsil Tafsilotlar', width: 52, col: 7, align: 'left' as const },
   ];
 
   headers.forEach((h) => {
@@ -69,10 +77,10 @@ export async function exportSystemLogsToExcel(
     c.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FF475569' },
+      fgColor: { argb: 'FF1E293B' }, // Slate 800
     };
     c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    c.border = blackBorder;
+    c.border = thinBorder;
   });
   sheet.getRow(3).height = 26;
 
@@ -101,20 +109,64 @@ export async function exportSystemLogsToExcel(
       log.details,
     ];
 
+    const isEven = index % 2 === 0;
+
     values.forEach((val, cIdx) => {
       const cell = r.getCell(cIdx + 1);
       cell.value = val;
       cell.font = { name: 'Arial', size: 9 };
-      cell.border = blackBorder;
+      cell.border = thinBorder;
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: isEven ? 'FFFFFFFF' : 'FFF8FAFC' },
+      };
       cell.alignment = {
         vertical: 'middle',
-        horizontal: cIdx === 0 || cIdx === 3 || cIdx === 4 ? 'center' : 'left',
-        wrapText: cIdx === 6,
+        horizontal: headers[cIdx].align,
+        wrapText: cIdx === 6 || cIdx === 5,
       };
     });
 
     rowIdx++;
   });
+
+  // Summary row at bottom
+  const summaryRow = sheet.getRow(rowIdx);
+  summaryRow.height = 26;
+  sheet.mergeCells(rowIdx, 1, rowIdx, 5);
+  const sumLabelCell = summaryRow.getCell(1);
+  sumLabelCell.value = 'JAMI ARXIVLANGAN AUDIT YOZUVLARI:';
+  sumLabelCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF0F172A' } };
+  sumLabelCell.alignment = { horizontal: 'right', vertical: 'middle' };
+  sumLabelCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE2E8F0' },
+  };
+  sumLabelCell.border = thinBorder;
+
+  // Apply borders to merged cells
+  for (let c = 2; c <= 5; c++) {
+    summaryRow.getCell(c).border = thinBorder;
+  }
+
+  sheet.mergeCells(rowIdx, 6, rowIdx, 7);
+  const sumValCell = summaryRow.getCell(6);
+  sumValCell.value = `${logs.length} ta audit log qaydi`;
+  sumValCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF047857' } };
+  sumValCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  sumValCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE2E8F0' },
+  };
+  sumValCell.border = thinBorder;
+  summaryRow.getCell(7).border = thinBorder;
+
+  const fileName =
+    customFileName ||
+    `Tizim_Audit_Loglari_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
@@ -123,7 +175,10 @@ export async function exportSystemLogsToExcel(
   const url = window.URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `Tizim_Audit_Loglari_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  anchor.download = fileName;
   anchor.click();
   window.URL.revokeObjectURL(url);
+
+  return fileName;
 }
+

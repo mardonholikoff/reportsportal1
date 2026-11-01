@@ -76,11 +76,96 @@ export async function getClientIpAddress(): Promise<string> {
 // System Audit Log Service
 // -------------------------------------------------------------
 const SYSTEM_LOGS_STORAGE_KEY = 'savdo_system_logs_v1';
+const SYSTEM_ARCHIVES_STORAGE_KEY = 'savdo_system_archives_v1';
+
+// Seed initial realistic logs for previous and current months if local storage is blank
+function getInitialSampleLogs(): SystemLog[] {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth(); // 0-indexed
+
+  // Dates for current month and previous month
+  const prevMonthDate = new Date(currentYear, currentMonth - 1, 15, 14, 30, 0);
+  const prevMonthDate2 = new Date(currentYear, currentMonth - 1, 22, 10, 15, 0);
+  const prevMonthDate3 = new Date(currentYear, currentMonth - 1, 28, 16, 45, 0);
+  const currMonthDate1 = new Date(currentYear, currentMonth, 2, 9, 0, 0);
+  const currMonthDate2 = new Date(currentYear, currentMonth, 5, 11, 20, 0);
+  const currMonthDate3 = new Date(currentYear, currentMonth, 10, 15, 10, 0);
+
+  return [
+    {
+      id: 'log_seed_6',
+      timestamp: currMonthDate3.toISOString(),
+      userId: 'adminc1',
+      userRole: 'admin',
+      actionType: 'kirish',
+      actionTitle: 'Tizimga kirish (adminc1 nazorat seansi)',
+      details: 'adminc1 boshqaruvi orqali tizimga muvaffaqiyatli kirildi. IP tekshiruvi amalga oshirildi.',
+      ipAddress: '195.158.12.84',
+    },
+    {
+      id: 'log_seed_5',
+      timestamp: currMonthDate2.toISOString(),
+      userId: 'agentc1',
+      userRole: 'agent',
+      actionType: 'amal_bajarish',
+      actionTitle: 'Mijoz bilan amal: Jamshidbek Nurmatov',
+      details: 'Joyiga borildi va to\'lov qabul qilindi: 1 500 000 so\'m (naqd). Qarzdorlik kamaytirildi.',
+      ipAddress: '84.54.80.19',
+    },
+    {
+      id: 'log_seed_4',
+      timestamp: currMonthDate1.toISOString(),
+      userId: 'agentp1',
+      userRole: 'agent',
+      actionType: 'reja_tuzish',
+      actionTitle: 'Kunlik savdo rejasi tuzildi (3 ta mijoz)',
+      details: 'Akromjon Karimov, Jamshidbek Nurmatov, Nodirbek Aliyev rejaga kiritildi va tasdiqlandi.',
+      ipAddress: '84.54.80.19',
+    },
+    {
+      id: 'log_seed_3',
+      timestamp: prevMonthDate3.toISOString(),
+      userId: 'adminc',
+      userRole: 'admin',
+      actionType: 'ombor_kirimi',
+      actionTitle: 'Omborga kirim: Castrol - Magnatec Motor moyi',
+      details: '20 korobka (80 dona, 400 litr) qabul qilindi. Umumiy summa: 30 400 000 so\'m.',
+      ipAddress: '195.158.12.84',
+    },
+    {
+      id: 'log_seed_2',
+      timestamp: prevMonthDate2.toISOString(),
+      userId: 'agentp1',
+      userRole: 'agent',
+      actionType: 'tushum_qabul',
+      actionTitle: 'To\'lov qabul qilindi: Dilshod Rahimov',
+      details: 'Bank o\'tkazmasi orqali 4 200 000 so\'m qabul qilindi va hisobga o\'tkazildi.',
+      ipAddress: '84.54.80.25',
+    },
+    {
+      id: 'log_seed_1',
+      timestamp: prevMonthDate.toISOString(),
+      userId: 'adminc1',
+      userRole: 'admin',
+      actionType: 'kirish',
+      actionTitle: 'Tizimga kirish va xavfsizlik audit tekshiruvi',
+      details: 'adminc1 orqali tizim loglari va agentlar amallari nazorat qilindi.',
+      ipAddress: '195.158.12.84',
+    },
+  ];
+}
 
 export function getLocalSystemLogs(): SystemLog[] {
   try {
     const raw = localStorage.getItem(SYSTEM_LOGS_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+    const sample = getInitialSampleLogs();
+    saveLocalSystemLogs(sample);
+    return sample;
   } catch {
     return [];
   }
@@ -93,6 +178,85 @@ export function saveLocalSystemLogs(logs: SystemLog[]): void {
     console.error('Failed to save local system logs', e);
   }
 }
+
+export function deleteLocalSystemLogs(logIds: string[]): void {
+  try {
+    const current = getLocalSystemLogs();
+    const idSet = new Set(logIds);
+    const updated = current.filter((l) => !idSet.has(l.id));
+    saveLocalSystemLogs(updated);
+  } catch (err) {
+    console.error('Failed to delete local system logs', err);
+  }
+}
+
+export async function deleteSystemLogsFromFirestore(logIds: string[]): Promise<void> {
+  try {
+    for (const id of logIds) {
+      await deleteDoc(doc(db, 'systemLogs', id));
+    }
+  } catch (err) {
+    console.warn('Deferred system logs deletion from Firestore:', err);
+  }
+}
+
+// 15-Day Period Archives Storage
+const SYSTEM_PERIOD_ARCHIVES_STORAGE_KEY = 'savdo_system_15day_archives_v1';
+
+export function getPeriodArchives(): import('../types').SystemLogPeriodArchive[] {
+  try {
+    const raw = localStorage.getItem(SYSTEM_PERIOD_ARCHIVES_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function savePeriodArchive(archive: import('../types').SystemLogPeriodArchive): void {
+  try {
+    const current = getPeriodArchives();
+    const existingIdx = current.findIndex((a) => a.periodKey === archive.periodKey);
+    if (existingIdx >= 0) {
+      current[existingIdx] = archive;
+    } else {
+      current.unshift(archive);
+    }
+    localStorage.setItem(SYSTEM_PERIOD_ARCHIVES_STORAGE_KEY, JSON.stringify(current));
+  } catch (e) {
+    console.error('Failed to save 15-day period archive', e);
+  }
+}
+
+export function deletePeriodArchive(id: string): void {
+  try {
+    const current = getPeriodArchives();
+    const updated = current.filter((a) => a.id !== id);
+    localStorage.setItem(SYSTEM_PERIOD_ARCHIVES_STORAGE_KEY, JSON.stringify(updated));
+  } catch (e) {
+    console.error('Failed to delete period archive', e);
+  }
+}
+
+// Monthly Archive Records Storage (legacy compatibility)
+export function getArchiveRecords(): import('../types').SystemLogMonthlyArchiveRecord[] {
+  try {
+    const raw = localStorage.getItem(SYSTEM_ARCHIVES_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveArchiveRecord(record: import('../types').SystemLogMonthlyArchiveRecord): void {
+  try {
+    const current = getArchiveRecords();
+    current.unshift(record);
+    localStorage.setItem(SYSTEM_ARCHIVES_STORAGE_KEY, JSON.stringify(current));
+  } catch (e) {
+    console.error('Failed to save archive record', e);
+  }
+}
+
 
 export async function addSystemLog(entry: {
   userId: string;
@@ -109,7 +273,8 @@ export async function addSystemLog(entry: {
     | 'mijoz_tahrirlash'
     | 'mijoz_ochirish'
     | 'ombor_kirimi'
-    | 'ombor_ochirish';
+    | 'ombor_ochirish'
+    | 'oylik_arxivlash';
   actionTitle: string;
   details: string;
   metadata?: Record<string, any>;
@@ -143,6 +308,7 @@ export async function addSystemLog(entry: {
 
   return log;
 }
+
 
 // -------------------------------------------------------------
 // Firestore Realtime Collections Synchronizers
@@ -267,14 +433,12 @@ export function subscribeToFirestoreData(callbacks: {
     const unsub = onSnapshot(
       collection(db, 'systemLogs'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const list: SystemLog[] = [];
-          snapshot.forEach((d) => list.push(d.data() as SystemLog));
-          list.sort(
-            (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-          );
-          callbacks.onLogsChange?.(list);
-        }
+        const list: SystemLog[] = [];
+        snapshot.forEach((d) => list.push(d.data() as SystemLog));
+        list.sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        );
+        callbacks.onLogsChange?.(list);
       },
       (error) => {
         console.warn('System logs snapshot listener error (offline mode active):', error.message);

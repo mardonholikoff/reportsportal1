@@ -17,6 +17,8 @@ import {
   WarehouseProduct,
   DeliveryPaymentInfo,
   SystemLog,
+  SystemLogMonthlyArchiveRecord,
+  SystemLogPeriodArchive,
 } from './types';
 import { LoginView } from './components/LoginView';
 import { Navbar } from './components/Navbar';
@@ -39,6 +41,10 @@ import { AgentWarehouseTable } from './components/AgentWarehouseTable';
 import {
   addSystemLog,
   getLocalSystemLogs,
+  deleteLocalSystemLogs,
+  deleteSystemLogsFromFirestore,
+  saveArchiveRecord,
+  savePeriodArchive,
   subscribeToFirestoreData,
   bootstrapFirestoreData,
   syncClientToFirestore,
@@ -158,6 +164,38 @@ export default function App() {
       details: target ? `${target.brand} - ${target.name} (ID: ${id})` : `ID: ${id}`,
     });
     showToast("Mahsulot ombor zaxirasidan o'chirildi.");
+  };
+
+  // Purge system audit logs after Excel transition (15 kunlik yoki oylik)
+  const handlePurgeLogs = async (
+    logIds: string[],
+    archiveRecord: SystemLogPeriodArchive | SystemLogMonthlyArchiveRecord
+  ) => {
+    try {
+      // 1. Delete from Firestore systemLogs collection
+      await deleteSystemLogsFromFirestore(logIds);
+      // 2. Delete from local storage
+      deleteLocalSystemLogs(logIds);
+      // 3. Update active React state
+      setSystemLogs((prev) => prev.filter((l) => !logIds.includes(l.id)));
+      // 4. Save archive record into archive history
+      if ('logs' in archiveRecord) {
+        savePeriodArchive(archiveRecord as SystemLogPeriodArchive);
+      } else {
+        saveArchiveRecord(archiveRecord as SystemLogMonthlyArchiveRecord);
+      }
+      // 5. Toast feedback
+      const label =
+        'periodLabel' in archiveRecord
+          ? (archiveRecord as SystemLogPeriodArchive).periodLabel
+          : (archiveRecord as SystemLogMonthlyArchiveRecord).monthLabel;
+      showToast(
+        `«${label}» bo'yicha ${archiveRecord.logsCount} ta audit logi Excelga o'tdi va bazadan tozalandi.`
+      );
+    } catch (err) {
+      console.error('Failed to purge system logs:', err);
+      showToast("Audit loglarini tozalashda xatolik yuz berdi.");
+    }
   };
 
   // Subscribe to storage changes & Firebase Firestore real-time sync
@@ -1025,6 +1063,7 @@ export default function App() {
                   <AdminSystemLogsTable
                     logs={systemLogs}
                     currentUsername={user.username}
+                    onPurgeLogs={handlePurgeLogs}
                   />
                 </div>
               </div>
