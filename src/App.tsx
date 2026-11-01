@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
-import { storageService } from './services/storage';
+import { storageService, getDeletedClientIds, markClientAsDeleted } from './services/storage';
 import {
   Client,
   SummaryStats,
@@ -210,16 +210,26 @@ export default function App() {
     // 2. Realtime listener to Firestore (automatic offline-persistence sync)
     const unsubFirestore = subscribeToFirestoreData({
       onClientsChange: (remoteClients) => {
-        if (remoteClients && remoteClients.length > 0) {
-          storageService.saveClients(remoteClients);
-          setClients(remoteClients);
+        if (remoteClients) {
+          const deletedIds = getDeletedClientIds();
+          const clean = remoteClients.filter((c) => !deletedIds.has(c.id));
+          storageService.saveClients(clean);
+          setClients(clean);
         }
       },
       onPlansChange: (remotePlans) => {
-        if (remotePlans && remotePlans.length > 0) {
-          storageService.saveDailyPlans(remotePlans);
+        if (remotePlans) {
+          const deletedIds = getDeletedClientIds();
+          const clean = remotePlans.filter((p) => !deletedIds.has(p.clientId));
+          storageService.saveDailyPlans(clean);
           setDailyPlans(
-            storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
+            clean.filter((item) => {
+              const createdTime = new Date(item.createdAt).getTime();
+              const isWithin24h = createdTime >= Date.now() - 24 * 60 * 60 * 1000;
+              if (!isWithin24h) return false;
+              if (user?.role === 'agent') return item.agentUsername === user.username;
+              return true;
+            })
           );
         }
       },
@@ -324,7 +334,7 @@ export default function App() {
   };
 
   // Handle Delete Client (Faqat adminc va adminc1 huquqiga ega)
-  const handleDeleteClient = (clientId: string) => {
+  const handleDeleteClient = async (clientId: string) => {
     if (user?.username !== 'adminc' && user?.username !== 'adminc1') {
       showToast("Faqat adminc yoki adminc1 mijozni o'chirish huquqiga ega!");
       return;
@@ -333,25 +343,17 @@ export default function App() {
     const currentUsername = user?.username || 'adminc';
     const client = clients.find((c) => c.id === clientId);
 
-    // 1. Delete client & cascade delete associated daily plans in local storage
+    // 1. Immediately blacklist client ID so it can never reappear
+    markClientAsDeleted(clientId);
+
+    // 2. Delete client & cascade delete associated daily plans in local storage
     storageService.deleteClient(clientId);
 
-    // 2. Delete client document from Firestore
-    deleteClientFromFirestore(clientId);
+    // 3. Update React states immediately for instant UI feedback
+    setClients((prev) => prev.filter((c) => c.id !== clientId));
+    setDailyPlans((prev) => prev.filter((p) => p.clientId !== clientId));
 
-    // 3. Delete any associated daily plans from Firestore
-    const associatedPlans = dailyPlans.filter((p) => p.clientId === clientId);
-    associatedPlans.forEach((p) => {
-      deletePlanFromFirestore(p.id);
-    });
-
-    // 4. Update React states immediately
-    setClients(storageService.getClients());
-    setDailyPlans(
-      storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
-    );
-
-    // 5. Close any open detail or payment modal if this client was selected
+    // 4. Close any open detail or payment modal if this client was selected
     if (selectedClient?.id === clientId) {
       setSelectedClient(null);
       setIsDetailModalOpen(false);
@@ -365,6 +367,9 @@ export default function App() {
       setIsFormModalOpen(false);
     }
 
+    // 5. Delete client document and cascade plans from Firestore (await confirmation)
+    await deleteClientFromFirestore(clientId);
+
     // 6. Record audit log
     addSystemLog({
       userId: currentUsername,
@@ -372,14 +377,14 @@ export default function App() {
       actionType: 'mijoz_ochirish',
       actionTitle: `Mijoz va unga oid barcha ma'lumotlar to'liq o'chirildi: ${client?.name || clientId}`,
       details: client
-        ? `Nomi: ${client.name}, Telefon: ${client.phone}, Manzil: ${client.address || ''}, Qarz: ${client.currentDebt || 0} so'm, Bog'liq rejalar: ${associatedPlans.length} ta`
+        ? `Nomi: ${client.name}, Telefon: ${client.phone}, Manzil: ${client.address || ''}, Qarz: ${client.currentDebt || 0} so'm`
         : `ID: ${clientId}`,
     });
 
     showToast(
       client
-        ? `"${client.name}" va unga oid barcha ma'lumotlar to'liq o'chirildi.`
-        : "Mijoz va ma'lumotlari o'chirildi."
+        ? `"${client.name}" va unga oid barcha ma'lumotlar bazadan to'liq o'chirildi.`
+        : "Mijoz va ma'lumotlari bazadan to'liq o'chirildi."
     );
   };
 

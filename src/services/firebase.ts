@@ -16,6 +16,7 @@ import {
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Client, DailyPlanItem, WarehouseProduct, SystemLog } from '../types';
+import { getDeletedClientIds, markClientAsDeleted } from './storage';
 
 // Initialize Firebase App singleton
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -323,11 +324,28 @@ export async function syncClientToFirestore(client: Client): Promise<void> {
   }
 }
 
-export async function deleteClientFromFirestore(clientId: string): Promise<void> {
+export async function deleteClientFromFirestore(clientId: string): Promise<boolean> {
+  markClientAsDeleted(clientId);
   try {
     await deleteDoc(doc(db, 'clients', clientId));
+
+    // Cascade delete any daily plans for this client from Firestore
+    try {
+      const plansSnap = await getDocs(collection(db, 'dailyPlans'));
+      for (const pDoc of plansSnap.docs) {
+        const pData = pDoc.data() as DailyPlanItem;
+        if (pData.clientId === clientId) {
+          await deleteDoc(pDoc.ref);
+        }
+      }
+    } catch {
+      // ignore plan cascade errors
+    }
+
+    return true;
   } catch (e) {
-    console.warn('Deferred client delete from Firestore', e);
+    console.error('Failed to delete client from Firestore:', e);
+    return false;
   }
 }
 
@@ -379,11 +397,17 @@ export function subscribeToFirestoreData(callbacks: {
     const unsub = onSnapshot(
       collection(db, 'clients'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const list: Client[] = [];
-          snapshot.forEach((d) => list.push(d.data() as Client));
-          callbacks.onClientsChange?.(list);
-        }
+        const deletedIds = getDeletedClientIds();
+        const list: Client[] = [];
+        snapshot.forEach((d) => {
+          if (!deletedIds.has(d.id)) {
+            list.push(d.data() as Client);
+          } else {
+            // Document was marked deleted, ensure purged in Firestore too
+            deleteDoc(d.ref).catch(() => {});
+          }
+        });
+        callbacks.onClientsChange?.(list);
       },
       (error) => {
         console.warn('Clients snapshot listener error (offline mode active):', error.message);
@@ -397,11 +421,17 @@ export function subscribeToFirestoreData(callbacks: {
     const unsub = onSnapshot(
       collection(db, 'dailyPlans'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const list: DailyPlanItem[] = [];
-          snapshot.forEach((d) => list.push(d.data() as DailyPlanItem));
-          callbacks.onPlansChange?.(list);
-        }
+        const deletedIds = getDeletedClientIds();
+        const list: DailyPlanItem[] = [];
+        snapshot.forEach((d) => {
+          const item = d.data() as DailyPlanItem;
+          if (!deletedIds.has(item.clientId)) {
+            list.push(item);
+          } else {
+            deleteDoc(d.ref).catch(() => {});
+          }
+        });
+        callbacks.onPlansChange?.(list);
       },
       (error) => {
         console.warn('Plans snapshot listener error (offline mode active):', error.message);
@@ -453,22 +483,33 @@ export function subscribeToFirestoreData(callbacks: {
 }
 
 // Initial full sync push: upload existing local items to Firestore if remote is empty
+const BOOTSTRAP_FLAG_KEY = 'savdo_firestore_bootstrapped_v1';
+
 export async function bootstrapFirestoreData(
   localClients: Client[],
   localPlans: DailyPlanItem[],
   localWarehouse: WarehouseProduct[]
 ): Promise<void> {
   try {
+    // If already bootstrapped once in this environment, never recreate deleted clients!
+    if (localStorage.getItem(BOOTSTRAP_FLAG_KEY)) {
+      return;
+    }
+
+    const deletedIds = getDeletedClientIds();
+    const toUploadClients = localClients.filter((c) => !deletedIds.has(c.id));
+
     const clientSnap = await getDocs(collection(db, 'clients'));
-    if (clientSnap.empty && localClients.length > 0) {
-      for (const c of localClients) {
+    if (clientSnap.empty && toUploadClients.length > 0) {
+      for (const c of toUploadClients) {
         await setDoc(doc(db, 'clients', c.id), c);
       }
     }
 
+    const toUploadPlans = localPlans.filter((p) => !deletedIds.has(p.clientId));
     const plansSnap = await getDocs(collection(db, 'dailyPlans'));
-    if (plansSnap.empty && localPlans.length > 0) {
-      for (const p of localPlans) {
+    if (plansSnap.empty && toUploadPlans.length > 0) {
+      for (const p of toUploadPlans) {
         await setDoc(doc(db, 'dailyPlans', p.id), p);
       }
     }
@@ -479,6 +520,8 @@ export async function bootstrapFirestoreData(
         await setDoc(doc(db, 'warehouseProducts', w.id), w);
       }
     }
+
+    localStorage.setItem(BOOTSTRAP_FLAG_KEY, 'true');
   } catch (err) {
     console.warn('Bootstrap upload deferred to offline persistence queue', err);
   }

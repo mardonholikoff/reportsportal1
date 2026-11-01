@@ -16,6 +16,29 @@ const FIREBASE_CONFIG_KEY = 'savdo_firebase_config_v1';
 const SYNC_TIMESTAMP_KEY = 'savdo_last_synced_at';
 const DAILY_PLANS_KEY = 'savdo_daily_plans_v1';
 const WAREHOUSE_KEY = 'savdo_warehouse_products_v1';
+export const DELETED_CLIENT_IDS_KEY = 'savdo_deleted_client_ids_v1';
+export const APP_INITIALIZED_KEY = 'savdo_app_initialized_v1';
+
+export function getDeletedClientIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(DELETED_CLIENT_IDS_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function markClientAsDeleted(clientId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const ids = getDeletedClientIds();
+    ids.add(clientId);
+    localStorage.setItem(DELETED_CLIENT_IDS_KEY, JSON.stringify(Array.from(ids)));
+  } catch (e) {
+    console.error('Failed to mark client as deleted', e);
+  }
+}
 
 const INITIAL_WAREHOUSE_PRODUCTS: WarehouseProduct[] = [
   {
@@ -222,43 +245,50 @@ class StorageService {
 
   constructor() {
     if (typeof window !== 'undefined') {
-      const existing = localStorage.getItem(STORAGE_KEY);
-      if (!existing) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_CLIENTS));
+      const isInit = localStorage.getItem(APP_INITIALIZED_KEY);
+      if (!isInit) {
+        localStorage.setItem(APP_INITIALIZED_KEY, 'true');
+        const existing = localStorage.getItem(STORAGE_KEY);
+        if (!existing) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_CLIENTS));
+        }
       } else {
         // Upgrade existing records if createdBy or logs missing
         try {
-          const parsed: Client[] = JSON.parse(existing);
-          let modified = false;
-          parsed.forEach((c) => {
-            if (!c.createdBy) {
-              c.createdBy = 'adminc';
-              modified = true;
+          const existing = localStorage.getItem(STORAGE_KEY);
+          if (existing) {
+            const parsed: Client[] = JSON.parse(existing);
+            let modified = false;
+            parsed.forEach((c) => {
+              if (!c.createdBy) {
+                c.createdBy = 'adminc';
+                modified = true;
+              }
+              if (!c.region || !c.district) {
+                const parsedLoc = parseLegacyAddress(c.address);
+                if (!c.region && parsedLoc.region) c.region = parsedLoc.region;
+                if (!c.district && parsedLoc.district) c.district = parsedLoc.district;
+                if (!c.landmark && parsedLoc.landmark) c.landmark = parsedLoc.landmark;
+                modified = true;
+              }
+              if (!c.logs) {
+                c.logs = [
+                  {
+                    id: 'log_' + c.id,
+                    clientId: c.id,
+                    author: c.createdBy || 'adminc',
+                    timestamp: c.createdAt || new Date().toISOString(),
+                    type: 'created',
+                    title: "Mijoz qo'shildi",
+                    details: `Tizimga ${c.createdBy || 'adminc'} tomonidan qo'shildi`,
+                  },
+                ];
+                modified = true;
+              }
+            });
+            if (modified) {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
             }
-            if (!c.region || !c.district) {
-              const parsedLoc = parseLegacyAddress(c.address);
-              if (!c.region && parsedLoc.region) c.region = parsedLoc.region;
-              if (!c.district && parsedLoc.district) c.district = parsedLoc.district;
-              if (!c.landmark && parsedLoc.landmark) c.landmark = parsedLoc.landmark;
-              modified = true;
-            }
-            if (!c.logs) {
-              c.logs = [
-                {
-                  id: 'log_' + c.id,
-                  clientId: c.id,
-                  author: c.createdBy || 'adminc',
-                  timestamp: c.createdAt || new Date().toISOString(),
-                  type: 'created',
-                  title: "Mijoz qo'shildi",
-                  details: `Tizimga ${c.createdBy || 'adminc'} tomonidan qo'shildi`,
-                },
-              ];
-              modified = true;
-            }
-          });
-          if (modified) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
           }
         } catch {
           // ignore
@@ -278,30 +308,36 @@ class StorageService {
   }
 
   public getClients(): Client[] {
-    if (typeof window === 'undefined') return INITIAL_CLIENTS;
+    if (typeof window === 'undefined') return [];
     try {
       const data = localStorage.getItem(STORAGE_KEY);
-      if (!data) return INITIAL_CLIENTS;
+      const isInit = localStorage.getItem(APP_INITIALIZED_KEY);
+      if (!data) {
+        return isInit ? [] : INITIAL_CLIENTS;
+      }
+      const deletedIds = getDeletedClientIds();
       const parsed: Client[] = JSON.parse(data);
-      return parsed.map((c) => {
-        let region = c.region;
-        let district = c.district;
-        let landmark = c.landmark;
-        if (!region || !district) {
-          const parsedLoc = parseLegacyAddress(c.address);
-          if (!region) region = parsedLoc.region;
-          if (!district) district = parsedLoc.district;
-          if (!landmark) landmark = parsedLoc.landmark;
-        }
-        return {
-          ...c,
-          region,
-          district,
-          landmark,
-          createdBy: c.createdBy || 'adminc',
-          logs: c.logs || [],
-        };
-      });
+      return parsed
+        .filter((c) => !deletedIds.has(c.id))
+        .map((c) => {
+          let region = c.region;
+          let district = c.district;
+          let landmark = c.landmark;
+          if (!region || !district) {
+            const parsedLoc = parseLegacyAddress(c.address);
+            if (!region) region = parsedLoc.region;
+            if (!district) district = parsedLoc.district;
+            if (!landmark) landmark = parsedLoc.landmark;
+          }
+          return {
+            ...c,
+            region,
+            district,
+            landmark,
+            createdBy: c.createdBy || 'adminc',
+            logs: c.logs || [],
+          };
+        });
     } catch (e) {
       console.error('Failed to parse clients:', e);
       return [];
@@ -392,6 +428,7 @@ class StorageService {
   }
 
   public deleteClient(id: string): boolean {
+    markClientAsDeleted(id);
     const clients = this.getClients();
     const filtered = clients.filter((c) => c.id !== id);
     if (filtered.length === clients.length) return false;
