@@ -18,6 +18,7 @@ import {
   Clock,
   Activity,
   History,
+  Lock,
 } from 'lucide-react';
 
 export interface PlanSelectionItem {
@@ -632,6 +633,16 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                             </>
                           )}
                         </div>
+
+                        {/* Oxirgi reja yopilish sababi */}
+                        {client.lastPlanCloseReason && (
+                          <div className="mt-1 flex items-center gap-1.5 text-[10px] font-semibold text-rose-900 bg-rose-50 px-2 py-0.5 rounded-lg border border-rose-200">
+                            <Lock className="w-2.5 h-2.5 text-rose-700 shrink-0" />
+                            <span className="truncate">
+                              Oxirgi reja yopilgan: "{client.lastPlanCloseReason}"
+                            </span>
+                          </div>
+                        )}
 
                         {/* Given Products with Delivery Dates */}
                         {client.products && client.products.length > 0 ? (

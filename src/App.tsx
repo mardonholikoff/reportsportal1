@@ -19,6 +19,8 @@ import {
   SystemLog,
   SystemLogMonthlyArchiveRecord,
   SystemLogPeriodArchive,
+  MonthlyPlan,
+  MonthlyPlanTarget,
 } from './types';
 import { LoginView } from './components/LoginView';
 import { Navbar } from './components/Navbar';
@@ -38,6 +40,9 @@ import { AdminSystemLogsTable } from './components/AdminSystemLogsTable';
 import { WarehouseIntakeModal } from './components/WarehouseIntakeModal';
 import { WarehouseInventoryModal } from './components/WarehouseInventoryModal';
 import { AgentWarehouseTable } from './components/AgentWarehouseTable';
+import { MonthlyPlanProgressCard } from './components/MonthlyPlanProgressCard';
+import { CreateMonthlyPlanModal } from './components/CreateMonthlyPlanModal';
+import { AddWarehouseDebtModal } from './components/AddWarehouseDebtModal';
 import {
   addSystemLog,
   getLocalSystemLogs,
@@ -53,6 +58,7 @@ import {
   deletePlanFromFirestore,
   syncWarehouseProductToFirestore,
   deleteWarehouseProductFromFirestore,
+  syncMonthlyPlanToFirestore,
 } from './services/firebase';
 import {
   CheckCircle2,
@@ -117,6 +123,16 @@ export default function App() {
   const [isWarehouseModalOpen, setIsWarehouseModalOpen] = useState(false);
   const [isWarehouseInventoryModalOpen, setIsWarehouseInventoryModalOpen] = useState(false);
 
+  // Monthly Plans state (1 oylik qarz undirish rejalari)
+  const [monthlyPlans, setMonthlyPlans] = useState<MonthlyPlan[]>(() =>
+    storageService.getMonthlyPlans()
+  );
+  const [isCreateMonthlyPlanOpen, setIsCreateMonthlyPlanOpen] = useState(false);
+
+  // Add warehouse debt modal state
+  const [isAddWarehouseDebtOpen, setIsAddWarehouseDebtOpen] = useState(false);
+  const [warehouseDebtClient, setWarehouseDebtClient] = useState<Client | null>(null);
+
   // Toast feedback
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -127,6 +143,102 @@ export default function App() {
 
   const isAdmin = user?.role === 'admin';
   const isAgent = user?.role === 'agent';
+
+  // Active monthly plan for tracker
+  const activeMonthlyPlan = useMemo(() => {
+    return storageService.getActiveMonthlyPlan(isAgent ? user?.username : undefined);
+  }, [monthlyPlans, isAgent, user]);
+
+  // Handle Save Warehouse Debt for client (adminc and adminc1)
+  const handleSaveWarehouseDebt = (
+    clientId: string,
+    amount: number,
+    currency: string,
+    note?: string
+  ) => {
+    const currentUsername = user?.username || 'adminc';
+    const client = clients.find((c) => c.id === clientId);
+    if (!client) return;
+
+    const oldDebt = client.currentDebt;
+    const newDebt = oldDebt + amount;
+    const nowStr = new Date().toISOString();
+    const clientLogs = client.logs || [];
+
+    const logDetail = `${currentUsername} tomonidan ombordagi mahsulotlar hisobidan qarzdorlik qo'shildi: ${new Intl.NumberFormat('uz-UZ').format(amount)} ${currency}.${note ? ' Izoh: ' + note : ''}`;
+
+    clientLogs.unshift({
+      id: `log_${Date.now()}_whdebt`,
+      clientId: client.id,
+      author: currentUsername,
+      timestamp: nowStr,
+      type: 'payment',
+      title: `Ombordagi qarzdorlik qo'shildi (${currency})`,
+      details: logDetail,
+      amountChanged: amount,
+    });
+
+    const updatedClient = storageService.updateClient(client.id, {
+      currentDebt: newDebt,
+      logs: clientLogs,
+      updatedAt: nowStr,
+    });
+
+    if (updatedClient) {
+      setClients(storageService.getClients());
+      syncClientToFirestore(updatedClient);
+      addSystemLog({
+        userId: currentUsername,
+        userRole: 'admin',
+        actionType: 'ombor_kirimi',
+        actionTitle: `Ombordagi qarzdorlik qo'shildi: ${client.name}`,
+        details: `${new Intl.NumberFormat('uz-UZ').format(amount)} ${currency} qarz kiritildi. Mijoz: ${client.name}`,
+        metadata: {
+          clientId: client.id,
+          amount,
+          currency,
+          previousDebt: oldDebt,
+          newDebt,
+        },
+      });
+      showToast(`Mijozga ${new Intl.NumberFormat('uz-UZ').format(amount)} ${currency} ombor qarzdorligi qo'shildi!`);
+    }
+  };
+
+  // Handle Save 1-Month Debt Collection Plan
+  const handleSaveMonthlyPlan = (
+    targets: MonthlyPlanTarget[],
+    startDate: string,
+    endDate: string,
+    notes?: string
+  ) => {
+    const currentUsername = user?.username || 'agentp1';
+    const newPlan = storageService.addMonthlyPlan({
+      agentUsername: currentUsername,
+      targets,
+      startDate,
+      endDate,
+      createdBy: currentUsername,
+      notes,
+      status: 'active',
+    });
+    setMonthlyPlans(storageService.getMonthlyPlans());
+    syncMonthlyPlanToFirestore(newPlan);
+    addSystemLog({
+      userId: currentUsername,
+      userRole: user?.role || 'agent',
+      actionType: 'reja_tuzish',
+      actionTitle: `1 oylik qarz undirish rejasi tuzildi (${currentUsername})`,
+      details: `Muddat: ${startDate} dan ${endDate} gacha. Maqsadlar: ${targets.map((t) => `${new Intl.NumberFormat('uz-UZ').format(t.targetAmount)} ${t.currency}`).join(', ')}`,
+      metadata: {
+        planId: newPlan.id,
+        targets,
+        startDate,
+        endDate,
+      },
+    });
+    showToast("1 oylik qarz undirish rejasi muvaffaqiyatli saqlandi!");
+  };
 
   // Save Warehouse Intake Product
   // Save Warehouse Intake Product
@@ -518,21 +630,29 @@ export default function App() {
     setPendingSyncCount(storageService.getSyncQueue().length);
   };
 
-  // Handle Close Plan Item (Permanent lock for agent)
-  const handleClosePlanItem = (planItemId: string) => {
+  // Handle Close Plan Item (Permanent lock for agent with reason)
+  const handleClosePlanItem = (planItemId: string, closeReason?: string) => {
     const currentUsername = user?.username || 'agentp1';
-    const success = storageService.closeDailyPlanItem(planItemId, currentUsername);
+    const reason = closeReason?.trim() || "Amallar yakunlandi";
+    const success = storageService.closeDailyPlanItem(planItemId, currentUsername, reason);
     if (success) {
       const updatedPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
       if (updatedPlan) syncPlanToFirestore(updatedPlan);
+
+      const targetClientId = updatedPlan?.clientId;
+      if (targetClientId) {
+        const updatedClient = storageService.getClientById(targetClientId);
+        if (updatedClient) syncClientToFirestore(updatedClient);
+      }
+
       addSystemLog({
         userId: currentUsername,
         userRole: 'agent',
-        actionType: 'amal_bajarish',
+        actionType: 'reja_yopish',
         actionTitle: `Mijoz rejasi yopildi`,
-        details: `Reja ID: ${planItemId}. Agent tomonidan amallar yakunlandi.`,
+        details: `Reja ID: ${planItemId}. Mijoz: ${updatedPlan?.clientName || ''}. Agent @${currentUsername} tomonidan amallar yakunlandi. Yopilish sababi: ${reason}`,
       });
-      showToast("Mijoz bo'yicha reja muvaffaqiyatli yopildi. Amallar yakunlandi.");
+      showToast(`Mijoz bo'yicha reja yopildi. Sabab: ${reason}`);
       setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
       setClients(storageService.getClients());
     }

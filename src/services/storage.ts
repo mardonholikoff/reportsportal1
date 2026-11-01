@@ -7,6 +7,8 @@ import {
   ProductItem,
   WarehouseProduct,
   DeliveryPaymentInfo,
+  MonthlyPlan,
+  MonthlyPlanTarget,
 } from '../types';
 import { parseLegacyAddress, formatAddress } from '../utils/location';
 
@@ -16,6 +18,7 @@ const FIREBASE_CONFIG_KEY = 'savdo_firebase_config_v1';
 const SYNC_TIMESTAMP_KEY = 'savdo_last_synced_at';
 const DAILY_PLANS_KEY = 'savdo_daily_plans_v1';
 const WAREHOUSE_KEY = 'savdo_warehouse_products_v1';
+const MONTHLY_PLANS_KEY = 'savdo_monthly_plans_v1';
 export const DELETED_CLIENT_IDS_KEY = 'savdo_deleted_client_ids_v1';
 export const APP_INITIALIZED_KEY = 'savdo_app_initialized_v1';
 
@@ -825,16 +828,19 @@ class StorageService {
   }
 
   // Rejadagi mijoz bo'yicha amallarni to'liq yakunlash (Oxirgi marta yopish)
-  public closeDailyPlanItem(planItemId: string, author: string): boolean {
+  public closeDailyPlanItem(planItemId: string, author: string, closeReason?: string): boolean {
     const plans = this.getDailyPlans();
     const planIndex = plans.findIndex((p) => p.id === planItemId);
     if (planIndex === -1) return false;
 
     const plan = plans[planIndex];
     const nowStr = new Date().toISOString();
+    const finalReason = closeReason?.trim() || "Amallar yakunlandi";
     plan.isClosed = true;
     plan.status = 'yopildi';
     plan.closedAt = nowStr;
+    plan.closedBy = author;
+    plan.closeReason = finalReason;
     plans[planIndex] = plan;
     this.saveDailyPlans(plans);
 
@@ -849,10 +855,13 @@ class StorageService {
         timestamp: nowStr,
         type: 'visit_action',
         title: 'Reja yakunlandi va yopildi',
-        details: `${author} tomonidan ushbu mijoz bo'yicha amallar yakunlandi va reja to'liq yopildi.`,
+        details: `${author} tomonidan ushbu mijoz bo'yicha amallar yakunlandi va reja to'liq yopildi. Yopilish sababi: ${finalReason}`,
       });
       this.updateClient(client.id, {
         logs: clientLogs,
+        lastPlanClosedAt: nowStr,
+        lastPlanCloseReason: finalReason,
+        lastPlanClosedBy: author,
         updatedAt: nowStr,
       });
     }
@@ -1115,6 +1124,222 @@ class StorageService {
     }
 
     this.saveWarehouseProducts(warehouse);
+  }
+
+  // ==========================================
+  // MONTHLY DEBT RECOVERY PLANS (1 oylik reja)
+  // ==========================================
+  public getMonthlyPlans(): MonthlyPlan[] {
+    try {
+      const data = localStorage.getItem(MONTHLY_PLANS_KEY);
+      if (!data) {
+        // Seed default 1-month plan for the current month
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+        const initialPlan: MonthlyPlan = {
+          id: 'month_plan_seed_1',
+          agentUsername: 'agentp1',
+          targets: [
+            { currency: 'USD', targetAmount: 100000 },
+          ],
+          startDate: startOfMonth,
+          endDate: endOfMonth,
+          createdAt: new Date().toISOString(),
+          createdBy: 'agentp1',
+          notes: 'Mijozlardan qarz mablag\'larini undirish bo\'yicha 1 oylik maqsadli reja',
+          status: 'active',
+        };
+        const list = [initialPlan];
+        localStorage.setItem(MONTHLY_PLANS_KEY, JSON.stringify(list));
+        return list;
+      }
+      return JSON.parse(data);
+    } catch {
+      return [];
+    }
+  }
+
+  public saveMonthlyPlans(plans: MonthlyPlan[]): void {
+    try {
+      localStorage.setItem(MONTHLY_PLANS_KEY, JSON.stringify(plans));
+      this.notify();
+    } catch (e) {
+      console.error('Failed to save monthly plans:', e);
+    }
+  }
+
+  public addMonthlyPlan(
+    planData: Omit<MonthlyPlan, 'id' | 'createdAt'>
+  ): MonthlyPlan {
+    const plans = this.getMonthlyPlans();
+    // Archive or complete previous active plans for this agent if overlapping
+    const updatedPlans = plans.map((p) => {
+      if (p.agentUsername === planData.agentUsername && p.status === 'active') {
+        return { ...p, status: 'completed' as const };
+      }
+      return p;
+    });
+
+    const newPlan: MonthlyPlan = {
+      ...planData,
+      id: `mp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: new Date().toISOString(),
+    };
+    updatedPlans.unshift(newPlan);
+    this.saveMonthlyPlans(updatedPlans);
+    return newPlan;
+  }
+
+  public getActiveMonthlyPlan(agentUsername?: string): MonthlyPlan | null {
+    const plans = this.getMonthlyPlans();
+    if (agentUsername && agentUsername.startsWith('agent')) {
+      const found = plans.find((p) => p.agentUsername === agentUsername && p.status === 'active');
+      if (found) return found;
+    }
+    // Return latest active plan
+    const active = plans.find((p) => p.status === 'active');
+    return active || (plans.length > 0 ? plans[0] : null);
+  }
+
+  // Calculate actual collected debt payments within the plan's timeframe
+  public calculateMonthlyPlanProgress(plan: MonthlyPlan) {
+    const startDateObj = new Date(plan.startDate + 'T00:00:00');
+    const endDateObj = new Date(plan.endDate + 'T23:59:59');
+
+    // Collect all payment transactions occurring between startDate and endDate
+    type PaymentItem = {
+      amount: number;
+      currency: string;
+      timestamp: string;
+      source: string;
+    };
+    const paymentItems: PaymentItem[] = [];
+
+    // 1. From Daily Plans actions
+    const dailyPlans = this.getDailyPlans();
+    dailyPlans.forEach((dp) => {
+      if (dp.actionsHistory && dp.actionsHistory.length > 0) {
+        dp.actionsHistory.forEach((act) => {
+          if (act.financialAction && act.financialAction.amount > 0) {
+            const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
+            if (actTime >= startDateObj && actTime <= endDateObj) {
+              paymentItems.push({
+                amount: act.financialAction.amount,
+                currency: act.financialAction.currency || 'USD',
+                timestamp: act.timestamp,
+                source: `dailyPlan_${dp.id}`,
+              });
+            }
+          }
+          if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
+            const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
+            if (actTime >= startDateObj && actTime <= endDateObj) {
+              paymentItems.push({
+                amount: act.deliveryPayment.paidAmount,
+                currency: act.deliveryPayment.currency || 'USD',
+                timestamp: act.timestamp,
+                source: `deliveryPay_${dp.id}`,
+              });
+            }
+          }
+        });
+      } else {
+        if (dp.financialAction && dp.financialAction.amount > 0 && dp.completedAt) {
+          const compTime = new Date(dp.completedAt);
+          if (compTime >= startDateObj && compTime <= endDateObj) {
+            paymentItems.push({
+              amount: dp.financialAction.amount,
+              currency: dp.financialAction.currency || 'USD',
+              timestamp: dp.completedAt,
+              source: `dailyPlanSingle_${dp.id}`,
+            });
+          }
+        }
+      }
+    });
+
+    // 2. From Client audit logs for independent payments (e.g. Quick payments)
+    const clients = this.getClients();
+    clients.forEach((c) => {
+      (c.logs || []).forEach((l) => {
+        // Exclude logs that were generated automatically from daily plan financial actions (ending with _fin)
+        if (l.type === 'payment' && l.amountChanged && l.amountChanged > 0 && !l.id.endsWith('_fin')) {
+          const logTime = new Date(l.timestamp);
+          if (logTime >= startDateObj && logTime <= endDateObj) {
+            // Determine currency from title or details
+            let curr = 'USD';
+            const text = `${l.title} ${l.details}`.toLowerCase();
+            if (text.includes("so'm") || text.includes('uzs') || text.includes('som')) {
+              curr = "so'm";
+            } else if (text.includes('usd') || text.includes('$') || text.includes('dollar')) {
+              curr = 'USD';
+            }
+            paymentItems.push({
+              amount: l.amountChanged,
+              currency: curr,
+              timestamp: l.timestamp,
+              source: `clientLog_${l.id}`,
+            });
+          }
+        }
+      });
+    });
+
+    // Helper to check if currencies match
+    const currencyMatches = (c1: string, c2: string) => {
+      const norm1 = c1.trim().toLowerCase();
+      const norm2 = c2.trim().toLowerCase();
+      if (norm1 === norm2) return true;
+      const isSom1 = norm1 === "so'm" || norm1 === 'uzs' || norm1 === 'som';
+      const isSom2 = norm2 === "so'm" || norm2 === 'uzs' || norm2 === 'som';
+      if (isSom1 && isSom2) return true;
+      const isUsd1 = norm1 === 'usd' || norm1 === '$' || norm1 === 'dollar';
+      const isUsd2 = norm2 === 'usd' || norm2 === '$' || norm2 === 'dollar';
+      if (isUsd1 && isUsd2) return true;
+      return false;
+    };
+
+    // Calculate progress for each target
+    const targetResults = plan.targets.map((tgt) => {
+      const collected = paymentItems
+        .filter((item) => currencyMatches(item.currency, tgt.currency))
+        .reduce((sum, item) => sum + item.amount, 0);
+
+      const percentage = tgt.targetAmount > 0
+        ? Math.min(1000, Math.round(((collected / tgt.targetAmount) * 100) * 10) / 10)
+        : 0;
+
+      const remainingAmount = Math.max(0, tgt.targetAmount - collected);
+
+      return {
+        currency: tgt.currency,
+        targetAmount: tgt.targetAmount,
+        collectedAmount: collected,
+        percentage,
+        remainingAmount,
+      };
+    });
+
+    const totalTarget = targetResults.reduce((s, t) => s + t.targetAmount, 0);
+    const totalCollected = targetResults.reduce((s, t) => s + t.collectedAmount, 0);
+    const overallPercentage = totalTarget > 0
+      ? Math.min(1000, Math.round(((totalCollected / totalTarget) * 100) * 10) / 10)
+      : (targetResults[0]?.percentage || 0);
+
+    const nowMs = Date.now();
+    const endMs = endDateObj.getTime();
+    const daysLeft = Math.max(0, Math.ceil((endMs - nowMs) / (1000 * 3600 * 24)));
+    const isExpired = endMs < nowMs;
+
+    return {
+      targetResults,
+      overallPercentage,
+      daysLeft,
+      isExpired,
+      totalPaymentsCount: paymentItems.length,
+    };
   }
 }
 

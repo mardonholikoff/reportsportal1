@@ -41,6 +41,8 @@
         "status": { "type": "string", "enum": ["rejalashtirilgan", "bajarildi", "yopildi"] },
         "isClosed": { "type": "boolean" },
         "closedAt": { "type": "string", "maxLength": 100 },
+        "closeReason": { "type": "string", "maxLength": 1000 },
+        "closedBy": { "type": "string", "maxLength": 100 },
         "actionDone": { "type": "string", "enum": ["telefon qilindi", "joyiga borildi", "telefon qilindi + joyiga borildi"] },
         "financialAction": { "type": "object" },
         "productsDelivered": { "type": "array" },
@@ -102,6 +104,23 @@
         "createdAt": { "type": "string", "maxLength": 100 }
       },
       "required": ["id", "timestamp", "userId", "userRole", "actionType", "actionTitle"]
+    },
+    "MonthlyPlan": {
+      "title": "MonthlyPlan",
+      "description": "1 oylik qarz undirish rejasi",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "agentUsername": { "type": "string", "maxLength": 100 },
+        "targets": { "type": "array" },
+        "startDate": { "type": "string", "maxLength": 50 },
+        "endDate": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 100 },
+        "createdBy": { "type": "string", "maxLength": 100 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["active", "completed", "cancelled"] }
+      },
+      "required": ["id", "agentUsername", "targets", "startDate", "endDate", "status"]
     }
   },
   "firestore": {
@@ -120,6 +139,10 @@
     "/systemLogs/{logId}": {
       "schema": "SystemLog",
       "description": "Tizim audit va amallar loglari"
+    },
+    "/monthlyPlans/{planId}": {
+      "schema": "MonthlyPlan",
+      "description": "1 oylik qarz undirish rejalari"
     }
   }
 }

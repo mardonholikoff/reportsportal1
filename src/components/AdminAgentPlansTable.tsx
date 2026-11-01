@@ -604,14 +604,27 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                     {/* HOLATI: To'liq yopilmaguncha mijoz holati jarayonda deb va holati ko'rilsin va faqat to'liq yopilganda bajarildi deb oxirgi holati ko'rilsin */}
                     <td className="py-3 px-3.5 whitespace-nowrap">
                       {isClosed ? (
-                        <div>
+                        <div className="space-y-1">
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
                             <span>Bajarildi</span>
                           </span>
-                          <span className="text-[10px] text-neutral-500 block mt-0.5 font-medium">
+                          <span className="text-[10px] text-neutral-500 block font-medium">
                             Oxirgi holat: Yopilgan
                           </span>
+                          {item.closeReason && (
+                            <span
+                              className="text-[10px] text-rose-800 font-bold block max-w-[190px] truncate bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
+                              title={`Yopilish sababi: ${item.closeReason}`}
+                            >
+                              Sabab: {item.closeReason}
+                            </span>
+                          )}
+                          {item.closedBy && (
+                            <span className="text-[9px] text-neutral-400 block font-mono">
+                              @{item.closedBy} tomonidan
+                            </span>
+                          )}
                         </div>
                       ) : (
                         <div>
@@ -820,6 +833,24 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                   </span>
                 )}
               </div>
+
+              {/* Yopilish sababi */}
+              {inspectedPlan.closeReason && (
+                <div className="p-3.5 bg-rose-50/80 rounded-2xl border border-rose-200 text-xs space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold text-rose-900">
+                    <Lock className="w-4 h-4 text-rose-700 shrink-0" />
+                    <span>Reja yopilish sababi:</span>
+                  </div>
+                  <div className="text-neutral-900 font-semibold pl-5 text-[13px]">
+                    "{inspectedPlan.closeReason}"
+                  </div>
+                  {inspectedPlan.closedBy && (
+                    <div className="text-[10px] text-neutral-500 font-mono pl-5 pt-0.5">
+                      Yopgan mas'ul: @{inspectedPlan.closedBy} {inspectedPlan.closedAt ? `(${formatDate(inspectedPlan.closedAt)})` : ''}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Plan Note */}
               {inspectedPlan.planNote && (

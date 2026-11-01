@@ -40,6 +40,8 @@ import {
   Activity,
   PhoneCall,
   Check,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface Props {
@@ -666,6 +668,20 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [actionAgent, setActionAgent] = useState<string>('all');
   const [actionSearch, setActionSearch] = useState<string>('');
   const [isExportingActions, setIsExportingActions] = useState(false);
+  const [actionViewMode, setActionViewMode] = useState<'consolidated' | 'detailed'>('consolidated');
+  const [expandedClientKeys, setExpandedClientKeys] = useState<Set<string>>(new Set());
+
+  const toggleClientExpand = (key: string) => {
+    setExpandedClientKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
 
   // Extract all single operations/actions across plans
   const allActionItems = useMemo(() => {
@@ -915,6 +931,193 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     };
   }, [filteredActionItems]);
 
+  // Group / Consolidate actions by client for the selected date range
+  const consolidatedActionItems = useMemo(() => {
+    const map = new Map<string, {
+      key: string;
+      clientName: string;
+      clientPhone: string;
+      clientLocation: string;
+      totalActionsCount: number;
+      visitCount: number;
+      callCount: number;
+      callAndVisitCount: number;
+      actionSummaryLabel: string;
+      agents: string[];
+      lastTimestamp: string;
+      firstTimestamp: string;
+      receiptNaqd: number;
+      receiptKarta: number;
+      receiptBank: number;
+      receiptQr: number;
+      totalReceipt: number;
+      deliveredProductsDesc: string;
+      deliveredCreditSum: number;
+      deliveredPaidSum: number;
+      totalDeliveredSum: number;
+      returnedProductsDesc: string;
+      returnedCount: number;
+      notes: string[];
+      rawItems: ActionExportItem[];
+    }>();
+
+    filteredActionItems.forEach((item) => {
+      const nameKey = (item.clientName || 'Noma\'lum').trim().toLowerCase();
+      const phoneKey = (item.clientPhone || '').trim();
+      const groupKey = `${nameKey}___${phoneKey}`;
+
+      let group = map.get(groupKey);
+      if (!group) {
+        group = {
+          key: groupKey,
+          clientName: item.clientName || 'Noma\'lum',
+          clientPhone: item.clientPhone || '-',
+          clientLocation: item.clientLocation || '-',
+          totalActionsCount: 0,
+          visitCount: 0,
+          callCount: 0,
+          callAndVisitCount: 0,
+          actionSummaryLabel: '',
+          agents: [],
+          lastTimestamp: item.timestamp,
+          firstTimestamp: item.timestamp,
+          receiptNaqd: 0,
+          receiptKarta: 0,
+          receiptBank: 0,
+          receiptQr: 0,
+          totalReceipt: 0,
+          deliveredProductsDesc: '',
+          deliveredCreditSum: 0,
+          deliveredPaidSum: 0,
+          totalDeliveredSum: 0,
+          returnedProductsDesc: '',
+          returnedCount: 0,
+          notes: [],
+          rawItems: [],
+        };
+        map.set(groupKey, group);
+      }
+
+      group.totalActionsCount += 1;
+      group.rawItems.push(item);
+
+      if (item.timestamp) {
+        if (!group.lastTimestamp || item.timestamp > group.lastTimestamp) {
+          group.lastTimestamp = item.timestamp;
+        }
+        if (!group.firstTimestamp || item.timestamp < group.firstTimestamp) {
+          group.firstTimestamp = item.timestamp;
+        }
+      }
+
+      const act = (item.actionDone || '').toLowerCase();
+      if (act.includes('telefon') && act.includes('joyiga')) {
+        group.callAndVisitCount += 1;
+      } else if (act.includes('telefon')) {
+        group.callCount += 1;
+      } else if (act.includes('joyiga')) {
+        group.visitCount += 1;
+      }
+
+      if (item.agentUsername && !group.agents.includes(item.agentUsername)) {
+        group.agents.push(item.agentUsername);
+      }
+
+      group.receiptNaqd += item.receiptNaqd || 0;
+      group.receiptKarta += item.receiptKarta || 0;
+      group.receiptBank += item.receiptBank || 0;
+      group.receiptQr += item.receiptQr || 0;
+      group.totalReceipt += item.totalReceipt || 0;
+
+      group.deliveredCreditSum += item.deliveredCreditSum || 0;
+      group.deliveredPaidSum += item.deliveredPaidSum || 0;
+      group.totalDeliveredSum += item.totalDeliveredSum || 0;
+
+      group.returnedCount += item.returnedCount || 0;
+
+      if (item.note && item.note.trim() && !group.notes.includes(item.note.trim())) {
+        group.notes.push(item.note.trim());
+      }
+    });
+
+    const result: Array<{
+      key: string;
+      clientName: string;
+      clientPhone: string;
+      clientLocation: string;
+      totalActionsCount: number;
+      visitCount: number;
+      callCount: number;
+      callAndVisitCount: number;
+      actionSummaryLabel: string;
+      agents: string[];
+      lastTimestamp: string;
+      firstTimestamp: string;
+      receiptNaqd: number;
+      receiptKarta: number;
+      receiptBank: number;
+      receiptQr: number;
+      totalReceipt: number;
+      deliveredProductsDesc: string;
+      deliveredCreditSum: number;
+      deliveredPaidSum: number;
+      totalDeliveredSum: number;
+      returnedProductsDesc: string;
+      returnedCount: number;
+      notes: string[];
+      rawItems: ActionExportItem[];
+    }> = [];
+
+    map.forEach((group) => {
+      group.rawItems.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+
+      if (group.totalActionsCount === 1) {
+        group.actionSummaryLabel = group.rawItems[0].actionDone || 'Amal bajarilgan';
+      } else if (group.visitCount === group.totalActionsCount) {
+        group.actionSummaryLabel = `Joyiga borildi (${group.totalActionsCount} marta)`;
+      } else if (group.callCount === group.totalActionsCount) {
+        group.actionSummaryLabel = `Telefon qilindi (${group.totalActionsCount} marta)`;
+      } else if (group.callAndVisitCount === group.totalActionsCount) {
+        group.actionSummaryLabel = `Tel + Joyiga borildi (${group.totalActionsCount} marta)`;
+      } else {
+        const parts: string[] = [];
+        if (group.visitCount > 0) parts.push(`${group.visitCount}x Joyiga borildi`);
+        if (group.callCount > 0) parts.push(`${group.callCount}x Telefon qilindi`);
+        if (group.callAndVisitCount > 0) parts.push(`${group.callAndVisitCount}x Tel+Joyiga`);
+        const remaining = group.totalActionsCount - (group.visitCount + group.callCount + group.callAndVisitCount);
+        if (remaining > 0) parts.push(`${remaining}x Boshqa`);
+        group.actionSummaryLabel = `${group.totalActionsCount} marta (${parts.join(', ')})`;
+      }
+
+      const delSet = new Set<string>();
+      group.rawItems.forEach((ri) => {
+        if (ri.deliveredProductsDesc && ri.deliveredProductsDesc !== '-') {
+          ri.deliveredProductsDesc.split(',').forEach((p) => {
+            const clean = p.trim();
+            if (clean) delSet.add(clean);
+          });
+        }
+      });
+      group.deliveredProductsDesc = Array.from(delSet).join(', ');
+
+      const retSet = new Set<string>();
+      group.rawItems.forEach((ri) => {
+        if (ri.returnedProductsDesc && ri.returnedProductsDesc !== '-') {
+          ri.returnedProductsDesc.split(',').forEach((r) => {
+            const clean = r.trim();
+            if (clean) retSet.add(clean);
+          });
+        }
+      });
+      group.returnedProductsDesc = Array.from(retSet).join(', ');
+
+      result.push(group);
+    });
+
+    result.sort((a, b) => (b.lastTimestamp || '').localeCompare(a.lastTimestamp || ''));
+    return result;
+  }, [filteredActionItems]);
+
   // 4-Blok Excel Export with solid black borders
   const handleExportActionsExcel = async () => {
     try {
@@ -929,7 +1132,44 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           ? "Joyiga borilgan"
           : "Telefon + Joyiga borilgan";
 
-      await exportAgentActionsToExcel(filteredActionItems, dateTitle, actionLabel);
+      if (actionViewMode === 'consolidated') {
+        const exportList: ActionExportItem[] = consolidatedActionItems.map((g, idx) => ({
+          id: `cons_${idx}`,
+          timestamp: g.lastTimestamp,
+          agentUsername: g.agents.join(', '),
+          clientName: g.clientName,
+          clientPhone: g.clientPhone,
+          clientLocation: g.clientLocation,
+          actionDone: g.actionSummaryLabel,
+          actionCount: g.totalActionsCount,
+          receiptNaqd: g.receiptNaqd,
+          receiptKarta: g.receiptKarta,
+          receiptBank: g.receiptBank,
+          receiptQr: g.receiptQr,
+          totalReceipt: g.totalReceipt,
+          deliveredProductsDesc: g.deliveredProductsDesc,
+          deliveredCreditSum: g.deliveredCreditSum,
+          deliveredPaidSum: g.deliveredPaidSum,
+          totalDeliveredSum: g.totalDeliveredSum,
+          returnedProductsDesc: g.returnedProductsDesc,
+          returnedCount: g.returnedCount,
+          note: g.notes.join('; ') || '-',
+        }));
+        await exportAgentActionsToExcel(
+          exportList,
+          dateTitle,
+          actionLabel,
+          true,
+          filteredActionItems.length
+        );
+      } else {
+        await exportAgentActionsToExcel(
+          filteredActionItems,
+          dateTitle,
+          actionLabel,
+          false
+        );
+      }
     } catch (err) {
       console.error("Actions Excel export error:", err);
     } finally {
@@ -1828,6 +2068,60 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* 4-Blok Table Mode Switcher & Counter */}
+          <div className="flex items-center justify-between gap-3 px-4 py-3 bg-neutral-100/90 border-b border-neutral-200 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-neutral-800">Ko'rinish:</span>
+              <button
+                type="button"
+                onClick={() => setActionViewMode('consolidated')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  actionViewMode === 'consolidated'
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'bg-white text-neutral-700 border border-neutral-300 hover:bg-neutral-50'
+                }`}
+                title="Bitta mijozga belgilangan vaqt oralig'ida necha marta amal bajarilganini bitta qatorda jamlab ko'rsatish"
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Mijozlar bo'yicha jamlangan (bitta qilib)</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                    actionViewMode === 'consolidated' ? 'bg-white/20 text-white' : 'bg-rose-100 text-rose-900 font-bold'
+                  }`}
+                >
+                  {consolidatedActionItems.length} ta mijoz
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActionViewMode('detailed')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                  actionViewMode === 'detailed'
+                    ? 'bg-neutral-900 text-white shadow-xs'
+                    : 'bg-white text-neutral-700 border border-neutral-300 hover:bg-neutral-50'
+                }`}
+                title="Barcha amallarni har bir yozuv bo'yicha alohida ko'rish"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                <span>Barcha amallar alohida</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                    actionViewMode === 'detailed' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
+                  }`}
+                >
+                  {filteredActionItems.length} ta
+                </span>
+              </button>
+            </div>
+
+            <div className="text-[11px] text-neutral-600 font-medium hidden md:block">
+              {actionViewMode === 'consolidated'
+                ? `Mijozga bir nechta amal bajarilgan bo'lsa, bitta qatorda nechchi marta bajarilgani aks etadi`
+                : `Barcha amallar alohida yozuv sifatida aks etmoqda`}
+            </div>
+          </div>
+
           {/* 4-Blok Table */}
           {filteredActionItems.length === 0 ? (
             <div className="p-12 text-center space-y-2">
@@ -1839,7 +2133,407 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 Sana oralig'ini kengaytirib yoki boshqa amal turini tanlab ko'ring
               </p>
             </div>
+          ) : actionViewMode === 'consolidated' ? (
+            /* CONSOLIDATED VIEW: Bitta mijozga belgilangan vaqt oralig'ida nechchi marta amal bajarilgani bitta qilib */
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs whitespace-nowrap">
+                <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">
+                  <tr>
+                    <th className="py-3 px-3 w-10 text-center">#</th>
+                    <th className="py-3 px-3 min-w-[130px]">So'nggi amal vaqti</th>
+                    <th className="py-3 px-3 min-w-[110px]">Agent(lar)</th>
+                    <th className="py-3 px-3.5 min-w-[170px]">Mijoz va Telefon</th>
+                    <th className="py-3 px-3 min-w-[130px]">Hudud</th>
+                    <th className="py-3 px-3 min-w-[190px] bg-rose-100/70 text-rose-950">
+                      Amal turi va soni (Necha marta)
+                    </th>
+                    <th className="py-3 px-3.5 text-right bg-emerald-50/80 text-emerald-950 min-w-[140px]">
+                      Tushumlar (Turi)
+                    </th>
+                    <th className="py-3 px-3.5 text-left bg-rose-50/80 text-rose-950 min-w-[180px]">
+                      Berilgan mahsulotlar
+                    </th>
+                    <th className="py-3 px-3.5 text-right min-w-[120px]">
+                      Qarzga berildi
+                    </th>
+                    <th className="py-3 px-3.5 text-right min-w-[120px]">
+                      To'langan
+                    </th>
+                    <th className="py-3 px-3 min-w-[140px]">Qaytgan mahsulotlar</th>
+                    <th className="py-3 px-3 min-w-[130px] text-center">Tafsilot</th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-neutral-150">
+                  {consolidatedActionItems.map((item, index) => {
+                    const isExpanded = expandedClientKeys.has(item.key);
+
+                    return (
+                      <React.Fragment key={item.key}>
+                        <tr
+                          className={`hover:bg-rose-50/40 transition-colors ${
+                            index % 2 === 1 ? 'bg-neutral-50/40' : 'bg-white'
+                          } ${isExpanded ? 'bg-rose-50/20' : ''}`}
+                        >
+                          {/* # */}
+                          <td className="py-2.5 px-3 text-center font-mono text-neutral-400">
+                            {index + 1}
+                          </td>
+
+                          {/* So'nggi amal vaqti */}
+                          <td className="py-2.5 px-3">
+                            <div className="font-mono text-neutral-800 text-[11px] font-semibold">
+                              {item.lastTimestamp ? item.lastTimestamp.replace('T', ' ').slice(0, 16) : '-'}
+                            </div>
+                            {item.totalActionsCount > 1 && item.firstTimestamp && item.firstTimestamp !== item.lastTimestamp && (
+                              <div className="text-[10px] text-neutral-400 font-mono">
+                                1-amal: {item.firstTimestamp.replace('T', ' ').slice(0, 10)}
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Agent(lar) */}
+                          <td className="py-2.5 px-3">
+                            <div className="flex flex-wrap gap-1 max-w-[120px]">
+                              {item.agents.map((ag) => (
+                                <span
+                                  key={ag}
+                                  className="inline-block bg-neutral-100 border border-neutral-200 text-neutral-800 font-bold px-1.5 py-0.5 rounded text-[10px]"
+                                >
+                                  @{ag}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+
+                          {/* Mijoz va Telefon */}
+                          <td className="py-2.5 px-3.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-neutral-900">{item.clientName}</span>
+                              {item.totalActionsCount > 1 && (
+                                <span className="text-[10px] font-black bg-rose-100 text-rose-900 px-1.5 py-0.2 rounded-full border border-rose-300">
+                                  {item.totalActionsCount}x
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] font-mono text-neutral-500">{item.clientPhone}</div>
+                          </td>
+
+                          {/* Hudud */}
+                          <td className="py-2.5 px-3 text-neutral-700 truncate max-w-[140px]" title={item.clientLocation}>
+                            {item.clientLocation}
+                          </td>
+
+                          {/* Amal turi va nechchi marta bajarilgani */}
+                          <td className="py-2.5 px-3">
+                            {item.totalActionsCount > 1 ? (
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-1.5">
+                                  {item.visitCount === item.totalActionsCount ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-rose-100 text-rose-900 border border-rose-300 shadow-2xs">
+                                      <MapPin className="w-3.5 h-3.5 text-rose-700" />
+                                      <span>Joyiga borildi</span>
+                                      <span className="px-2 py-0.2 bg-rose-700 text-white rounded-full text-[10px] font-black tracking-wide">
+                                        {item.totalActionsCount} marta
+                                      </span>
+                                    </span>
+                                  ) : item.callCount === item.totalActionsCount ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-100 text-blue-900 border border-blue-300 shadow-2xs">
+                                      <Phone className="w-3.5 h-3.5 text-blue-700" />
+                                      <span>Telefon qilindi</span>
+                                      <span className="px-2 py-0.2 bg-blue-700 text-white rounded-full text-[10px] font-black tracking-wide">
+                                        {item.totalActionsCount} marta
+                                      </span>
+                                    </span>
+                                  ) : item.callAndVisitCount === item.totalActionsCount ? (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-purple-100 text-purple-900 border border-purple-300 shadow-2xs">
+                                      <Check className="w-3.5 h-3.5 text-purple-700" />
+                                      <span>Tel + Joyiga borildi</span>
+                                      <span className="px-2 py-0.2 bg-purple-700 text-white rounded-full text-[10px] font-black tracking-wide">
+                                        {item.totalActionsCount} marta
+                                      </span>
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold bg-neutral-900 text-white shadow-2xs">
+                                      <Layers className="w-3.5 h-3.5 text-rose-400" />
+                                      <span>Jami: {item.totalActionsCount} marta amal</span>
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Breakdown tags if mixed actions */}
+                                {item.visitCount !== item.totalActionsCount &&
+                                  item.callCount !== item.totalActionsCount &&
+                                  item.callAndVisitCount !== item.totalActionsCount && (
+                                    <div className="flex items-center gap-1 flex-wrap text-[10px]">
+                                      {item.visitCount > 0 && (
+                                        <span className="bg-rose-50 text-rose-900 border border-rose-200 px-1.5 py-0.2 rounded font-semibold">
+                                          {item.visitCount}x joyiga
+                                        </span>
+                                      )}
+                                      {item.callCount > 0 && (
+                                        <span className="bg-blue-50 text-blue-900 border border-blue-200 px-1.5 py-0.2 rounded font-semibold">
+                                          {item.callCount}x telefon
+                                        </span>
+                                      )}
+                                      {item.callAndVisitCount > 0 && (
+                                        <span className="bg-purple-50 text-purple-900 border border-purple-200 px-1.5 py-0.2 rounded font-semibold">
+                                          {item.callAndVisitCount}x tel+joyiga
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                              </div>
+                            ) : (
+                              /* 1 marta amal */
+                              <div>
+                                {item.rawItems[0]?.actionDone.toLowerCase().includes('telefon') &&
+                                item.rawItems[0]?.actionDone.toLowerCase().includes('joyiga') ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
+                                    <Check className="w-3 h-3 text-purple-700" />
+                                    <span>Tel + Joyiga borildi (1 marta)</span>
+                                  </span>
+                                ) : item.rawItems[0]?.actionDone.toLowerCase().includes('telefon') ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                                    <Phone className="w-3 h-3 text-blue-700" />
+                                    <span>Telefon qilindi (1 marta)</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-900 border border-rose-200">
+                                    <MapPin className="w-3 h-3 text-rose-700" />
+                                    <span>Joyiga borildi (1 marta)</span>
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Tushumlar */}
+                          <td className="py-2.5 px-3.5 text-right font-mono bg-emerald-50/30">
+                            {item.totalReceipt > 0 ? (
+                              <div className="space-y-0.5">
+                                <div className="font-extrabold text-emerald-800 text-xs">
+                                  +{formatMoney(item.totalReceipt)}
+                                </div>
+                                <div className="text-[10px] text-neutral-500">
+                                  {[
+                                    item.receiptNaqd > 0 ? `Naqd: ${formatMoney(item.receiptNaqd)}` : null,
+                                    item.receiptKarta > 0 ? `Karta: ${formatMoney(item.receiptKarta)}` : null,
+                                    item.receiptBank > 0 ? `Bank: ${formatMoney(item.receiptBank)}` : null,
+                                    item.receiptQr > 0 ? `QR: ${formatMoney(item.receiptQr)}` : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' | ')}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-neutral-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Berilgan mahsulotlar */}
+                          <td className="py-2.5 px-3.5 text-left bg-rose-50/20 max-w-[200px]">
+                            {item.deliveredProductsDesc ? (
+                              <div
+                                className="text-[11px] font-medium text-neutral-900 truncate"
+                                title={item.deliveredProductsDesc}
+                              >
+                                {item.deliveredProductsDesc}
+                              </div>
+                            ) : (
+                              <span className="text-neutral-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Qarzga berildi */}
+                          <td className="py-2.5 px-3.5 text-right font-mono font-bold">
+                            {item.deliveredCreditSum > 0 ? (
+                              <span className="text-rose-700 font-extrabold">
+                                {formatMoney(item.deliveredCreditSum)}
+                              </span>
+                            ) : (
+                              <span className="text-neutral-300">-</span>
+                            )}
+                          </td>
+
+                          {/* To'langan */}
+                          <td className="py-2.5 px-3.5 text-right font-mono font-bold">
+                            {item.deliveredPaidSum > 0 ? (
+                              <span className="text-emerald-700 font-extrabold">
+                                {formatMoney(item.deliveredPaidSum)}
+                              </span>
+                            ) : (
+                              <span className="text-neutral-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Qaytgan mahsulotlar */}
+                          <td className="py-2.5 px-3 max-w-[160px]">
+                            {item.returnedProductsDesc ? (
+                              <span
+                                className="text-[11px] font-semibold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 block truncate"
+                                title={item.returnedProductsDesc}
+                              >
+                                {item.returnedProductsDesc}
+                              </span>
+                            ) : (
+                              <span className="text-neutral-300">-</span>
+                            )}
+                          </td>
+
+                          {/* Tafsilot tugmasi (Accordion toggle) */}
+                          <td className="py-2.5 px-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => toggleClientExpand(item.key)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                                isExpanded
+                                  ? 'bg-rose-700 text-white shadow-2xs'
+                                  : 'text-rose-900 bg-rose-100 hover:bg-rose-200 border border-rose-300'
+                              }`}
+                              title="Ushbu mijozga qilingan barcha amallar tarixini ko'rish"
+                            >
+                              {isExpanded ? (
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              ) : (
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              )}
+                              <span>
+                                {isExpanded
+                                  ? 'Yopish'
+                                  : item.totalActionsCount > 1
+                                  ? `${item.totalActionsCount} ta amal`
+                                  : 'Tafsilot'}
+                              </span>
+                            </button>
+                          </td>
+                        </tr>
+
+                        {/* Accordion Expanded Sub-Table */}
+                        {isExpanded && (
+                          <tr className="bg-rose-50/30 border-y border-rose-200">
+                            <td colSpan={12} className="p-3 bg-neutral-50/80">
+                              <div className="rounded-xl border border-rose-200 bg-white p-3 shadow-xs space-y-2">
+                                <div className="flex items-center justify-between text-xs font-bold text-neutral-800 border-b border-neutral-200 pb-2">
+                                  <span className="flex items-center gap-1.5 text-rose-900">
+                                    <Activity className="w-4 h-4 text-rose-700" />
+                                    <span>
+                                      "{item.clientName}" mijoziga belgilangan vaqt oralig'ida bajarilgan{' '}
+                                      {item.totalActionsCount} ta amal tarixi:
+                                    </span>
+                                  </span>
+                                  <span className="text-[11px] text-neutral-500 font-normal">
+                                    Telefon: {item.clientPhone} | Manzil: {item.clientLocation}
+                                  </span>
+                                </div>
+
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-left text-xs">
+                                    <thead className="bg-neutral-100 text-neutral-700 text-[10px] uppercase font-bold border-b border-neutral-200">
+                                      <tr>
+                                        <th className="py-2 px-2.5 w-8">#</th>
+                                        <th className="py-2 px-2.5">Sana va Vaqt</th>
+                                        <th className="py-2 px-2.5">Agent</th>
+                                        <th className="py-2 px-2.5">Bajarilgan amal</th>
+                                        <th className="py-2 px-2.5 text-right">Tushum</th>
+                                        <th className="py-2 px-2.5">Berilgan mahsulotlar</th>
+                                        <th className="py-2 px-2.5 text-right">Qarzga</th>
+                                        <th className="py-2 px-2.5 text-right">To'langan</th>
+                                        <th className="py-2 px-2.5">Qaytgan mahsulot</th>
+                                        <th className="py-2 px-2.5">Hisobot izohi</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-neutral-150">
+                                      {item.rawItems.map((actItem, actIdx) => (
+                                        <tr key={actItem.id} className="hover:bg-neutral-50 text-[11px]">
+                                          <td className="py-2 px-2.5 text-neutral-400 font-mono">
+                                            {actIdx + 1}
+                                          </td>
+                                          <td className="py-2 px-2.5 font-mono text-neutral-700">
+                                            {actItem.timestamp
+                                              ? actItem.timestamp.replace('T', ' ').slice(0, 16)
+                                              : '-'}
+                                          </td>
+                                          <td className="py-2 px-2.5 font-bold text-neutral-800">
+                                            @{actItem.agentUsername}
+                                          </td>
+                                          <td className="py-2 px-2.5 font-semibold text-neutral-800">
+                                            <span className="inline-block px-2 py-0.5 rounded bg-neutral-100 border border-neutral-200">
+                                              {actItem.actionDone}
+                                            </span>
+                                          </td>
+                                          <td className="py-2 px-2.5 text-right font-mono font-bold text-emerald-800">
+                                            {actItem.totalReceipt > 0
+                                              ? `+${formatMoney(actItem.totalReceipt)}`
+                                              : '-'}
+                                          </td>
+                                          <td
+                                            className="py-2 px-2.5 text-neutral-700 max-w-[200px] truncate"
+                                            title={actItem.deliveredProductsDesc}
+                                          >
+                                            {actItem.deliveredProductsDesc || '-'}
+                                          </td>
+                                          <td className="py-2 px-2.5 text-right font-mono text-rose-700 font-semibold">
+                                            {actItem.deliveredCreditSum > 0
+                                              ? formatMoney(actItem.deliveredCreditSum)
+                                              : '-'}
+                                          </td>
+                                          <td className="py-2 px-2.5 text-right font-mono text-emerald-700 font-semibold">
+                                            {actItem.deliveredPaidSum > 0
+                                              ? formatMoney(actItem.deliveredPaidSum)
+                                              : '-'}
+                                          </td>
+                                          <td className="py-2 px-2.5 text-amber-800">
+                                            {actItem.returnedProductsDesc || '-'}
+                                          </td>
+                                          <td
+                                            className="py-2 px-2.5 text-neutral-600 max-w-[180px] truncate"
+                                            title={actItem.note}
+                                          >
+                                            {actItem.note || '-'}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+
+                {/* Table Footer: Total Row */}
+                <tfoot className="bg-rose-50/90 border-t-2 border-rose-200 font-bold sticky bottom-0 z-10">
+                  <tr>
+                    <td colSpan={6} className="py-3 px-3.5 text-right text-neutral-900 uppercase tracking-wider text-[11px]">
+                      JAMI ({consolidatedActionItems.length} ta mijoz, {filteredActionItems.length} ta amal):
+                    </td>
+                    <td className="py-3 px-3.5 text-right font-mono text-xs sm:text-sm text-emerald-950 font-extrabold bg-emerald-100/90">
+                      +{formatMoney(actionStats.totalReceipts)}
+                    </td>
+                    <td className="py-3 px-3.5 text-left text-[11px] text-neutral-700 font-normal">
+                      Jami mahsulot summasi: {formatMoney(actionStats.totalDeliveredSum)}
+                    </td>
+                    <td className="py-3 px-3.5 text-right font-mono text-xs sm:text-sm text-rose-950 font-extrabold">
+                      {formatMoney(actionStats.creditDelivSum)}
+                    </td>
+                    <td className="py-3 px-3.5 text-right font-mono text-xs sm:text-sm text-emerald-950 font-extrabold">
+                      {formatMoney(actionStats.paidDelivSum)}
+                    </td>
+                    <td className="py-3 px-3 text-neutral-800 font-mono text-[11px]">
+                      {actionStats.returnedProductsCount > 0 ? `${actionStats.returnedProductsCount} dona qaytdi` : '-'}
+                    </td>
+                    <td />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
           ) : (
+            /* DETAILED VIEW: Barcha amallar alohida */
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs whitespace-nowrap">
                 <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">

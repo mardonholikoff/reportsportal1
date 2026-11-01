@@ -15,7 +15,7 @@ import {
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { Client, DailyPlanItem, WarehouseProduct, SystemLog } from '../types';
+import { Client, DailyPlanItem, WarehouseProduct, SystemLog, MonthlyPlan } from '../types';
 import { getDeletedClientIds, markClientAsDeleted } from './storage';
 
 // Initialize Firebase App singleton
@@ -275,7 +275,8 @@ export async function addSystemLog(entry: {
     | 'mijoz_ochirish'
     | 'ombor_kirimi'
     | 'ombor_ochirish'
-    | 'oylik_arxivlash';
+    | 'oylik_arxivlash'
+    | 'reja_yopish';
   actionTitle: string;
   details: string;
   metadata?: Record<string, any>;
@@ -383,14 +384,48 @@ export async function deleteWarehouseProductFromFirestore(productId: string): Pr
   }
 }
 
+// Sync Monthly Plans
+export async function syncMonthlyPlanToFirestore(plan: MonthlyPlan): Promise<void> {
+  try {
+    await setDoc(doc(db, 'monthlyPlans', plan.id), plan);
+  } catch (e) {
+    console.warn('Deferred monthly plan sync to Firestore', e);
+  }
+}
+
+export async function deleteMonthlyPlanFromFirestore(planId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'monthlyPlans', planId));
+  } catch (e) {
+    console.warn('Deferred monthly plan delete from Firestore', e);
+  }
+}
+
 // Subscribe to real-time updates from Firestore
 export function subscribeToFirestoreData(callbacks: {
   onClientsChange?: (clients: Client[]) => void;
   onPlansChange?: (plans: DailyPlanItem[]) => void;
   onWarehouseChange?: (products: WarehouseProduct[]) => void;
   onLogsChange?: (logs: SystemLog[]) => void;
+  onMonthlyPlansChange?: (plans: MonthlyPlan[]) => void;
 }) {
   const unsubscribers: (() => void)[] = [];
+
+  // Monthly plans listener
+  if (callbacks.onMonthlyPlansChange) {
+    const unsub = onSnapshot(
+      collection(db, 'monthlyPlans'),
+      (snapshot) => {
+        const list: MonthlyPlan[] = [];
+        snapshot.forEach((d) => list.push(d.data() as MonthlyPlan));
+        callbacks.onMonthlyPlansChange?.(list);
+      },
+      (error) => {
+        console.warn('Monthly plans listener error (offline mode):', error.message);
+      }
+    );
+    unsubscribers.push(unsub);
+  }
 
   // Clients listener
   if (callbacks.onClientsChange) {

@@ -36,6 +36,9 @@ export interface Client {
   createdBy: string; // 'adminc' | 'agentp1'
   syncStatus: 'synced' | 'pending' | 'offline';
   logs?: ClientAuditLog[];
+  lastPlanClosedAt?: string;
+  lastPlanCloseReason?: string;
+  lastPlanClosedBy?: string;
 }
 
 export interface AuthUser {
@@ -94,6 +97,8 @@ export interface DailyPlanItem {
   status: 'rejalashtirilgan' | 'bajarildi' | 'yopildi';
   isClosed?: boolean;
   closedAt?: string;
+  closeReason?: string;
+  closedBy?: string;
   actionDone?: PlanActionType;
   financialAction?: {
     method: FinancialMethodType;
@@ -223,5 +228,19 @@ export interface SystemLogPeriodArchive {
   fileName: string;
   logs: SystemLog[];
 }
+export interface MonthlyPlanTarget {
+  currency: string;
+  targetAmount: number;
+}
 
-
+export interface MonthlyPlan {
+  id: string;
+  agentUsername: string; // 'agentp1' | 'agentc1' | 'adminc'
+  targets: MonthlyPlanTarget[]; // Valyuta va summa juftliklari
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  createdAt: string;
+  createdBy: string;
+  notes?: string;
+  status: 'active' | 'completed' | 'cancelled';
+}

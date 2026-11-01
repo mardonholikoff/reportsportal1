@@ -17,6 +17,8 @@ import {
   ArrowUpDown,
   Package,
   X,
+  Lock,
+  Warehouse,
 } from 'lucide-react';
 
 interface Props {
@@ -26,6 +28,7 @@ interface Props {
   onEditClient: (client: Client) => void;
   onDeleteClient: (clientId: string) => void;
   onQuickPayment: (client: Client) => void;
+  onOpenWarehouseDebtModal?: (client?: Client) => void;
   userRole?: 'admin' | 'agent';
   currentUsername?: string;
 }
@@ -40,6 +43,7 @@ export const ClientTable: React.FC<Props> = ({
   onEditClient,
   onDeleteClient,
   onQuickPayment,
+  onOpenWarehouseDebtModal,
   userRole = 'admin',
   currentUsername,
 }) => {
@@ -51,8 +55,9 @@ export const ClientTable: React.FC<Props> = ({
   const [isExporting, setIsExporting] = useState(false);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
 
-  // Faqat adminc va adminc1 o'chirish huquqiga ega
+  // Faqat adminc va adminc1 o'chirish va ombordagi qarzdorlik qo'shish huquqiga ega
   const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
+  const canAddWarehouseDebt = currentUsername === 'adminc' || currentUsername === 'adminc1';
 
   // Extract unique regions from clients
   const uniqueRegions = useMemo(() => {
@@ -270,6 +275,19 @@ export const ClientTable: React.FC<Props> = ({
               </span>
             </button>
 
+            {/* Ombordagi qarzdorlik qo'shish: Faqat adminc va adminc1 */}
+            {canAddWarehouseDebt && onOpenWarehouseDebtModal && (
+              <button
+                type="button"
+                onClick={() => onOpenWarehouseDebtModal()}
+                className="flex items-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition min-h-[38px] cursor-pointer"
+                title="Ombordagi narxlar valyutasida mijozga qarzdorlik qo'shish"
+              >
+                <Warehouse className="w-3.5 h-3.5 text-amber-700" />
+                <span className="hidden sm:inline">Ombor qarzdorligi</span>
+              </button>
+            )}
+
             {/* Add client direct button */}
             <button
               onClick={onOpenAddModal}
@@ -423,6 +441,15 @@ export const ClientTable: React.FC<Props> = ({
                             {client.phone || "Telefon yo'q"}
                           </span>
                         </div>
+                        {client.lastPlanCloseReason && (
+                          <div
+                            className="mt-1 flex items-center gap-1 text-[10px] text-rose-800 font-semibold truncate max-w-[200px] bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
+                            title={`Reja yopilish sababi: ${client.lastPlanCloseReason}`}
+                          >
+                            <Lock className="w-2.5 h-2.5 text-rose-700 shrink-0" />
+                            <span className="truncate">Yopilgan: "{client.lastPlanCloseReason}"</span>
+                          </div>
+                        )}
                       </td>
 
                       {/* Address: Viloyat, Tuman, Mo'ljal */}
@@ -537,6 +564,15 @@ export const ClientTable: React.FC<Props> = ({
                               <CreditCard className="w-4 h-4" />
                             </button>
                           )}
+                          {canAddWarehouseDebt && onOpenWarehouseDebtModal && (
+                            <button
+                              onClick={() => onOpenWarehouseDebtModal(client)}
+                              className="p-1.5 rounded-lg text-amber-700 hover:bg-amber-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                              title="Ombordagi qarzdorlik qo'shish"
+                            >
+                              <Warehouse className="w-4 h-4" />
+                            </button>
+                          )}
                           {userRole !== 'agent' && (
                             <button
                               onClick={() => onEditClient(client)}
@@ -596,6 +632,15 @@ export const ClientTable: React.FC<Props> = ({
                         {[client.region, client.district].filter(Boolean).join(', ') || client.address || "Manzil ko'rsatilmagan"}
                         {client.landmark ? ` (${client.landmark})` : ''}
                       </p>
+                      {client.lastPlanCloseReason && (
+                        <div
+                          className="mt-1 flex items-center gap-1 text-[10px] text-rose-800 font-semibold truncate max-w-[200px] bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
+                          title={`Reja yopilish sababi: ${client.lastPlanCloseReason}`}
+                        >
+                          <Lock className="w-2.5 h-2.5 text-rose-700 shrink-0" />
+                          <span className="truncate">Yopilgan: "{client.lastPlanCloseReason}"</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -682,6 +727,16 @@ export const ClientTable: React.FC<Props> = ({
                     >
                       <CreditCard className="w-3.5 h-3.5 text-rose-700" />
                       <span>To'lov</span>
+                    </button>
+                  )}
+
+                  {canAddWarehouseDebt && onOpenWarehouseDebtModal && (
+                    <button
+                      onClick={() => onOpenWarehouseDebtModal(client)}
+                      className="p-2 rounded-lg text-amber-700 hover:bg-amber-50 border border-amber-200 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
+                      title="Ombordagi qarzdorlik qo'shish"
+                    >
+                      <Warehouse className="w-4 h-4" />
                     </button>
                   )}
 

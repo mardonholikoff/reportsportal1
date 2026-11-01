@@ -15,6 +15,8 @@ import {
   History,
   FileText,
   UserCheck,
+  Lock,
+  Warehouse,
 } from 'lucide-react';
 
 interface Props {
@@ -24,6 +26,7 @@ interface Props {
   onEdit: (client: Client) => void;
   onDelete: (clientId: string) => void;
   onQuickPayment: (client: Client) => void;
+  onOpenWarehouseDebtModal?: (client: Client) => void;
   userRole?: 'admin' | 'agent';
   currentUsername?: string;
 }
@@ -35,11 +38,13 @@ export const ClientDetailModal: React.FC<Props> = ({
   onEdit,
   onDelete,
   onQuickPayment,
+  onOpenWarehouseDebtModal,
   userRole = 'admin',
   currentUsername,
 }) => {
   const isAgent = userRole === 'agent';
   const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
+  const canAddWarehouseDebt = currentUsername === 'adminc' || currentUsername === 'adminc1';
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
   // Compute the latest note by agentp1 regarding this client
@@ -254,6 +259,27 @@ export const ClientDetailModal: React.FC<Props> = ({
               </div>
             </div>
           </div>
+
+          {/* Oxirgi reja yakunlanishi va yopilish sababi */}
+          {client.lastPlanCloseReason && (
+            <div className="p-4 rounded-2xl bg-rose-50/80 border border-rose-200 text-xs space-y-1.5 shadow-2xs">
+              <div className="flex items-center gap-2 font-bold text-rose-950">
+                <Lock className="w-4 h-4 text-rose-700 shrink-0" />
+                <span className="text-xs uppercase tracking-wide">Oxirgi kunlik reja yopilish sababi</span>
+              </div>
+              <div className="text-neutral-900 font-semibold pl-6 text-sm">
+                "{client.lastPlanCloseReason}"
+              </div>
+              <div className="text-[11px] text-neutral-500 font-mono pl-6 flex items-center gap-3">
+                {client.lastPlanClosedBy && (
+                  <span className="font-semibold text-rose-900">Mas'ul: @{client.lastPlanClosedBy}</span>
+                )}
+                {client.lastPlanClosedAt && (
+                  <span>Sana: {formatDate(client.lastPlanClosedAt)}</span>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Products Table */}
           <div className="space-y-3">
@@ -474,6 +500,22 @@ export const ClientDetailModal: React.FC<Props> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Ombordagi qarzdorlikni qo'shish: Faqat adminc va adminc1 */}
+            {canAddWarehouseDebt && onOpenWarehouseDebtModal && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenWarehouseDebtModal(client);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 transition min-h-[40px] cursor-pointer"
+                title="Ombordagi narxlar valyutasida mijozga qarzdorlik qo'shish"
+              >
+                <Warehouse className="w-3.5 h-3.5 text-amber-700" />
+                <span>Ombor qarzdorligi</span>
+              </button>
+            )}
+
             {/* To'lov / Qarz o'zgartirish: Agentda YO'Q BO'LSIN */}
             {!isAgent && (
               <button

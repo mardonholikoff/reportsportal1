@@ -15,15 +15,25 @@ import {
   AlertTriangle,
   Package,
   RotateCcw,
+  Target,
 } from 'lucide-react';
 
 interface Props {
   plans: DailyPlanItem[];
   onOpenCreatePlan: () => void;
+  onOpenMonthlyPlan?: () => void;
   onOpenExecuteModal: (item: DailyPlanItem) => void;
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
-  onClosePlanItem?: (planItemId: string) => void;
+  onClosePlanItem?: (planItemId: string, closeReason?: string) => void;
 }
+
+const PRESET_CLOSE_REASONS = [
+  "Hisob-kitob va amallar to'liq yakunlandi",
+  "To'lov qabul qilindi, qarz to'liq yopildi",
+  "Tovarlar muvaffaqiyatli topshirildi",
+  "Do'kon yopiq / Mijoz joyida yo'q",
+  "Keyingi kunga qoldirildi",
+];
 
 // Calculate paid and debt amounts for a plan item (including historical actions)
 const calcPlanFinancials = (item: DailyPlanItem) => {
@@ -64,6 +74,7 @@ const calcPlanFinancials = (item: DailyPlanItem) => {
 export const AgentDailyPlanTable: React.FC<Props> = ({
   plans,
   onOpenCreatePlan,
+  onOpenMonthlyPlan,
   onOpenExecuteModal,
   onUpdatePlanNote,
   onClosePlanItem,
@@ -72,8 +83,22 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [tempNote, setTempNote] = useState('');
 
+  // Filter tabs: 'active' (default) -> closed plans disappear from active view!
+  const [planViewFilter, setPlanViewFilter] = useState<'active' | 'closed' | 'all'>('active');
+
   // State for confirming closing of plan item (Oxirgi marta yopish)
   const [confirmCloseItem, setConfirmCloseItem] = useState<DailyPlanItem | null>(null);
+  const [closeReason, setCloseReason] = useState<string>('');
+  const [selectedPresetReason, setSelectedPresetReason] = useState<string>('');
+
+  const activePlans = plans.filter((p) => !p.isClosed && p.status !== 'yopildi');
+  const closedPlans = plans.filter((p) => p.isClosed || p.status === 'yopildi');
+  const displayedPlans =
+    planViewFilter === 'active'
+      ? activePlans
+      : planViewFilter === 'closed'
+      ? closedPlans
+      : plans;
 
   const handleStartEditNote = (item: DailyPlanItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -95,10 +120,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     setTempNote('');
   };
 
+  const handleOpenConfirmClose = (item: DailyPlanItem) => {
+    setConfirmCloseItem(item);
+    const defaultReason = "Hisob-kitob va amallar to'liq yakunlandi";
+    setCloseReason(defaultReason);
+    setSelectedPresetReason(defaultReason);
+  };
+
   const handleExecuteClose = () => {
     if (confirmCloseItem && onClosePlanItem) {
-      onClosePlanItem(confirmCloseItem.id);
+      const finalReason = closeReason.trim() || selectedPresetReason || "Amallar yakunlandi";
+      onClosePlanItem(confirmCloseItem.id, finalReason);
       setConfirmCloseItem(null);
+      setCloseReason('');
+      setSelectedPresetReason('');
     }
   };
 
@@ -116,36 +151,141 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 Reja
               </h2>
               <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
-                {plans.length} ta reja
+                {activePlans.length} ta faol reja
               </span>
             </div>
           </div>
         </div>
 
-        <button
-          onClick={onOpenCreatePlan}
-          className="flex items-center gap-1.5 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[42px] cursor-pointer"
-        >
-          <Plus className="w-4 h-4 stroke-[2.5]" />
-          <span>Reja tuzish</span>
-        </button>
+        {/* View Filter Tabs & Create Plan Button */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1 p-1 bg-neutral-100/90 rounded-xl border border-neutral-200/80">
+            <button
+              type="button"
+              onClick={() => setPlanViewFilter('active')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                planViewFilter === 'active'
+                  ? 'bg-rose-700 text-white shadow-xs'
+                  : 'text-neutral-700 hover:bg-white'
+              }`}
+              title="Faqat hozirda amallar bajarilishi kutilayotgan faol rejalar"
+            >
+              <span>Faol rejalar</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                  planViewFilter === 'active' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
+                }`}
+              >
+                {activePlans.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPlanViewFilter('closed')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                planViewFilter === 'closed'
+                  ? 'bg-neutral-800 text-white shadow-xs'
+                  : 'text-neutral-700 hover:bg-white'
+              }`}
+              title="Yopilgan va amallari yakunlangan mijozlar"
+            >
+              <Lock className="w-3 h-3" />
+              <span>Yopilganlar</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                  planViewFilter === 'closed' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
+                }`}
+              >
+                {closedPlans.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPlanViewFilter('all')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                planViewFilter === 'all'
+                  ? 'bg-neutral-800 text-white shadow-xs'
+                  : 'text-neutral-700 hover:bg-white'
+              }`}
+            >
+              <span>Barchasi</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                  planViewFilter === 'all' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
+                }`}
+              >
+                {plans.length}
+              </span>
+            </button>
+          </div>
+
+          {onOpenMonthlyPlan && (
+            <button
+              type="button"
+              onClick={onOpenMonthlyPlan}
+              className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+              title="1 oylik qarz undirish rejasi tuzish"
+            >
+              <Target className="w-4 h-4" />
+              <span>1 oylik reja tuzish</span>
+            </button>
+          )}
+
+          <button
+            onClick={onOpenCreatePlan}
+            className="flex items-center gap-1.5 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>Reja tuzish</span>
+          </button>
+        </div>
       </div>
 
       {/* Plan List */}
       <div className="p-3 sm:p-4">
-        {plans.length === 0 ? (
+        {displayedPlans.length === 0 ? (
           <div className="p-8 text-center rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3">
             <CalendarCheck className="w-8 h-8 text-neutral-400 mx-auto" />
             <h3 className="text-sm font-bold text-neutral-800">
-              Rejalashtirilgan mijozlar yo'q
+              {planViewFilter === 'active'
+                ? closedPlans.length > 0
+                  ? `Barcha rejadagi mijozlar yopildi (${closedPlans.length} ta yopilgan)`
+                  : "Faol rejalashtirilgan mijozlar yo'q"
+                : planViewFilter === 'closed'
+                ? "Yopilgan mijozlar mavjud emas"
+                : "Rejalashtirilgan mijozlar yo'q"}
             </h3>
-            <button
-              onClick={onOpenCreatePlan}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Mijozlarni tanlash</span>
-            </button>
+            {planViewFilter === 'active' && closedPlans.length > 0 ? (
+              <div className="flex items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlanViewFilter('closed')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-900 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+                >
+                  <Lock className="w-4 h-4" />
+                  <span>Yopilganlarni ko'rish ({closedPlans.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onOpenCreatePlan}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Yangi reja tuzish</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onOpenCreatePlan}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Mijozlarni tanlash</span>
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -164,7 +304,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-rose-100/60">
-                  {plans.map((item, idx) => {
+                  {displayedPlans.map((item, idx) => {
                     const isClosed = item.isClosed || item.status === 'yopildi';
                     const isDone = item.status === 'bajarildi';
                     const isEditingThisNote = editingNoteId === item.id;
@@ -273,10 +413,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         {/* 4. Status */}
                         <td className="py-2.5 px-2.5">
                           {isClosed ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-700 border border-neutral-300">
-                              <Lock className="w-2.5 h-2.5 text-neutral-600" />
-                              <span>Yopildi</span>
-                            </span>
+                            <div className="space-y-0.5">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-800 border border-neutral-300">
+                                <Lock className="w-2.5 h-2.5 text-neutral-600" />
+                                <span>Yopildi</span>
+                              </span>
+                              {item.closeReason && (
+                                <div
+                                  className="text-[10px] font-bold text-rose-900 bg-rose-50 border border-rose-200 rounded px-1.5 py-0.5 max-w-[150px] truncate"
+                                  title={`Yopilish sababi: ${item.closeReason}`}
+                                >
+                                  Sabab: {item.closeReason}
+                                </div>
+                              )}
+                            </div>
                           ) : isDone ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                               <CheckCircle2 className="w-2.5 h-2.5 text-emerald-700" />
@@ -421,7 +571,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setConfirmCloseItem(item)}
+                                onClick={() => handleOpenConfirmClose(item)}
                                 className="px-1.5 py-1 rounded-lg border border-rose-300 hover:bg-rose-50 text-rose-800 text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer"
                                 title="Oxirgi marta yopish"
                               >
@@ -440,7 +590,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
             {/* Mobile Compact Cards View: Fits 100% of mobile screen with zero horizontal scroll */}
             <div className="block md:hidden space-y-2.5">
-              {plans.map((item, idx) => {
+              {displayedPlans.map((item, idx) => {
                 const isClosed = item.isClosed || item.status === 'yopildi';
                 const isDone = item.status === 'bajarildi';
                 const { paidAmount, debtAmount } = calcPlanFinancials(item);
@@ -605,17 +755,24 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             </button>
                             <button
                               type="button"
-                              onClick={() => setConfirmCloseItem(item)}
-                              className="px-2 py-1.5 rounded-xl border border-rose-300 text-rose-800 text-xs font-bold cursor-pointer"
+                              onClick={() => handleOpenConfirmClose(item)}
+                              className="px-2.5 py-1.5 rounded-xl border border-rose-300 text-rose-800 text-xs font-bold cursor-pointer hover:bg-rose-50"
                             >
-                              <Lock className="w-3 h-3" />
+                              <Lock className="w-3 h-3 inline mr-1" />
                               <span>Yopish</span>
                             </button>
                           </>
                         ) : (
-                          <span className="text-[11px] text-neutral-500 font-medium flex items-center gap-1">
-                            <Lock className="w-3 h-3" /> Yopilgan
-                          </span>
+                          <div className="flex flex-col items-end">
+                            <span className="text-[11px] text-neutral-500 font-semibold flex items-center gap-1">
+                              <Lock className="w-3 h-3 text-neutral-400" /> Yopilgan
+                            </span>
+                            {item.closeReason && (
+                              <span className="text-[10px] text-rose-800 font-medium italic max-w-[150px] truncate" title={item.closeReason}>
+                                "{item.closeReason}"
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -627,24 +784,24 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Confirmation Modal: Oxirgi marta yopish */}
+      {/* Confirmation Modal: Oxirgi marta yopish & Sabab kiritish */}
       {confirmCloseItem && (
         <div
           role="dialog"
           aria-modal="true"
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
         >
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-rose-100 space-y-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-rose-100 space-y-4">
             <div className="flex items-center gap-3 text-rose-700">
               <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
                 <Lock className="w-6 h-6 text-rose-700" />
               </div>
               <div>
                 <h3 className="text-base font-bold font-display text-neutral-900">
-                  Oxirgi marta yopish
+                  Rejani yakunlash va yopish
                 </h3>
                 <p className="text-xs text-neutral-500">
-                  Rejadagi mijoz bo'yicha amallarni yakunlash
+                  Ushbu mijoz bo'yicha amallarni yakunlab yopish sababini ko'rsating
                 </p>
               </div>
             </div>
@@ -654,12 +811,53 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 Mijoz: <span className="font-bold underline">{confirmCloseItem.clientName}</span>
               </p>
               <p className="text-neutral-600 leading-relaxed">
-                Haqiqatan ham ushbu mijoz bo'yicha barcha amallarni yakunlab, rejadagi kartochkani <strong>oxirgi marta yopmoqchimisiz?</strong>
+                Yopilgandan so'ng bu mijoz <strong>faol rejalar ro'yxatidan chiqariladi</strong> ("Yopilganlar" bo'limida saqlanadi) va kiritilgan yopilish sababi butun tizimda (admin boshqaruvi, mijoz audit logi) aks etadi.
               </p>
               <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>Yopilgandan so'ng bu mijoz ustida qaytib amal bajarib bo'lmaydi!</span>
+                <span>Yopilgandan so'ng bugungi reja bo'yicha yangi amal qo'shib bo'lmaydi!</span>
               </div>
+            </div>
+
+            {/* Sabab tanlash va yozish */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-neutral-700">
+                Yopilish sababi: <span className="text-rose-600">*</span>
+              </label>
+              
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_CLOSE_REASONS.map((reason) => {
+                  const isSelected = selectedPresetReason === reason && closeReason === reason;
+                  return (
+                    <button
+                      key={reason}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPresetReason(reason);
+                        setCloseReason(reason);
+                      }}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
+                        isSelected
+                          ? 'bg-rose-700 border-rose-700 text-white shadow-xs font-semibold'
+                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100 hover:border-neutral-300'
+                      }`}
+                    >
+                      {reason}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <input
+                type="text"
+                value={closeReason}
+                onChange={(e) => {
+                  setCloseReason(e.target.value);
+                  setSelectedPresetReason(e.target.value);
+                }}
+                placeholder="Yopilish sababini kiriting yoki yuqoridagilardan tanlang..."
+                className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
+              />
             </div>
 
             <div className="flex items-center justify-end gap-2.5 pt-2">
@@ -672,8 +870,9 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               </button>
               <button
                 type="button"
+                disabled={!closeReason.trim()}
                 onClick={handleExecuteClose}
-                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
               >
                 <Lock className="w-4 h-4" />
                 <span>Ha, yakunlash va yopish</span>

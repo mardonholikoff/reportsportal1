@@ -418,6 +418,8 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
         return 'bg-blue-50 text-blue-800 border-blue-200';
       case 'reja_tuzish':
         return 'bg-indigo-50 text-indigo-800 border-indigo-200';
+      case 'reja_yopish':
+        return 'bg-rose-100 text-rose-900 border-rose-300 font-bold';
       case 'amal_bajarish':
         return 'bg-purple-50 text-purple-800 border-purple-200';
       case 'tushum_qabul':
