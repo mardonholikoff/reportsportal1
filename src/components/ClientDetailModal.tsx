@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Client } from '../types';
 import { formatMoney, formatDate, formatNumber } from '../utils/format';
 import { storageService } from '../services/storage';
@@ -25,6 +25,7 @@ interface Props {
   onDelete: (clientId: string) => void;
   onQuickPayment: (client: Client) => void;
   userRole?: 'admin' | 'agent';
+  currentUsername?: string;
 }
 
 export const ClientDetailModal: React.FC<Props> = ({
@@ -35,8 +36,11 @@ export const ClientDetailModal: React.FC<Props> = ({
   onDelete,
   onQuickPayment,
   userRole = 'admin',
+  currentUsername,
 }) => {
   const isAgent = userRole === 'agent';
+  const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
 
   // Compute the latest note by agentp1 regarding this client
   const latestAgentNote = useMemo(() => {
@@ -419,21 +423,41 @@ export const ClientDetailModal: React.FC<Props> = ({
         {/* ========================================================= */}
         <div className="no-print px-5 sm:px-6 py-4 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            {/* O'chirish: Faqat admin uchun */}
-            {!isAgent && (
+            {/* O'chirish: Faqat adminc va adminc1 uchun */}
+            {canDelete && !isConfirmingDelete && (
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm(`${client.name} ni o'chirishni tasdiqlaysizmi?`)) {
-                    onDelete(client.id);
-                    onClose();
-                  }
-                }}
+                onClick={() => setIsConfirmingDelete(true)}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-700 hover:bg-rose-100/80 transition min-h-[40px] cursor-pointer"
+                title="Mijoz va unga oid ma'lumotlarni o'chirish"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>O'chirish</span>
               </button>
+            )}
+
+            {canDelete && isConfirmingDelete && (
+              <div className="flex items-center gap-1.5 p-1 bg-rose-50 rounded-xl border border-rose-200">
+                <span className="text-[11px] font-bold text-rose-900 px-1.5">O'chirilsinmi?</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsConfirmingDelete(false);
+                    onDelete(client.id);
+                    onClose();
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-rose-700 text-white text-xs font-bold hover:bg-rose-800 transition cursor-pointer shadow-xs"
+                >
+                  Ha, o'chirish
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmingDelete(false)}
+                  className="px-2 py-1.5 rounded-lg bg-neutral-200 text-neutral-800 text-xs font-semibold hover:bg-neutral-300 transition cursor-pointer"
+                >
+                  Bekor
+                </button>
+              </div>
             )}
 
             {/* Chop etish / Chek: Agentda YO'Q BO'LSIN */}
@@ -462,17 +486,19 @@ export const ClientDetailModal: React.FC<Props> = ({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onEdit(client);
-              }}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 transition min-h-[40px] cursor-pointer"
-            >
-              <Edit className="w-3.5 h-3.5" />
-              <span>Tahrirlash</span>
-            </button>
+            {!isAgent && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onEdit(client);
+                }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-rose-700 hover:bg-rose-800 transition min-h-[40px] cursor-pointer"
+              >
+                <Edit className="w-3.5 h-3.5" />
+                <span>Tahrirlash</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

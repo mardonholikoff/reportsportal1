@@ -27,6 +27,7 @@ interface Props {
   onDeleteClient: (clientId: string) => void;
   onQuickPayment: (client: Client) => void;
   userRole?: 'admin' | 'agent';
+  currentUsername?: string;
 }
 
 type FilterType = 'all' | 'debtors' | 'creditors' | 'settled';
@@ -40,6 +41,7 @@ export const ClientTable: React.FC<Props> = ({
   onDeleteClient,
   onQuickPayment,
   userRole = 'admin',
+  currentUsername,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<FilterType>('all');
@@ -47,6 +49,10 @@ export const ClientTable: React.FC<Props> = ({
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
   const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
   const [isExporting, setIsExporting] = useState(false);
+  const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
+
+  // Faqat adminc va adminc1 o'chirish huquqiga ega
+  const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
 
   // Extract unique regions from clients
   const uniqueRegions = useMemo(() => {
@@ -531,22 +537,21 @@ export const ClientTable: React.FC<Props> = ({
                               <CreditCard className="w-4 h-4" />
                             </button>
                           )}
-                          <button
-                            onClick={() => onEditClient(client)}
-                            className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
-                            title="Tahrirlash"
-                          >
-                            <Edit className="w-4 h-4" />
-                          </button>
                           {userRole !== 'agent' && (
                             <button
-                              onClick={() => {
-                                if (window.confirm(`${client.name} ni o'chirishni xohlaysizmi?`)) {
-                                  onDeleteClient(client.id);
-                                }
-                              }}
+                              onClick={() => onEditClient(client)}
+                              className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                              title="Tahrirlash"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              type="button"
+                              onClick={() => setClientToDelete(client)}
                               className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
-                              title="O'chirish"
+                              title="Mijoz va ma'lumotlarini o'chirish"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -680,23 +685,22 @@ export const ClientTable: React.FC<Props> = ({
                     </button>
                   )}
 
-                  <button
-                    onClick={() => onEditClient(client)}
-                    className="p-2 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[44px] min-w-[44px] flex items-center justify-center"
-                    title="Tahrirlash"
-                  >
-                    <Edit className="w-4 h-4" />
-                  </button>
-
                   {userRole !== 'agent' && (
                     <button
-                      onClick={() => {
-                        if (window.confirm(`${client.name} ni o'chirishni xohlaysizmi?`)) {
-                          onDeleteClient(client.id);
-                        }
-                      }}
+                      onClick={() => onEditClient(client)}
+                      className="p-2 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
+                      title="Tahrirlash"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                  )}
+
+                  {canDelete && (
+                    <button
+                      type="button"
+                      onClick={() => setClientToDelete(client)}
                       className="p-2 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
-                      title="O'chirish"
+                      title="Mijoz va ma'lumotlarini o'chirish"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -705,6 +709,74 @@ export const ClientTable: React.FC<Props> = ({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Custom Confirmation Modal for Deleting Client (Adminc & Adminc1 only) */}
+      {clientToDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-100"
+          onClick={() => setClientToDelete(null)}
+        >
+          <div
+            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-rose-100 space-y-4 animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                <Trash2 className="w-6 h-6 stroke-[2.2]" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-neutral-900 font-display">
+                  Mijozni o'chirishni tasdiqlaysizmi?
+                </h3>
+                <p className="text-xs text-rose-700 font-semibold">
+                  Faqat {currentUsername || 'Admin'} vakolatida
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-rose-50/70 rounded-2xl border border-rose-200/80 text-xs text-neutral-700 space-y-1.5">
+              <div className="font-bold text-neutral-900 text-sm">
+                {clientToDelete.name}
+              </div>
+              <div className="text-neutral-600">
+                Telefon: <span className="font-mono font-semibold">{clientToDelete.phone || "Yo'q"}</span>
+              </div>
+              {clientToDelete.address && (
+                <div className="text-neutral-600 truncate">
+                  Manzil: {clientToDelete.address}
+                </div>
+              )}
+              <div className="text-rose-800 font-semibold pt-1 border-t border-rose-200/60 leading-relaxed">
+                Ushbu mijoz va unga oid barcha rejalar, qarzdorlik/haqdorlik yozuvlari hamda hisobotlar tizimdan to'liq o'chiriladi. Bu amalni qaytarib bo'lmaydi!
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setClientToDelete(null)}
+                className="px-4 py-2.5 rounded-xl border border-neutral-300 text-xs font-semibold text-neutral-700 hover:bg-neutral-100 transition min-h-[42px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = clientToDelete.id;
+                  setClientToDelete(null);
+                  onDeleteClient(id);
+                }}
+                className="px-4 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5 min-h-[42px] cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Ha, to'liq o'chirilsin</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

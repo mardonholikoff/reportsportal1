@@ -10,13 +10,15 @@ interface Props {
 
 export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
   const [username, setUsername] = useState('adminc');
-  const [password, setPassword] = useState('cadmin');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     await onLogin(username, password);
   };
+
+  const isAdminAccount = username.trim() === 'adminc' || username.trim() === 'adminc1';
 
   return (
     <div className="min-h-screen flex flex-col justify-between bg-[#FAF7F7] selection:bg-rose-200">
@@ -57,7 +59,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   onChange={(e) => {
                     const val = e.target.value;
                     setUsername(val);
-                    if (val.trim() === 'adminc1') {
+                    if (val.trim() === 'adminc1' || val.trim() === 'adminc') {
                       setPassword('');
                     }
                   }}
@@ -65,9 +67,9 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   className="w-full pl-10 pr-3.5 py-3 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-sm text-neutral-900 font-medium placeholder:text-neutral-400 outline-none transition bg-neutral-50/40 focus:bg-white"
                 />
               </div>
-              {username.trim() === 'adminc1' && (
+              {isAdminAccount && (
                 <p className="mt-1 text-[11px] text-amber-700 font-medium">
-                  adminc1 uchun parol avtomatik to'ldirilmaydi (qo'lda kiriting)
+                  {username.trim()} uchun parol avtomatik to'ldirilmaydi (qo'lda kiriting)
                 </p>
               )}
             </div>
@@ -144,7 +146,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   type="button"
                   onClick={() => {
                     setUsername('adminc');
-                    setPassword('cadmin');
+                    setPassword(''); // adminc orqali bosilganda ham paroli avtomatik to'ldirilmasin!
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-neutral-100 text-neutral-800 hover:bg-neutral-200 border border-neutral-200 transition cursor-pointer"
                 >

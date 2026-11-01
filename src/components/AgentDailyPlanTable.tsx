@@ -139,9 +139,6 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
             <h3 className="text-sm font-bold text-neutral-800">
               Rejalashtirilgan mijozlar yo'q
             </h3>
-            <p className="text-xs text-neutral-500 max-w-sm mx-auto">
-              Reja tuzish tugmasini bosing va mijozlarni saralab reja tuzing. Ular shu yerda aks etadi va amallar bajariladi.
-            </p>
             <button
               onClick={onOpenCreatePlan}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"

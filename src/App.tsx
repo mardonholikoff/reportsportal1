@@ -44,6 +44,7 @@ import {
   syncClientToFirestore,
   deleteClientFromFirestore,
   syncPlanToFirestore,
+  deletePlanFromFirestore,
   syncWarehouseProductToFirestore,
   deleteWarehouseProductFromFirestore,
 } from './services/firebase';
@@ -251,6 +252,12 @@ export default function App() {
   ) => {
     const currentUsername = user?.username || 'adminc';
     if (editingClient) {
+      if (user?.role === 'agent' || currentUsername === 'agentp1' || currentUsername === 'agentc1') {
+        showToast("Agentlar mijoz ma'lumotlarini tahrirlash huquqiga ega emas!");
+        setEditingClient(null);
+        setIsFormModalOpen(false);
+        return;
+      }
       storageService.updateClient(editingClient.id, data);
       const updated = storageService.getClientById(editingClient.id);
       if (updated) syncClientToFirestore(updated);
@@ -278,20 +285,64 @@ export default function App() {
     setIsFormModalOpen(false);
   };
 
-  // Handle Delete Client
+  // Handle Delete Client (Faqat adminc va adminc1 huquqiga ega)
   const handleDeleteClient = (clientId: string) => {
+    if (user?.username !== 'adminc' && user?.username !== 'adminc1') {
+      showToast("Faqat adminc yoki adminc1 mijozni o'chirish huquqiga ega!");
+      return;
+    }
+
     const currentUsername = user?.username || 'adminc';
     const client = clients.find((c) => c.id === clientId);
+
+    // 1. Delete client & cascade delete associated daily plans in local storage
     storageService.deleteClient(clientId);
+
+    // 2. Delete client document from Firestore
     deleteClientFromFirestore(clientId);
+
+    // 3. Delete any associated daily plans from Firestore
+    const associatedPlans = dailyPlans.filter((p) => p.clientId === clientId);
+    associatedPlans.forEach((p) => {
+      deletePlanFromFirestore(p.id);
+    });
+
+    // 4. Update React states immediately
+    setClients(storageService.getClients());
+    setDailyPlans(
+      storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
+    );
+
+    // 5. Close any open detail or payment modal if this client was selected
+    if (selectedClient?.id === clientId) {
+      setSelectedClient(null);
+      setIsDetailModalOpen(false);
+    }
+    if (paymentClient?.id === clientId) {
+      setPaymentClient(null);
+      setIsPaymentModalOpen(false);
+    }
+    if (editingClient?.id === clientId) {
+      setEditingClient(null);
+      setIsFormModalOpen(false);
+    }
+
+    // 6. Record audit log
     addSystemLog({
       userId: currentUsername,
       userRole: user?.role || 'admin',
       actionType: 'mijoz_ochirish',
-      actionTitle: `Mijoz ro'yxatdan o'chirildi`,
-      details: client ? `${client.name} (${client.phone}), ID: ${clientId}` : `ID: ${clientId}`,
+      actionTitle: `Mijoz va unga oid barcha ma'lumotlar to'liq o'chirildi: ${client?.name || clientId}`,
+      details: client
+        ? `Nomi: ${client.name}, Telefon: ${client.phone}, Manzil: ${client.address || ''}, Qarz: ${client.currentDebt || 0} so'm, Bog'liq rejalar: ${associatedPlans.length} ta`
+        : `ID: ${clientId}`,
     });
-    showToast(client ? `"${client.name}" ro'yxatdan o'chirildi.` : "Mijoz o'chirildi.");
+
+    showToast(
+      client
+        ? `"${client.name}" va unga oid barcha ma'lumotlar to'liq o'chirildi.`
+        : "Mijoz va ma'lumotlari o'chirildi."
+    );
   };
 
   // Handle Quick Payment / Debt change
@@ -626,6 +677,7 @@ export default function App() {
                     setIsPaymentModalOpen(true);
                   }}
                   userRole={user.role}
+                  currentUsername={user.username}
                 />
               </div>
             )}
@@ -755,9 +807,8 @@ export default function App() {
                       setSelectedClient(client);
                       setIsDetailModalOpen(true);
                     }}
-                    onEditClient={(client) => {
-                      setEditingClient(client);
-                      setIsFormModalOpen(true);
+                    onEditClient={() => {
+                      showToast("Agentlar mijoz ma'lumotlarini tahrirlash huquqiga ega emas!");
                     }}
                     onDeleteClient={handleDeleteClient}
                     onQuickPayment={(client) => {
@@ -765,6 +816,7 @@ export default function App() {
                       setIsPaymentModalOpen(true);
                     }}
                     userRole={user.role}
+                    currentUsername={user.username}
                   />
                 </div>
               </div>
@@ -907,9 +959,9 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* 4. TIZIM AMALLARI VA AUDIT LOGLARI (ADMINC1 VA BARCHA ADMINLAR) */}
+        {/* 4. TIZIM AMALLARI VA AUDIT LOGLARI (FAQAT ADMINC1 ORQALI) */}
         {/* ========================================================= */}
-        {isAdmin && (
+        {user.username === 'adminc1' && (
           <section className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden transition-all duration-200">
             {/* Header Bar */}
             <div
@@ -925,11 +977,9 @@ export default function App() {
                     <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
                       4. Tizim amallari va audit loglari
                     </h2>
-                    {user.username === 'adminc1' && (
-                      <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
-                        adminc1 nazorati
-                      </span>
-                    )}
+                    <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                      Faqat adminc1 nazorati
+                    </span>
                     <span className="text-[11px] font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
                       {systemLogs.length} ta amal
                     </span>
@@ -1019,6 +1069,10 @@ export default function App() {
           setSelectedClient(null);
         }}
         onEdit={(client) => {
+          if (user.role === 'agent' || user.username === 'agentp1' || user.username === 'agentc1') {
+            showToast("Agentlar mijoz ma'lumotlarini tahrirlash huquqiga ega emas!");
+            return;
+          }
           setIsDetailModalOpen(false);
           setEditingClient(client);
           setIsFormModalOpen(true);
@@ -1033,6 +1087,7 @@ export default function App() {
           setIsPaymentModalOpen(true);
         }}
         userRole={user.role}
+        currentUsername={user.username}
       />
 
       {/* Quick Payment / Debt Update Modal */}

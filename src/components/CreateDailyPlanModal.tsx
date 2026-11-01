@@ -242,9 +242,6 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
               <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 leading-tight">
                 Reja tuzish
               </h2>
-              <p className="text-xs text-neutral-500">
-                Mijozlarni saralab tanlang va rejaga kiriting (qo'shilgan sana avtomatik belgilanadi)
-              </p>
             </div>
           </div>
           <button

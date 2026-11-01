@@ -1193,9 +1193,6 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   2-Blok: Mijozlarning 1 yillik oylik qarzdorlik va haqdorlik tahlili
                 </h2>
               </div>
-              <p className="text-xs text-rose-200">
-                Har bir oyda cell ikkiga bo'lingan: Qarzdorlik va Haqdorlik
-              </p>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
@@ -1311,9 +1308,6 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   3-Blok: Mijozlarga berilgan mahsulotlar 1 yillik tahlili
                 </h2>
               </div>
-              <p className="text-xs text-neutral-300">
-                Har bir oyda cell ikkiga bo'lingan: Qarzga berilgan va Qarzsiz berilgan mahsulotlar nomlari, sonlari va summalari
-              </p>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">

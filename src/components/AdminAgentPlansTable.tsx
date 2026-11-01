@@ -472,11 +472,11 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
               ? 'Hozircha agentlar tomonidan faol kunlik reja tuzilmagan'
               : "Filtr bo'yicha rejalar topilmadi"}
           </h4>
-          <p className="text-xs text-neutral-500 max-w-sm mx-auto">
-            {plans.length === 0
-              ? "Agentlar kunlik reja tuzganda va amallar bajarganda, bu yerda sinxron ma'lumotlar avtomatik ko'rinadi."
-              : "Qidiruv mezonlarini o'zgartirib ko'ring."}
-          </p>
+          {plans.length > 0 && (
+            <p className="text-xs text-neutral-500 max-w-sm mx-auto">
+              Qidiruv mezonlarini o'zgartirib ko'ring.
+            </p>
+          )}
         </div>
       ) : (
         <div className="overflow-x-auto rounded-3xl border border-rose-100 bg-white shadow-xs">

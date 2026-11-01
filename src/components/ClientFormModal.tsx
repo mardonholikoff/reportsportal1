@@ -313,6 +313,10 @@ export const ClientFormModal: React.FC<Props> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (editingClient && (currentUserUsername === 'agentp1' || currentUserUsername === 'agentc1')) {
+      setValidationError("Agentlar mijoz ma'lumotlarini tahrirlash huquqiga ega emas!");
+      return;
+    }
     if (!name.trim()) {
       setValidationError("Iltimos, mijozning ismini kiriting!");
       return;

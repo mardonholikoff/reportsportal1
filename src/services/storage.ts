@@ -398,6 +398,18 @@ class StorageService {
 
     this.saveClients(filtered);
     this.addToSyncQueue({ action: 'delete', clientId: id });
+
+    // Cascade delete any daily plans for this client
+    try {
+      const plans = this.getDailyPlans();
+      const remainingPlans = plans.filter((p) => p.clientId !== id);
+      if (remainingPlans.length !== plans.length) {
+        this.saveDailyPlans(remainingPlans);
+      }
+    } catch (e) {
+      console.warn('Failed to cascade delete daily plans for client', id, e);
+    }
+
     return true;
   }
 
