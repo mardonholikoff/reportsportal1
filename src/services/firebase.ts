@@ -22,6 +22,7 @@ import {
   markClientAsDeleted,
   getDeletedWarehouseIds,
   markWarehouseProductAsDeleted,
+  isClosedPlanExpired7Days,
 } from './storage';
 
 // Initialize Firebase App singleton
@@ -596,7 +597,7 @@ export function subscribeToFirestoreData(callbacks: {
         const list: DailyPlanItem[] = [];
         snapshot.forEach((d) => {
           const item = d.data() as DailyPlanItem;
-          if (!deletedIds.has(item.clientId)) {
+          if (!deletedIds.has(item.clientId) && !isClosedPlanExpired7Days(item)) {
             list.push(item);
           } else {
             deleteDoc(d.ref).catch(() => {});

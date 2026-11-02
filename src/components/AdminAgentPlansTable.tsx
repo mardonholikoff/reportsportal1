@@ -1,6 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { DailyPlanItem } from '../types';
+import { Client, DailyPlanItem } from '../types';
 import { formatMoney, formatDate } from '../utils/format';
+import { storageService, isClosedPlanExpired7Days } from '../services/storage';
+import { getClientLastOperations } from '../utils/clientActivityDates';
+import { RejaPrintModal } from './RejaPrintModal';
 import {
   Users,
   CheckCircle2,
@@ -24,17 +27,30 @@ import {
   PackageCheck,
   PackageMinus,
   Calendar,
+  Printer,
 } from 'lucide-react';
 
 interface Props {
   plans: DailyPlanItem[];
+  clients?: Client[];
 }
 
-export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
+export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'jarayonda' | 'bajarildi'>('all');
+  // Admin kirganda birinchi bo'lib hali bajarilib yopilmaganlar ('jarayonda') ko'rinadi, yopilganlar faqat 'bajarildi'da turadi
+  const [statusFilter, setStatusFilter] = useState<'jarayonda' | 'bajarildi' | 'all'>('jarayonda');
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [inspectedPlan, setInspectedPlan] = useState<DailyPlanItem | null>(null);
+  const [isAdminPdfModalOpen, setIsAdminPdfModalOpen] = useState<boolean>(false);
+
+  const resolvedClients = useMemo(
+    () => (clients && clients.length > 0 ? clients : storageService.getClients()),
+    [clients]
+  );
+  const allSystemPlans = useMemo(() => {
+    const stored = storageService.getDailyPlans();
+    return stored.length >= plans.length ? stored : plans;
+  }, [plans]);
 
   const formatActionLabel = (action?: string) => {
     if (action === 'telefon qilindi') return 'Telefon qilish / qilindi';
@@ -82,11 +98,11 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
     return [];
   };
 
-  // Har bir mijoz rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz)
+  // Har bir mijoz rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz) va 7 kundan oshgan yopilganlarni yashirish
   const uniquePlans = useMemo(() => {
     const byClient = new Map<string, DailyPlanItem>();
     for (const p of plans) {
-      if (!p || !p.clientId) continue;
+      if (!p || !p.clientId || isClosedPlanExpired7Days(p)) continue;
       const existing = byClient.get(p.clientId);
       if (!existing) {
         byClient.set(p.clientId, p);
@@ -250,10 +266,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
         }
       }
 
-      // 2. Status filter: Agent bajarildi deb belgilagan bo'lsa 'bajarildi', aks holda 'jarayonda'
-      const completed = isPlanCompleted(p);
-      if (statusFilter === 'bajarildi' && !completed) return false;
-      if (statusFilter === 'jarayonda' && completed) return false;
+      // 2. Status filter: Yopilgan va bajarilganlar faqat 'bajarildi' tabida turadi, 'jarayonda'da faqat hali bajarilib yopilmaganlar ko'rinadi
+      const completedOrClosed = isPlanCompleted(p);
+      if (statusFilter === 'bajarildi' && !completedOrClosed) return false;
+      if (statusFilter === 'jarayonda' && completedOrClosed) return false;
 
       // 3. Agent filter
       if (selectedAgent !== 'all' && p.agentUsername !== selectedAgent) {
@@ -261,6 +277,12 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
       }
 
       return true;
+    }).sort((a, b) => {
+      // Hali bajarilib yopilmaganlar har doim birinchi turadi
+      const aDone = isPlanCompleted(a) ? 1 : 0;
+      const bDone = isPlanCompleted(b) ? 1 : 0;
+      if (aDone !== bDone) return aDone - bDone;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
   }, [uniquePlans, searchTerm, statusFilter, selectedAgent]);
 
@@ -458,12 +480,34 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
             </select>
           )}
 
-          {/* Holat filtri */}
+          {/* Holat filtri: Birinchi bo'lib hali bajarilib yopilmaganlar, yopilganlar esa Bajarildi ichida */}
           <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl">
             <button
               type="button"
+              onClick={() => setStatusFilter('jarayonda')}
+              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
+                statusFilter === 'jarayonda'
+                  ? 'bg-amber-500 text-white shadow-2xs'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              Jarayonda / Yopilmagan ({analytics.inProgressClients})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('bajarildi')}
+              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
+                statusFilter === 'bajarildi'
+                  ? 'bg-emerald-600 text-white shadow-2xs'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+            >
+              Bajarildi / Yopilganlar ({analytics.completedClients})
+            </button>
+            <button
+              type="button"
               onClick={() => setStatusFilter('all')}
-              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${
+              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
                 statusFilter === 'all'
                   ? 'bg-white text-neutral-900 shadow-2xs'
                   : 'text-neutral-600 hover:text-neutral-900'
@@ -471,29 +515,20 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
             >
               Barchasi ({uniquePlans.length})
             </button>
-            <button
-              type="button"
-              onClick={() => setStatusFilter('jarayonda')}
-              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${
-                statusFilter === 'jarayonda'
-                  ? 'bg-amber-500 text-white shadow-2xs'
-                  : 'text-neutral-600 hover:text-neutral-900'
-              }`}
-            >
-              Jarayonda ({analytics.inProgressClients})
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatusFilter('bajarildi')}
-              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${
-                statusFilter === 'bajarildi'
-                  ? 'bg-emerald-600 text-white shadow-2xs'
-                  : 'text-neutral-600 hover:text-neutral-900'
-              }`}
-            >
-              Bajarildi ({analytics.completedClients})
-            </button>
           </div>
+
+          {/* Rejani PDF (Print) tugmasi (Admin uchun) */}
+          {filteredPlans.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsAdminPdfModalOpen(true)}
+              className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+              title="Rejadagi tanlangan mijozlarni to'liq A4 listda PDF / Print qilish"
+            >
+              <Printer className="w-3.5 h-3.5 text-rose-400" />
+              <span>Rejani PDF (Print)</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -519,17 +554,19 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
           <table className="w-full text-left text-xs">
             <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider">
               <tr>
-                <th className="py-3 px-3.5">#</th>
-                <th className="py-3 px-3.5">Agent</th>
-                <th className="py-3 px-3.5">Mijoz & Telefon</th>
-                <th className="py-3 px-3.5">Manzili</th>
-                <th className="py-3 px-3.5">Reja izohi</th>
-                <th className="py-3 px-3.5">Holati</th>
-                <th className="py-3 px-3.5">Qilingan amallar</th>
-                <th className="py-3 px-3.5 text-right">Tushumlar</th>
-                <th className="py-3 px-3.5 text-right">Tovar berilishi / qaytishi</th>
-                <th className="py-3 px-3.5">Bajarilgan vaqt</th>
-                <th className="py-3 px-3.5 text-center">Batafsil</th>
+                <th className="py-3 px-3">#</th>
+                <th className="py-3 px-3">Qaysi agent orqali qo'shilgan</th>
+                <th className="py-3 px-3">Mijoz & Telefon</th>
+                <th className="py-3 px-3">Manzili</th>
+                <th className="py-3 px-3">Joriy qarz / Haqdorlik</th>
+                <th className="py-3 px-3">Oxirgi moliya va mahsulot amaliyoti sanasi</th>
+                <th className="py-3 px-3">Reja izohi</th>
+                <th className="py-3 px-3">Holati</th>
+                <th className="py-3 px-3">Qilingan amallar</th>
+                <th className="py-3 px-3 text-right">Tushumlar</th>
+                <th className="py-3 px-3 text-right">Tovar berilishi / qaytishi</th>
+                <th className="py-3 px-3">Bajarilgan vaqt</th>
+                <th className="py-3 px-3 text-center">Batafsil</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-rose-100/60">
@@ -582,30 +619,38 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                   }
                 });
 
+                const lastOps = getClientLastOperations(
+                  item.clientId,
+                  resolvedClients,
+                  allSystemPlans
+                );
+
                 return (
                   <tr key={item.id} className="hover:bg-rose-50/30 transition-colors">
                     {/* Index */}
-                    <td className="py-3 px-3.5 font-mono text-neutral-400">{idx + 1}</td>
+                    <td className="py-3 px-3 font-mono text-neutral-400">{idx + 1}</td>
 
-                    {/* Agent */}
-                    <td className="py-3 px-3.5">
-                      <span className="px-2 py-0.5 rounded-md font-mono font-bold text-xs bg-amber-100 text-amber-900 border border-amber-200">
-                        {item.agentUsername}
-                      </span>
-                    </td>
-
-                    {/* Mijoz & Telefon */}
-                    <td className="py-3 px-3.5">
-                      <div className="font-bold text-neutral-900">{item.clientName}</div>
-                      <div className="text-[11px] font-mono text-neutral-500">{item.clientPhone}</div>
-                      <div className="text-[10px] font-mono text-neutral-500 mt-0.5 flex items-center gap-1">
-                        <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                        <span>Qo'shilgan: {formatDate(item.createdAt)}</span>
+                    {/* Qaysi agent orqali qo'shilgan (Alohida ustun) */}
+                    <td className="py-3 px-3">
+                      <div className="space-y-1">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg font-mono font-bold text-xs bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                          @{item.agentUsername}
+                        </span>
+                        <div className="text-[10px] font-mono text-neutral-500 flex items-center gap-1">
+                          <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
+                          <span>Qo'shdi: {formatDate(item.createdAt)}</span>
+                        </div>
                       </div>
                     </td>
 
+                    {/* Mijoz & Telefon */}
+                    <td className="py-3 px-3">
+                      <div className="font-bold text-neutral-900">{item.clientName}</div>
+                      <div className="text-[11px] font-mono text-neutral-500">{item.clientPhone}</div>
+                    </td>
+
                     {/* Manzili */}
-                    <td className="py-3 px-3.5 max-w-[160px]">
+                    <td className="py-3 px-3 max-w-[150px]">
                       <div className="text-neutral-700">
                         <span
                           className="font-semibold text-neutral-900 block truncate"
@@ -626,8 +671,78 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                       </div>
                     </td>
 
+                    {/* Joriy qarz / Haqdorlik (Alohida ustun) */}
+                    <td className="py-3 px-3 min-w-[140px]">
+                      <div className="space-y-1 text-[10.5px]">
+                        {lastOps.currentDebt > 0 && (
+                          <div className="bg-rose-50 border border-rose-200 rounded-lg px-2 py-1">
+                            <div className="text-[9.5px] font-bold uppercase text-rose-800">
+                              Qarzdorlik:
+                            </div>
+                            <div className="font-mono font-extrabold text-rose-700">
+                              {formatMoney(lastOps.currentDebt)}
+                            </div>
+                          </div>
+                        )}
+                        {lastOps.currentAdvance > 0 && (
+                          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1">
+                            <div className="text-[9.5px] font-bold uppercase text-emerald-800">
+                              Haqdorlik:
+                            </div>
+                            <div className="font-mono font-extrabold text-emerald-700">
+                              {formatMoney(lastOps.currentAdvance)}
+                            </div>
+                          </div>
+                        )}
+                        {lastOps.currentDebt <= 0 && lastOps.currentAdvance <= 0 && (
+                          <span className="inline-block px-2 py-0.5 rounded-md bg-neutral-100 text-neutral-500 font-mono text-[10px] border border-neutral-200">
+                            0 USD
+                          </span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Oxirgi moliya va mahsulot amaliyoti sanasi (Alohida ustun) */}
+                    <td className="py-3 px-3 min-w-[190px]">
+                      <div className="space-y-1.5 text-[10.5px]">
+                        <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-lg px-2 py-1">
+                          <div className="font-bold text-emerald-950 flex items-center gap-1">
+                            <Clock className="w-2.5 h-2.5 text-emerald-700 shrink-0" />
+                            <span>Oxirgi moliya:</span>
+                          </div>
+                          {lastOps.lastFinancialFormatted ? (
+                            <div className="font-mono font-semibold text-emerald-900 mt-0.5">
+                              {lastOps.lastFinancialFormatted}
+                            </div>
+                          ) : (
+                            <div className="text-neutral-400 italic mt-0.5">Amaliyot yo'q</div>
+                          )}
+                        </div>
+
+                        <div className="bg-amber-50/70 border border-amber-200/80 rounded-lg px-2 py-1">
+                          <div className="font-bold text-amber-950 flex items-center gap-1">
+                            <Package className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                            <span>
+                              {lastOps.lastProductType === 'qaytarilgan'
+                                ? 'Mahsulot qaytarilgan:'
+                                : lastOps.lastProductType === 'berilgan'
+                                ? 'Mahsulot berilgan:'
+                                : 'Oxirgi mahsulot:'}
+                            </span>
+                          </div>
+                          {lastOps.lastProductFormatted ? (
+                            <div className="font-mono font-semibold text-amber-900 mt-0.5">
+                              {lastOps.lastProductFormatted}
+                            </div>
+                          ) : (
+                            <div className="text-neutral-400 italic mt-0.5">Amaliyot yo'q</div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+
                     {/* Reja izohi va Undirish maqsadi */}
-                    <td className="py-3 px-3.5 max-w-[180px] text-[11px]" title={item.planNote}>
+                    <td className="py-3 px-3 max-w-[170px] text-[11px]" title={item.planNote}>
                       <div className="space-y-1">
                         {item.plannedAction && (
                           <span className="font-bold text-amber-950 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 block truncate">
@@ -1060,6 +1175,19 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
           </div>
         </div>
       )}
+
+      {/* ========================================================= */}
+      {/* ADMIN UCHUN REJADAGI MIJOZLARNI TO'LIQ A4 PDF / PRINT QILISH */}
+      {/* ========================================================= */}
+      <RejaPrintModal
+        isOpen={isAdminPdfModalOpen}
+        onClose={() => setIsAdminPdfModalOpen(false)}
+        title="AGENTLAR REJASIDAGI MIJOZLAR RO'YXATI"
+        subtitle={`Agent filtri: ${selectedAgent === 'all' ? 'Barcha agentlar' : `@${selectedAgent}`}`}
+        plans={filteredPlans}
+        clients={resolvedClients}
+        allSystemPlans={allSystemPlans}
+      />
     </div>
   );
 };

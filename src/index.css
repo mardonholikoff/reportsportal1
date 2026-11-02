@@ -44,9 +44,41 @@ body {
   background: #f43f5e66;
 }
 
-/* Print styles for receipts/invoices */
+#reja-print-portal-root {
+  display: none;
+}
+
+/* Print styles for receipts/invoices and Reja PDF sheets */
 @media print {
-  body {
+  @page {
+    size: A4 landscape;
+    margin: 8mm 10mm;
+  }
+  html,
+  body,
+  #root {
+    background: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    max-width: none !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  body.reja-print-active > *:not(#reja-print-portal-root) {
+    display: none !important;
+  }
+  body.reja-print-active > #reja-print-portal-root {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
     background: #ffffff !important;
     color: #000000 !important;
   }

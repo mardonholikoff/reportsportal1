@@ -1,7 +1,18 @@
 import React from 'react';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { ProductItem } from '../types';
 import { formatMoney, formatDate, formatNumber } from '../utils/format';
 import { X, Printer, FileText, Download } from 'lucide-react';
+
+function sanitizePdfText(input: string | undefined | null): string {
+  if (!input) return '';
+  return String(input)
+    .replace(/[\u2018\u2019\u02BB\u02BC\u0060\u00B4]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\u2116/g, '#')
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ');
+}
 
 export interface NakladnoyData {
   docNumber?: string;
@@ -69,7 +80,161 @@ export const NakladnoyModal: React.FC<Props> = ({ isOpen, onClose, data }) => {
   );
 
   const handlePrintPdf = () => {
-    window.print();
+    try {
+      const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const marginX = 12;
+      let curY = 14;
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.text(sanitizePdfText(`YUK XATI # ${docNo}`), marginX, curY);
+
+      doc.setFontSize(9.5);
+      doc.text(
+        sanitizePdfText(`Sana: ${docDate} | Valyuta: USD ($)`),
+        pageWidth - marginX,
+        curY,
+        { align: 'right' }
+      );
+      curY += 6;
+
+      autoTable(doc, {
+        startY: curY,
+        margin: { left: marginX, right: marginX },
+        body: [
+          ['Mijoz (Qabul qiluvchi):', sanitizePdfText(data.clientName || "Noma'lum mijoz")],
+          [
+            'Telefon raqamlari:',
+            sanitizePdfText(
+              data.clientPhones && data.clientPhones.length > 0
+                ? data.clientPhones.filter(Boolean).join(', ')
+                : 'Kiritilmagan'
+            ),
+          ],
+          ['Manzil / Joylashuv:', sanitizePdfText(data.clientAddress || "Manzil ko'rsatilmagan")],
+        ],
+        theme: 'grid',
+        styles: {
+          font: 'helvetica',
+          fontSize: 9,
+          textColor: [0, 0, 0],
+          lineColor: [0, 0, 0],
+          lineWidth: 0.3,
+        },
+        columnStyles: {
+          0: { cellWidth: 55, fontStyle: 'bold', fillColor: [242, 242, 242] },
+        },
+      });
+
+      curY = (doc as any).lastAutoTable.finalY + 6;
+
+      if (delivered.length > 0) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.text("1. Topshirilgan mahsulotlar ro'yxati:", marginX, curY);
+        curY += 3;
+
+        autoTable(doc, {
+          startY: curY,
+          margin: { left: marginX, right: marginX },
+          head: [['#', 'Mahsulot nomi', "O'lchov", 'Miqdori', 'Narx (USD)', 'Chegirma', 'Jami (USD)']],
+          body: delivered.map((p, idx) => {
+            const qty = p.quantity || 0;
+            const basePrice = p.originalUnitPrice ?? p.unitPrice ?? 0;
+            const rowBaseTotal = qty * basePrice;
+            const finalRowTotal =
+              p.totalPrice !== undefined ? p.totalPrice : qty * (p.unitPrice || 0);
+            const rowDiscAmt =
+              p.discountAmount !== undefined
+                ? p.discountAmount
+                : Math.max(0, Math.round((rowBaseTotal - finalRowTotal) * 100) / 100);
+            return [
+              String(idx + 1),
+              sanitizePdfText(p.name),
+              sanitizePdfText(p.unit),
+              sanitizePdfText(formatNumber(qty)),
+              sanitizePdfText(formatMoney(basePrice)),
+              sanitizePdfText(rowDiscAmt > 0 ? `-${formatMoney(rowDiscAmt)}` : '0 USD'),
+              sanitizePdfText(formatMoney(finalRowTotal)),
+            ];
+          }),
+          foot: [
+            [
+              '',
+              'JAMI:',
+              '',
+              '',
+              sanitizePdfText(formatMoney(totalBaseDelivered)),
+              sanitizePdfText(totalDiscountAmount > 0 ? `-${formatMoney(totalDiscountAmount)}` : '0 USD'),
+              sanitizePdfText(formatMoney(totalFinalDelivered)),
+            ],
+          ],
+          theme: 'grid',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8.5,
+            textColor: [0, 0, 0],
+            lineColor: [0, 0, 0],
+            lineWidth: 0.3,
+          },
+          headStyles: {
+            fillColor: [235, 235, 235],
+            textColor: [0, 0, 0],
+            fontStyle: 'bold',
+          },
+          footStyles: {
+            fillColor: [242, 242, 242],
+            textColor: [0, 0, 0],
+            fontStyle: 'bold',
+          },
+        });
+        curY = (doc as any).lastAutoTable.finalY + 6;
+      }
+
+      if (returned.length > 0) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.text("Qaytarib olingan mahsulotlar ro'yxati:", marginX, curY);
+        curY += 3;
+
+        autoTable(doc, {
+          startY: curY,
+          margin: { left: marginX, right: marginX },
+          head: [['#', 'Qaytarilgan mahsulot nomi', "O'lchov", 'Miqdori', 'Birlik narxi', 'Jami summa']],
+          body: returned.map((r, idx) => [
+            String(idx + 1),
+            sanitizePdfText(r.name),
+            sanitizePdfText(r.unit),
+            sanitizePdfText(formatNumber(r.quantity)),
+            sanitizePdfText(formatMoney(r.unitPrice || 0)),
+            sanitizePdfText(formatMoney((r.quantity || 0) * (r.unitPrice || 0))),
+          ]),
+          theme: 'grid',
+          styles: {
+            font: 'helvetica',
+            fontSize: 8.5,
+            textColor: [0, 0, 0],
+            lineColor: [0, 0, 0],
+            lineWidth: 0.3,
+          },
+          headStyles: {
+            fillColor: [235, 235, 235],
+            textColor: [0, 0, 0],
+            fontStyle: 'bold',
+          },
+        });
+        curY = (doc as any).lastAutoTable.finalY + 6;
+      }
+
+      doc.save(`Yuk_xati_${docNo}.pdf`);
+    } catch {
+      window.print();
+    }
   };
 
   return (

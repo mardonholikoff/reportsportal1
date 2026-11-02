@@ -9,6 +9,11 @@ import {
   DeliveryPaymentInfo,
   MonthlyPlan,
   MonthlyPlanTarget,
+  MonthlyPlanDecadeTargets,
+  MonthlyPlanEditLog,
+  MonthlyPlanClientItem,
+  MonthlyProductPlanClientItem,
+  PlannedProductDeliveryItem,
 } from '../types';
 import { parseLegacyAddress, formatAddress } from '../utils/location';
 
@@ -22,6 +27,20 @@ const MONTHLY_PLANS_KEY = 'savdo_monthly_plans_v1';
 export const DELETED_CLIENT_IDS_KEY = 'savdo_deleted_client_ids_v1';
 export const DELETED_WAREHOUSE_IDS_KEY = 'savdo_deleted_warehouse_ids_v1';
 export const APP_INITIALIZED_KEY = 'savdo_app_initialized_v1';
+
+// Yopilgan rejalar 7 kundan keyin avtomatik tozalanishi va barchada ko'rinmasligi uchun
+export const CLOSED_PLAN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 kun
+
+export function isClosedPlanExpired7Days(plan: DailyPlanItem): boolean {
+  if (!plan) return false;
+  const isClosed = Boolean(plan.isClosed || plan.status === 'yopildi');
+  if (!isClosed) return false;
+  const closedTimeStr = plan.closedAt || plan.completedAt || plan.createdAt;
+  if (!closedTimeStr) return false;
+  const closedMs = new Date(closedTimeStr).getTime();
+  if (isNaN(closedMs)) return false;
+  return Date.now() - closedMs >= CLOSED_PLAN_RETENTION_MS;
+}
 
 let deletedClientIdsCache: Set<string> | null = null;
 let deletedWarehouseIdsCache: Set<string> | null = null;
@@ -786,6 +805,7 @@ class StorageService {
           p &&
           p.clientId &&
           !deletedIds.has(p.clientId) &&
+          !isClosedPlanExpired7Days(p) &&
           (this.clientsMapCache ? this.clientsMapCache.has(p.clientId) : true)
       );
       const { uniquePlans, duplicateIds } = this.deduplicatePlansByClient(filtered);
@@ -802,7 +822,8 @@ class StorageService {
 
   public saveDailyPlans(plans: DailyPlanItem[]): void {
     if (typeof window === 'undefined') return;
-    const { uniquePlans } = this.deduplicatePlansByClient(plans);
+    const activeWithin7Days = plans.filter((p) => p && !isClosedPlanExpired7Days(p));
+    const { uniquePlans } = this.deduplicatePlansByClient(activeWithin7Days);
     this.plansCache = uniquePlans;
     localStorage.setItem(DAILY_PLANS_KEY, JSON.stringify(uniquePlans));
     this.notify();
@@ -1538,16 +1559,63 @@ class StorageService {
   // ==========================================
   // MONTHLY DEBT RECOVERY PLANS (1 oylik reja)
   // ==========================================
+  private buildDefaultDecadeTargets(totalTarget: number): MonthlyPlanDecadeTargets {
+    const t = totalTarget > 0 ? totalTarget : 0;
+    const d1 = Math.round((t / 3) * 100) / 100;
+    const d2 = Math.round((t / 3) * 100) / 100;
+    const d3 = Math.max(0, Math.round((t - d1 - d2) * 100) / 100);
+    return {
+      decade1: d1,
+      decade2: d2,
+      decade3: d3,
+    };
+  }
+
+  private buildDefaultClientPlans(
+    clients: Client[],
+    initialClientDebts?: Record<string, number>
+  ): MonthlyPlanClientItem[] {
+    const items: MonthlyPlanClientItem[] = [];
+    clients.forEach((c) => {
+      const baseDebt =
+        initialClientDebts && initialClientDebts[c.id] > 0
+          ? initialClientDebts[c.id]
+          : c.currentDebt > 0
+          ? c.currentDebt
+          : 0;
+      if (baseDebt > 0) {
+        const roundedDebt = Math.round(baseDebt * 100) / 100;
+        const dec = this.buildDefaultDecadeTargets(roundedDebt);
+        items.push({
+          clientId: c.id,
+          clientName: c.name,
+          clientCode: c.region || '',
+          clientPhone: c.phone,
+          initialDebt: roundedDebt,
+          targetAmount: roundedDebt,
+          decade1: dec.decade1,
+          decade2: dec.decade2,
+          decade3: dec.decade3,
+        });
+      }
+    });
+    return items;
+  }
+
   public getMonthlyPlans(): MonthlyPlan[] {
     if (this.monthlyPlansCache) return this.monthlyPlansCache;
     try {
+      const existingClients = this.getClients();
       const data = localStorage.getItem(MONTHLY_PLANS_KEY);
       if (!data) {
         const now = new Date();
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+        const startDateStr = new Date(now.getFullYear(), now.getMonth(), 1)
+          .toISOString()
+          .slice(0, 10);
+        const startMs = new Date(startDateStr + 'T00:00:00').getTime();
+        // Ensure at least 30 days duration
+        const endDateStr = new Date(startMs + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
 
-        const existingClients = this.getClients();
         const initialClientDebts: Record<string, number> = {};
         let initialTotalDebt = 0;
         existingClients.forEach((c) => {
@@ -1562,16 +1630,17 @@ class StorageService {
         const initialPlan: MonthlyPlan = {
           id: 'month_plan_seed_1',
           agentUsername: 'agentp1',
-          targets: [
-            { currency: 'USD', targetAmount: defaultTarget },
-          ],
+          targets: [{ currency: 'USD', targetAmount: defaultTarget }],
+          decadeTargets: this.buildDefaultDecadeTargets(defaultTarget),
+          clientPlans: this.buildDefaultClientPlans(existingClients, initialClientDebts),
           initialClientDebts,
           initialTotalDebt: defaultTarget,
-          startDate: startOfMonth,
-          endDate: endOfMonth,
+          startDate: startDateStr,
+          endDate: endDateStr,
           createdAt: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(),
           createdBy: 'agentp1',
           notes: "Mavjud mijozlardan eski qarzdorliklarni undirish bo'yicha 1 oylik reja",
+          editHistory: [],
           status: 'active',
         };
         const list = [initialPlan];
@@ -1580,10 +1649,30 @@ class StorageService {
         return list;
       }
       const parsed: MonthlyPlan[] = JSON.parse(data);
-      const normalized = parsed.map((p) => ({
-        ...p,
-        targets: (p.targets || []).map((t) => ({ ...t, currency: 'USD' })),
-      }));
+      const normalized = parsed.map((p) => {
+        const isProductPlan = p.planType === 'product_delivery';
+        const targetAmt = p.targets?.[0]?.targetAmount || p.initialTotalDebt || 0;
+        const hasClientPlans = Array.isArray(p.clientPlans) && p.clientPlans.length > 0;
+        return {
+          ...p,
+          planType: isProductPlan ? ('product_delivery' as const) : ('debt_collection' as const),
+          targets: (p.targets || []).map((t) => ({ ...t, currency: 'USD' })),
+          decadeTargets:
+            p.decadeTargets &&
+            (p.decadeTargets.decade1 > 0 ||
+              p.decadeTargets.decade2 > 0 ||
+              p.decadeTargets.decade3 > 0)
+              ? p.decadeTargets
+              : this.buildDefaultDecadeTargets(targetAmt),
+          clientPlans: isProductPlan
+            ? p.clientPlans || []
+            : hasClientPlans
+            ? p.clientPlans
+            : this.buildDefaultClientPlans(existingClients, p.initialClientDebts),
+          productClientPlans: Array.isArray(p.productClientPlans) ? p.productClientPlans : [],
+          editHistory: Array.isArray(p.editHistory) ? p.editHistory : [],
+        };
+      });
       this.monthlyPlansCache = normalized;
       return normalized;
     } catch {
@@ -1606,7 +1695,7 @@ class StorageService {
   ): MonthlyPlan {
     const plans = this.getMonthlyPlans();
     const updatedPlans = plans.map((p) => {
-      if (p.agentUsername === planData.agentUsername && p.status === 'active') {
+      if (p.status === 'active' && p.planType !== 'product_delivery') {
         return { ...p, status: 'completed' as const };
       }
       return p;
@@ -1631,12 +1720,27 @@ class StorageService {
       currency: 'USD',
       targetAmount: t.targetAmount > 0 ? t.targetAmount : initialTotalDebt,
     }));
+    const finalTargetAmt = normalizedTargets[0]?.targetAmount || initialTotalDebt;
+
+    const cleanClientPlans: MonthlyPlanClientItem[] = Array.isArray(planData.clientPlans)
+      ? planData.clientPlans
+      : [];
+
+    cleanClientPlans.forEach((cp) => {
+      if (cp.clientId && !(cp.clientId in initialClientDebts) && cp.initialDebt > 0) {
+        initialClientDebts[cp.clientId] = cp.initialDebt;
+      }
+    });
 
     const newPlan: MonthlyPlan = {
       ...planData,
       targets: normalizedTargets,
+      decadeTargets:
+        planData.decadeTargets || this.buildDefaultDecadeTargets(finalTargetAmt),
+      clientPlans: cleanClientPlans,
       initialClientDebts,
       initialTotalDebt,
+      editHistory: Array.isArray(planData.editHistory) ? planData.editHistory : [],
       id: `mp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       createdAt: new Date().toISOString(),
     };
@@ -1645,22 +1749,443 @@ class StorageService {
     return newPlan;
   }
 
-  public getActiveMonthlyPlan(agentUsername?: string): MonthlyPlan | null {
-    const plans = this.getMonthlyPlans();
-    if (agentUsername && agentUsername.startsWith('agent')) {
-      const found = plans.find((p) => p.agentUsername === agentUsername && p.status === 'active');
-      if (found) return found;
+  public updateMonthlyPlan(
+    planId: string,
+    updates: {
+      targets: MonthlyPlanTarget[];
+      decadeTargets: MonthlyPlanDecadeTargets;
+      clientPlans?: MonthlyPlanClientItem[];
+      startDate: string;
+      endDate: string;
+      notes?: string;
+      editedBy: string;
+      editReason: string;
     }
+  ): MonthlyPlan | null {
+    const plans = [...this.getMonthlyPlans()];
+    const idx = plans.findIndex((p) => p.id === planId);
+    if (idx === -1) return null;
+
+    const existing = plans[idx];
+    const nowIso = new Date().toISOString();
+
+    const oldTarget = existing.targets?.[0]?.targetAmount || 0;
+    const newTarget = updates.targets?.[0]?.targetAmount || oldTarget;
+
+    const summaryParts: string[] = [];
+    if (Math.round(oldTarget) !== Math.round(newTarget)) {
+      summaryParts.push(
+        `Umumiy reja: ${oldTarget.toLocaleString('uz-UZ')} USD -> ${newTarget.toLocaleString('uz-UZ')} USD`
+      );
+    }
+    if (existing.startDate !== updates.startDate || existing.endDate !== updates.endDate) {
+      summaryParts.push(
+        `Muddat: ${existing.startDate} — ${existing.endDate} -> ${updates.startDate} — ${updates.endDate}`
+      );
+    }
+    summaryParts.push(
+      `10 kunliklar: 1-o'n kunlik: ${updates.decadeTargets.decade1.toLocaleString('uz-UZ')} USD, 2-o'n kunlik: ${updates.decadeTargets.decade2.toLocaleString('uz-UZ')} USD, 3-o'n kunlik: ${updates.decadeTargets.decade3.toLocaleString('uz-UZ')} USD`
+    );
+    if (updates.clientPlans) {
+      summaryParts.push(`Mijozlar rejasi: ${updates.clientPlans.length} ta mijoz`);
+    }
+
+    const newEditEntry: MonthlyPlanEditLog = {
+      id: `mplog_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      editedBy: updates.editedBy,
+      editedAt: nowIso,
+      reason: updates.editReason.trim(),
+      changesSummary: summaryParts.join(' | '),
+    };
+
+    const existingHistory = Array.isArray(existing.editHistory) ? existing.editHistory : [];
+    const updatedInitialDebts: Record<string, number> = {
+      ...(existing.initialClientDebts || {}),
+    };
+    if (updates.clientPlans) {
+      updates.clientPlans.forEach((cp) => {
+        if (cp.clientId && !(cp.clientId in updatedInitialDebts) && cp.initialDebt > 0) {
+          updatedInitialDebts[cp.clientId] = cp.initialDebt;
+        }
+      });
+    }
+
+    const updatedPlan: MonthlyPlan = {
+      ...existing,
+      targets: updates.targets.map((t) => ({ ...t, currency: 'USD' })),
+      decadeTargets: updates.decadeTargets,
+      clientPlans:
+        updates.clientPlans !== undefined ? updates.clientPlans : existing.clientPlans || [],
+      initialClientDebts: updatedInitialDebts,
+      startDate: updates.startDate,
+      endDate: updates.endDate,
+      notes: updates.notes !== undefined ? updates.notes : existing.notes,
+      updatedAt: nowIso,
+      updatedBy: updates.editedBy,
+      editHistory: [newEditEntry, ...existingHistory],
+    };
+
+    plans[idx] = updatedPlan;
+    this.saveMonthlyPlans(plans);
+    return updatedPlan;
+  }
+
+  public getActiveMonthlyPlan(_agentUsername?: string): MonthlyPlan | null {
+    const plans = this.getMonthlyPlans().filter((p) => p.planType !== 'product_delivery');
     const active = plans.find((p) => p.status === 'active');
     return active || (plans.length > 0 ? plans[0] : null);
   }
 
-  // Calculate progress strictly from pre-existing client debts at the time the plan was created.
-  // Optimized with O(1) Map indexes so it runs in O(N + M) instead of O(N * M).
+  // =========================================================================
+  // 1-MONTH PRODUCT DELIVERY PLAN (1 oylik mahsulot berish rejasi)
+  // =========================================================================
+
+  public getActiveMonthlyProductPlan(_agentUsername?: string): MonthlyPlan | null {
+    const plans = this.getMonthlyPlans().filter((p) => p.planType === 'product_delivery');
+    const active = plans.find((p) => p.status === 'active');
+    return active || (plans.length > 0 ? plans[0] : null);
+  }
+
+  public addMonthlyProductPlan(planData: {
+    agentUsername: string;
+    targets: MonthlyPlanTarget[];
+    decadeTargets?: MonthlyPlanDecadeTargets;
+    productClientPlans: MonthlyProductPlanClientItem[];
+    startDate: string;
+    endDate: string;
+    createdBy: string;
+    notes?: string;
+  }): MonthlyPlan {
+    const plans = this.getMonthlyPlans();
+    const updatedPlans = plans.map((p) => {
+      if (p.status === 'active' && p.planType === 'product_delivery') {
+        return { ...p, status: 'completed' as const };
+      }
+      return p;
+    });
+
+    const autoTotalFromClients = (planData.productClientPlans || []).reduce(
+      (sum, cp) => sum + (Number(cp.targetAmount) || 0),
+      0
+    );
+    const finalTargetAmount =
+      Math.round(
+        ((planData.targets?.[0]?.targetAmount ?? autoTotalFromClients) || autoTotalFromClients) *
+          100
+      ) / 100;
+
+    const newPlan: MonthlyPlan = {
+      id: `mpp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      planType: 'product_delivery',
+      agentUsername: planData.agentUsername,
+      targets: [{ currency: 'USD', targetAmount: finalTargetAmount }],
+      decadeTargets: planData.decadeTargets || {
+        decade1: finalTargetAmount,
+        decade2: 0,
+        decade3: 0,
+      },
+      productClientPlans: Array.isArray(planData.productClientPlans)
+        ? planData.productClientPlans
+        : [],
+      startDate: planData.startDate,
+      endDate: planData.endDate,
+      createdAt: new Date().toISOString(),
+      createdBy: planData.createdBy,
+      notes: planData.notes,
+      editHistory: [],
+      status: 'active',
+    };
+
+    updatedPlans.unshift(newPlan);
+    this.saveMonthlyPlans(updatedPlans);
+    return newPlan;
+  }
+
+  public updateMonthlyProductPlan(
+    planId: string,
+    updates: {
+      targets: MonthlyPlanTarget[];
+      decadeTargets?: MonthlyPlanDecadeTargets;
+      productClientPlans: MonthlyProductPlanClientItem[];
+      startDate: string;
+      endDate: string;
+      notes?: string;
+      editedBy: string;
+      editReason: string;
+    }
+  ): MonthlyPlan | null {
+    const plans = [...this.getMonthlyPlans()];
+    const idx = plans.findIndex((p) => p.id === planId);
+    if (idx === -1) return null;
+
+    const existing = plans[idx];
+    const nowIso = new Date().toISOString();
+
+    const autoTotalFromClients = (updates.productClientPlans || []).reduce(
+      (sum, cp) => sum + (Number(cp.targetAmount) || 0),
+      0
+    );
+    const oldTarget = existing.targets?.[0]?.targetAmount || 0;
+    const newTarget =
+      Math.round(
+        ((updates.targets?.[0]?.targetAmount ?? autoTotalFromClients) || autoTotalFromClients) * 100
+      ) / 100;
+
+    const summaryParts: string[] = [];
+    if (Math.round(oldTarget) !== Math.round(newTarget)) {
+      summaryParts.push(
+        `30 kunlik mahsulot rejasi: ${oldTarget.toLocaleString('uz-UZ')} -> ${newTarget.toLocaleString('uz-UZ')}`
+      );
+    }
+    if (existing.startDate !== updates.startDate || existing.endDate !== updates.endDate) {
+      summaryParts.push(
+        `Muddat: ${existing.startDate} — ${existing.endDate} -> ${updates.startDate} — ${updates.endDate}`
+      );
+    }
+    summaryParts.push(`Mijozlar: ${updates.productClientPlans.length} ta tanlangan`);
+
+    const newEditEntry: MonthlyPlanEditLog = {
+      id: `mpplog_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      editedBy: updates.editedBy,
+      editedAt: nowIso,
+      reason: updates.editReason.trim(),
+      changesSummary: summaryParts.join(' | '),
+    };
+
+    const existingHistory = Array.isArray(existing.editHistory) ? existing.editHistory : [];
+
+    const updatedPlan: MonthlyPlan = {
+      ...existing,
+      planType: 'product_delivery',
+      targets: [{ currency: 'USD', targetAmount: newTarget }],
+      decadeTargets: updates.decadeTargets || {
+        decade1: newTarget,
+        decade2: 0,
+        decade3: 0,
+      },
+      productClientPlans: updates.productClientPlans,
+      startDate: updates.startDate,
+      endDate: updates.endDate,
+      notes: updates.notes !== undefined ? updates.notes : existing.notes,
+      updatedAt: nowIso,
+      updatedBy: updates.editedBy,
+      editHistory: [newEditEntry, ...existingHistory],
+    };
+
+    plans[idx] = updatedPlan;
+    this.saveMonthlyPlans(plans);
+    return updatedPlan;
+  }
+
+  public calculateMonthlyProductPlanProgress(plan: MonthlyPlan) {
+    const startDateObj = new Date(plan.startDate + 'T00:00:00');
+    const endDateObj = new Date(plan.endDate + 'T23:59:59');
+    const startMs = startDateObj.getTime();
+
+    const clients = this.getClients();
+    const clientsMap = this.clientsMapCache || new Map(clients.map((c) => [c.id, c]));
+    const deletedIds = getDeletedClientIds();
+    const dailyPlans = this.getDailyPlans();
+
+    const perClientDeliveredMap = new Map<
+      string,
+      {
+        totalDelivered: number;
+        deliveriesCount: number;
+        byPaymentMethod: Record<string, number>;
+      }
+    >();
+    let totalDeliveredOverall = 0;
+    let totalDeliveriesCount = 0;
+
+    const recordDelivery = (clientId: string, val: number, paymentMethod?: string) => {
+      if (val <= 0 || deletedIds.has(clientId)) return;
+      totalDeliveredOverall = Math.round((totalDeliveredOverall + val) * 100) / 100;
+      totalDeliveriesCount++;
+
+      const cur = perClientDeliveredMap.get(clientId) || {
+        totalDelivered: 0,
+        deliveriesCount: 0,
+        byPaymentMethod: {},
+      };
+      cur.totalDelivered = Math.round((cur.totalDelivered + val) * 100) / 100;
+      cur.deliveriesCount += 1;
+      const methodKey = paymentMethod || 'qarzga';
+      cur.byPaymentMethod[methodKey] =
+        Math.round(((cur.byPaymentMethod[methodKey] || 0) + val) * 100) / 100;
+      perClientDeliveredMap.set(clientId, cur);
+    };
+
+    // 1. Track all product deliveries from daily plans (whether on debt/credit, cash, card, bank, or QR)
+    dailyPlans.forEach((dp) => {
+      if (!dp.clientId || deletedIds.has(dp.clientId)) return;
+      if (dp.actionsHistory && dp.actionsHistory.length > 0) {
+        dp.actionsHistory.forEach((act) => {
+          const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
+          if (actTime >= startDateObj && actTime <= endDateObj) {
+            if (act.productsDelivered && act.productsDelivered.length > 0) {
+              const delivVal = act.productsDelivered.reduce(
+                (s, p) => s + (p.totalPrice || (p.quantity || 0) * (p.unitPrice || 0)),
+                0
+              );
+              if (delivVal > 0) {
+                recordDelivery(
+                  dp.clientId,
+                  delivVal,
+                  act.deliveryPayment?.paymentType || dp.deliveryPayment?.paymentType || 'qarzga'
+                );
+              }
+            }
+          }
+        });
+      } else if (dp.completedAt && dp.productsDelivered && dp.productsDelivered.length > 0) {
+        const compTime = new Date(dp.completedAt);
+        if (compTime >= startDateObj && compTime <= endDateObj) {
+          const delivVal = dp.productsDelivered.reduce(
+            (s, p) => s + (p.totalPrice || (p.quantity || 0) * (p.unitPrice || 0)),
+            0
+          );
+          if (delivVal > 0) {
+            recordDelivery(
+              dp.clientId,
+              delivVal,
+              dp.deliveryPayment?.paymentType || 'qarzga'
+            );
+          }
+        }
+      }
+    });
+
+    // 2. Also track direct product additions on clients not originating from executeDailyPlanItem (_prod suffix)
+    clients.forEach((client) => {
+      if (!client.id || deletedIds.has(client.id) || !Array.isArray(client.logs)) return;
+      client.logs.forEach((log) => {
+        if (log.type === 'product_added' && !String(log.id || '').endsWith('_prod')) {
+          const logTime = new Date(log.timestamp);
+          if (logTime >= startDateObj && logTime <= endDateObj) {
+            const val = Number(log.amountChanged) || 0;
+            if (val > 0) {
+              recordDelivery(client.id, val, 'qarzga');
+            }
+          }
+        }
+      });
+    });
+
+    const clientPlanResults = (plan.productClientPlans || [])
+      .filter((cp) => cp.clientId && !deletedIds.has(cp.clientId))
+      .map((cp) => {
+        const cObj = clientsMap.get(cp.clientId);
+        const prog = perClientDeliveredMap.get(cp.clientId) || {
+          totalDelivered: 0,
+          deliveriesCount: 0,
+          byPaymentMethod: {},
+        };
+
+        // Support both new 30-day `plannedProducts` and legacy decade products
+        const mergedPlannedProducts =
+          Array.isArray(cp.plannedProducts) && cp.plannedProducts.length > 0
+            ? cp.plannedProducts
+            : [
+                ...(cp.decade1Products || []),
+                ...(cp.decade2Products || []),
+                ...(cp.decade3Products || []),
+              ];
+
+        const productsSum = mergedPlannedProducts.reduce(
+          (s, p) => s + (Number(p.totalPrice) || 0),
+          0
+        );
+        const tTotal =
+          Math.round(((Number(cp.targetAmount) || productsSum) || 0) * 100) / 100;
+        const dTotal = prog.totalDelivered;
+        const pctTotal =
+          tTotal > 0 ? Math.min(100, Math.round(((dTotal / tTotal) * 100) * 10) / 10) : 0;
+
+        return {
+          clientId: cp.clientId,
+          clientName: cObj?.name || cp.clientName,
+          clientCode: cp.clientCode || cObj?.region || '',
+          clientPhone: cObj?.phone || cp.clientPhone,
+          targetAmount: tTotal,
+          deliveredAmount: dTotal,
+          remainingAmount: Math.max(0, Math.round((tTotal - dTotal) * 100) / 100),
+          percentage: pctTotal,
+          deliveriesCount: prog.deliveriesCount,
+          byPaymentMethod: prog.byPaymentMethod,
+          plannedProducts: mergedPlannedProducts,
+        };
+      });
+
+    const sumClientTargets = clientPlanResults.reduce((s, c) => s + c.targetAmount, 0);
+    const sumClientDelivered = clientPlanResults.reduce((s, c) => s + c.deliveredAmount, 0);
+
+    const rawTarget =
+      sumClientTargets > 0 ? sumClientTargets : plan.targets?.[0]?.targetAmount || 0;
+    const targetRounded = Math.round(rawTarget * 100) / 100;
+    // Overall delivered reflects deliveries to planned clients (or overall deliveries if no clients specified)
+    const effectiveDelivered =
+      clientPlanResults.length > 0
+        ? Math.max(sumClientDelivered, totalDeliveredOverall)
+        : totalDeliveredOverall;
+    const deliveredRounded = Math.round(effectiveDelivered * 100) / 100;
+    const percentage =
+      targetRounded > 0
+        ? Math.min(100, Math.round(((deliveredRounded / targetRounded) * 100) * 10) / 10)
+        : 0;
+    const remainingAmount = Math.max(0, Math.round((targetRounded - deliveredRounded) * 100) / 100);
+
+    const targetResults = [
+      {
+        currency: 'USD',
+        targetAmount: targetRounded,
+        deliveredAmount: deliveredRounded,
+        percentage,
+        remainingAmount,
+      },
+    ];
+
+    const nowMs = Date.now();
+    const endMs = endDateObj.getTime();
+    const totalDays = Math.max(30, Math.round((endMs - startMs) / (1000 * 3600 * 24)));
+    const daysLeft = Math.max(0, Math.ceil((endMs - nowMs) / (1000 * 3600 * 24)));
+    const isExpired = endMs < nowMs;
+
+    return {
+      targetResults,
+      clientPlanResults,
+      overallPercentage: percentage,
+      totalDays,
+      daysLeft,
+      isExpired,
+      totalDeliveriesCount,
+    };
+  }
+
+  // Calculate progress strictly from pre-existing client debts at the time the plan was created,
+  // including separate 1st 10-day, 2nd 10-day, and 3rd 10-day progress percentages.
   public calculateMonthlyPlanProgress(plan: MonthlyPlan) {
     const startDateObj = new Date(plan.startDate + 'T00:00:00');
     const endDateObj = new Date(plan.endDate + 'T23:59:59');
     const planCreatedTime = new Date(plan.createdAt || plan.startDate + 'T00:00:00');
+
+    // Compute the 3 decade date boundaries based on startDate
+    const startMs = startDateObj.getTime();
+    const DAY_MS = 24 * 3600 * 1000;
+    const d1EndDateStr = new Date(startMs + 9 * DAY_MS).toISOString().slice(0, 10);
+    const d2StartDateStr = new Date(startMs + 10 * DAY_MS).toISOString().slice(0, 10);
+    const d2EndDateStr = new Date(startMs + 19 * DAY_MS).toISOString().slice(0, 10);
+    const d3StartDateStr = new Date(startMs + 20 * DAY_MS).toISOString().slice(0, 10);
+
+    const d1EndMs = new Date(d1EndDateStr + 'T23:59:59').getTime();
+    const d2EndMs = new Date(d2EndDateStr + 'T23:59:59').getTime();
+
+    const getDecadeIndexForDate = (dt: Date): 0 | 1 | 2 => {
+      const ms = dt.getTime();
+      if (ms <= d1EndMs) return 0;
+      if (ms <= d2EndMs) return 1;
+      return 2;
+    };
 
     const clients = this.getClients();
     const clientsMap = this.clientsMapCache || new Map(clients.map((c) => [c.id, c]));
@@ -1679,7 +2204,7 @@ class StorageService {
       }
     }
 
-    // 1. Determine baseline old debts snapshot (faol eski qarzdorliklar, o'chirilgan mijozlarsiz)
+    // 1. Determine baseline old debts snapshot
     const baselineDebts: Record<string, number> = {};
     if (plan.initialClientDebts && Object.keys(plan.initialClientDebts).length > 0) {
       Object.entries(plan.initialClientDebts).forEach(([cId, debt]) => {
@@ -1688,7 +2213,6 @@ class StorageService {
         }
       });
     } else {
-      // Fallback for plans without snapshot: include only clients created on or before plan creation
       clients.forEach((c) => {
         const cCreated = new Date(c.createdAt || 0);
         if (cCreated <= planCreatedTime && c.currentDebt > 0 && !deletedIds.has(c.id)) {
@@ -1697,11 +2221,35 @@ class StorageService {
       });
     }
 
+    if (Array.isArray(plan.clientPlans)) {
+      plan.clientPlans.forEach((cp) => {
+        if (
+          cp.clientId &&
+          !(cp.clientId in baselineDebts) &&
+          !deletedIds.has(cp.clientId) &&
+          clientsMap.has(cp.clientId)
+        ) {
+          const fallbackDebt =
+            cp.initialDebt > 0
+              ? cp.initialDebt
+              : Math.max(0, clientsMap.get(cp.clientId)?.currentDebt || cp.targetAmount || 0);
+          if (fallbackDebt > 0) {
+            baselineDebts[cp.clientId] = fallbackDebt;
+          }
+        }
+      });
+    }
+
     const oldClientIds = Object.keys(baselineDebts);
     let totalOldDebtRecovered = 0;
     let totalPaymentsCount = 0;
+    const decadeCollectedTotals: [number, number, number] = [0, 0, 0];
+    const perClientProgressMap = new Map<
+      string,
+      { totalCollected: number; decadeCollected: [number, number, number] }
+    >();
 
-    // 2. For each pre-existing debtor client, calculate how much of their OLD debt was closed
+    // 2. For each pre-existing debtor client, calculate how much of their OLD debt was closed and in which decade
     oldClientIds.forEach((clientId) => {
       const oldDebt = baselineDebts[clientId] || 0;
       if (oldDebt <= 0) return;
@@ -1709,80 +2257,81 @@ class StorageService {
       const clientObj = clientsMap.get(clientId);
       let paymentsClosingOldDebt = 0;
       let newDebtsAddedAfterPlan = 0;
+      const clientDecadePayments: [number, number, number] = [0, 0, 0];
 
-      // Check daily plan actions for this client via O(1) Map lookup
+      const recordClientPaymentAt = (amount: number, dt: Date, countAsPayment = true) => {
+        if (amount <= 0) return;
+        paymentsClosingOldDebt += amount;
+        const dIdx = getDecadeIndexForDate(dt);
+        clientDecadePayments[dIdx] += amount;
+        if (countAsPayment) totalPaymentsCount++;
+      };
+
       const clientDailyPlans = plansByClient.get(clientId) || [];
       clientDailyPlans.forEach((dp) => {
-          if (dp.actionsHistory && dp.actionsHistory.length > 0) {
-            dp.actionsHistory.forEach((act) => {
-              const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
-              const isInPeriod =
-                actTime >= startDateObj &&
-                actTime <= endDateObj &&
-                actTime >= planCreatedTime;
-
-              if (isInPeriod) {
-                // Direct financial payment toward debt
-                if (act.financialAction && act.financialAction.amount > 0) {
-                  paymentsClosingOldDebt += act.financialAction.amount;
-                  totalPaymentsCount++;
-                }
-                // Delivery payment: new debt added vs overpayment closing old debt
-                if (act.deliveryPayment) {
-                  const debtAdded = act.deliveryPayment.debtAmount || 0;
-                  if (debtAdded > 0) {
-                    newDebtsAddedAfterPlan += debtAdded;
-                  }
-                  const overpaid = Math.max(
-                    0,
-                    (act.deliveryPayment.paidAmount || 0) - (act.deliveryPayment.totalAmount || 0)
-                  );
-                  if (overpaid > 0) {
-                    paymentsClosingOldDebt += overpaid;
-                    totalPaymentsCount++;
-                  }
-                }
-                // Product returns reducing debt
-                if (act.productsReturned && act.productsReturned.length > 0) {
-                  const retVal = act.productsReturned.reduce(
-                    (s, r) => s + (r.quantity || 0) * (r.unitPrice || 0),
-                    0
-                  );
-                  if (retVal > 0) {
-                    paymentsClosingOldDebt += retVal;
-                  }
-                }
-              }
-            });
-          } else if (dp.completedAt) {
-            const compTime = new Date(dp.completedAt);
+        if (dp.actionsHistory && dp.actionsHistory.length > 0) {
+          dp.actionsHistory.forEach((act) => {
+            const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
             const isInPeriod =
-              compTime >= startDateObj &&
-              compTime <= endDateObj &&
-              compTime >= planCreatedTime;
+              actTime >= startDateObj &&
+              actTime <= endDateObj &&
+              actTime >= planCreatedTime;
 
             if (isInPeriod) {
-              if (dp.financialAction && dp.financialAction.amount > 0) {
-                paymentsClosingOldDebt += dp.financialAction.amount;
-                totalPaymentsCount++;
+              if (act.financialAction && act.financialAction.amount > 0) {
+                recordClientPaymentAt(act.financialAction.amount, actTime, true);
               }
-              if (dp.deliveryPayment) {
-                const debtAdded = dp.deliveryPayment.debtAmount || 0;
+              if (act.deliveryPayment) {
+                const debtAdded = act.deliveryPayment.debtAmount || 0;
                 if (debtAdded > 0) {
                   newDebtsAddedAfterPlan += debtAdded;
                 }
                 const overpaid = Math.max(
                   0,
-                  (dp.deliveryPayment.paidAmount || 0) - (dp.deliveryPayment.totalAmount || 0)
+                  (act.deliveryPayment.paidAmount || 0) - (act.deliveryPayment.totalAmount || 0)
                 );
                 if (overpaid > 0) {
-                  paymentsClosingOldDebt += overpaid;
-                  totalPaymentsCount++;
+                  recordClientPaymentAt(overpaid, actTime, true);
+                }
+              }
+              if (act.productsReturned && act.productsReturned.length > 0) {
+                const retVal = act.productsReturned.reduce(
+                  (s, r) => s + (r.quantity || 0) * (r.unitPrice || 0),
+                  0
+                );
+                if (retVal > 0) {
+                  recordClientPaymentAt(retVal, actTime, false);
                 }
               }
             }
+          });
+        } else if (dp.completedAt) {
+          const compTime = new Date(dp.completedAt);
+          const isInPeriod =
+            compTime >= startDateObj &&
+            compTime <= endDateObj &&
+            compTime >= planCreatedTime;
+
+          if (isInPeriod) {
+            if (dp.financialAction && dp.financialAction.amount > 0) {
+              recordClientPaymentAt(dp.financialAction.amount, compTime, true);
+            }
+            if (dp.deliveryPayment) {
+              const debtAdded = dp.deliveryPayment.debtAmount || 0;
+              if (debtAdded > 0) {
+                newDebtsAddedAfterPlan += debtAdded;
+              }
+              const overpaid = Math.max(
+                0,
+                (dp.deliveryPayment.paidAmount || 0) - (dp.deliveryPayment.totalAmount || 0)
+              );
+              if (overpaid > 0) {
+                recordClientPaymentAt(overpaid, compTime, true);
+              }
+            }
           }
-        });
+        }
+      });
 
       // Check client audit logs for independent payments or new debt additions after plan creation
       if (clientObj && clientObj.logs) {
@@ -1809,8 +2358,7 @@ class StorageService {
             !l.id.endsWith('_fin') &&
             !isDebtAddition
           ) {
-            paymentsClosingOldDebt += l.amountChanged;
-            totalPaymentsCount++;
+            recordClientPaymentAt(l.amountChanged, logTime, true);
           }
         });
       }
@@ -1825,12 +2373,32 @@ class StorageService {
         directOldDebtReduction = Math.max(0, oldDebt - currentDebtWithoutNewDebts);
       }
 
-      // Old debt recovered from this client is capped at their initial oldDebt
-      // so paying off new debts never inflates the recovery of old debt
       const recoveredForClient = Math.min(
         oldDebt,
         Math.max(paymentsClosingOldDebt, directOldDebtReduction)
       );
+
+      // Attribute recoveredForClient across the 3 decades capped at oldDebt
+      if (recoveredForClient > paymentsClosingOldDebt && clientObj) {
+        const extraDiff = recoveredForClient - paymentsClosingOldDebt;
+        const fallbackTime = new Date(clientObj.updatedAt || new Date().toISOString());
+        const dIdx = getDecadeIndexForDate(fallbackTime);
+        clientDecadePayments[dIdx] += extraDiff;
+      }
+
+      let remainingCap = recoveredForClient;
+      const clientAllocatedDecades: [number, number, number] = [0, 0, 0];
+      for (let d = 0; d < 3; d++) {
+        const allocated = Math.min(remainingCap, clientDecadePayments[d]);
+        clientAllocatedDecades[d] = Math.round(allocated * 100) / 100;
+        decadeCollectedTotals[d] += allocated;
+        remainingCap = Math.max(0, remainingCap - allocated);
+      }
+
+      perClientProgressMap.set(clientId, {
+        totalCollected: Math.round(recoveredForClient * 100) / 100,
+        decadeCollected: clientAllocatedDecades,
+      });
 
       totalOldDebtRecovered += recoveredForClient;
     });
@@ -1842,7 +2410,7 @@ class StorageService {
 
     const rawTarget = plan.targets?.[0]?.targetAmount || 0;
     const effectiveTarget =
-      plan.id === 'month_plan_seed_1' && baselineTotalOldDebt > 0
+      plan.id === 'month_plan_seed_1' && baselineTotalOldDebt > 0 && (!plan.editHistory || plan.editHistory.length === 0)
         ? baselineTotalOldDebt
         : rawTarget > 0
         ? rawTarget
@@ -1866,15 +2434,141 @@ class StorageService {
       },
     ];
 
+    const decTargets =
+      plan.decadeTargets &&
+      (plan.decadeTargets.decade1 > 0 ||
+        plan.decadeTargets.decade2 > 0 ||
+        plan.decadeTargets.decade3 > 0)
+        ? plan.decadeTargets
+        : this.buildDefaultDecadeTargets(targetRounded);
+
+    const buildDecadeStat = (
+      index: 1 | 2 | 3,
+      label: string,
+      sDate: string,
+      eDate: string,
+      tAmount: number,
+      cAmount: number
+    ) => {
+      const tRound = Math.round(tAmount * 100) / 100;
+      const cRound = Math.round(cAmount * 100) / 100;
+      const pct =
+        tRound > 0 ? Math.min(100, Math.round(((cRound / tRound) * 100) * 10) / 10) : 0;
+      const sMs = new Date(`${sDate}T00:00:00`).getTime();
+      const eMs = new Date(`${eDate}T23:59:59`).getTime();
+      const nowTime = Date.now();
+      const isCurrent = nowTime >= sMs && nowTime <= eMs;
+      return {
+        index,
+        decadeNumber: index,
+        label,
+        startDate: sDate,
+        endDate: eDate,
+        targetAmount: tRound,
+        collectedAmount: cRound,
+        remainingAmount: Math.max(0, Math.round((tRound - cRound) * 100) / 100),
+        percentage: pct,
+        isCurrent,
+      };
+    };
+
+    const decadeResults = [
+      buildDecadeStat(
+        1,
+        '1-chi 10 kunlik (1–10 kunlar)',
+        plan.startDate,
+        d1EndDateStr,
+        decTargets.decade1,
+        decadeCollectedTotals[0]
+      ),
+      buildDecadeStat(
+        2,
+        '2-chi 10 kunlik (11–20 kunlar)',
+        d2StartDateStr,
+        d2EndDateStr,
+        decTargets.decade2,
+        decadeCollectedTotals[1]
+      ),
+      buildDecadeStat(
+        3,
+        '3-chi 10 kunlik (21-kundan yakunigacha)',
+        d3StartDateStr,
+        plan.endDate,
+        decTargets.decade3,
+        decadeCollectedTotals[2]
+      ),
+    ];
+
+    const clientPlanResults = (plan.clientPlans || [])
+      .filter((cp) => cp.clientId && !deletedIds.has(cp.clientId))
+      .map((cp) => {
+        const cObj = clientsMap.get(cp.clientId);
+        const prog = perClientProgressMap.get(cp.clientId) || {
+          totalCollected: 0,
+          decadeCollected: [0, 0, 0] as [number, number, number],
+        };
+        const tTotal = Math.round((cp.targetAmount || 0) * 100) / 100;
+        const cTotal = prog.totalCollected;
+        const pctTotal =
+          tTotal > 0 ? Math.min(100, Math.round(((cTotal / tTotal) * 100) * 10) / 10) : 0;
+
+        const d1Target = Math.round((cp.decade1 || 0) * 100) / 100;
+        const d1Coll = prog.decadeCollected[0];
+        const d1Pct =
+          d1Target > 0 ? Math.min(100, Math.round(((d1Coll / d1Target) * 100) * 10) / 10) : 0;
+
+        const d2Target = Math.round((cp.decade2 || 0) * 100) / 100;
+        const d2Coll = prog.decadeCollected[1];
+        const d2Pct =
+          d2Target > 0 ? Math.min(100, Math.round(((d2Coll / d2Target) * 100) * 10) / 10) : 0;
+
+        const d3Target = Math.round((cp.decade3 || 0) * 100) / 100;
+        const d3Coll = prog.decadeCollected[2];
+        const d3Pct =
+          d3Target > 0 ? Math.min(100, Math.round(((d3Coll / d3Target) * 100) * 10) / 10) : 0;
+
+        return {
+          clientId: cp.clientId,
+          clientName: cObj?.name || cp.clientName,
+          clientCode: cp.clientCode || cObj?.region || '',
+          clientPhone: cObj?.phone || cp.clientPhone,
+          currentDebt: cObj ? cObj.currentDebt : cp.initialDebt,
+          initialDebt: cp.initialDebt,
+          targetAmount: tTotal,
+          collectedAmount: cTotal,
+          remainingAmount: Math.max(0, Math.round((tTotal - cTotal) * 100) / 100),
+          percentage: pctTotal,
+          decade1: {
+            target: d1Target,
+            collected: d1Coll,
+            percentage: d1Pct,
+          },
+          decade2: {
+            target: d2Target,
+            collected: d2Coll,
+            percentage: d2Pct,
+          },
+          decade3: {
+            target: d3Target,
+            collected: d3Coll,
+            percentage: d3Pct,
+          },
+        };
+      });
+
     const nowMs = Date.now();
     const endMs = endDateObj.getTime();
+    const totalDays = Math.max(30, Math.round((endMs - startMs) / (1000 * 3600 * 24)));
     const daysLeft = Math.max(0, Math.ceil((endMs - nowMs) / (1000 * 3600 * 24)));
     const isExpired = endMs < nowMs;
 
     return {
       targetResults,
+      decadeResults,
+      clientPlanResults,
       overallPercentage: percentage,
       initialTotalDebt: Math.round(baselineTotalOldDebt * 100) / 100,
+      totalDays,
       daysLeft,
       isExpired,
       totalPaymentsCount,

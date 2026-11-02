@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { DailyPlanItem } from '../types';
+import React, { useState, useMemo } from 'react';
+import { Client, DailyPlanItem } from '../types';
 import { formatMoney, formatDate } from '../utils/format';
+import { storageService, isClosedPlanExpired7Days } from '../services/storage';
+import { getClientLastOperations } from '../utils/clientActivityDates';
 import {
   CalendarCheck,
   Calendar,
@@ -17,11 +19,14 @@ import {
   RotateCcw,
   Target,
   Printer,
+  Clock,
 } from 'lucide-react';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
+import { RejaPrintModal } from './RejaPrintModal';
 
 interface Props {
   plans: DailyPlanItem[];
+  clients?: Client[];
   onOpenCreatePlan: () => void;
   onOpenMonthlyPlan?: () => void;
   onOpenExecuteModal: (item: DailyPlanItem) => void;
@@ -76,6 +81,7 @@ const calcPlanFinancials = (item: DailyPlanItem) => {
 
 export const AgentDailyPlanTable: React.FC<Props> = ({
   plans,
+  clients,
   onOpenCreatePlan,
   onOpenMonthlyPlan,
   onOpenExecuteModal,
@@ -96,6 +102,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   const [selectedPresetReason, setSelectedPresetReason] = useState<string>('');
   const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
   const [isPlanPdfModalOpen, setIsPlanPdfModalOpen] = useState<boolean>(false);
+
+  const resolvedClients = useMemo(
+    () => (clients && clients.length > 0 ? clients : storageService.getClients()),
+    [clients]
+  );
+  const allSystemPlans = useMemo(() => {
+    const stored = storageService.getDailyPlans();
+    return stored.length >= plans.length ? stored : plans;
+  }, [plans]);
 
   const formatPlannedActionLabel = (action?: string) => {
     if (action === 'telefon qilindi') return 'Telefon qilish';
@@ -141,14 +156,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     });
   };
 
-  const activePlans = plans.filter((p) => !p.isClosed && p.status !== 'yopildi');
-  const closedPlans = plans.filter((p) => p.isClosed || p.status === 'yopildi');
+  // Yopilgan rejalar 7 kundan keyin avtomatik tozalanadi va barchada ko'rinmaydi
+  const validPlans = useMemo(
+    () => plans.filter((p) => p && !isClosedPlanExpired7Days(p)),
+    [plans]
+  );
+
+  const activePlans = validPlans.filter((p) => !p.isClosed && p.status !== 'yopildi');
+  const closedPlans = validPlans.filter((p) => p.isClosed || p.status === 'yopildi');
   const displayedPlans =
     planViewFilter === 'active'
       ? activePlans
       : planViewFilter === 'closed'
       ? closedPlans
-      : plans;
+      : validPlans;
 
   const handleStartEditNote = (item: DailyPlanItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -266,7 +287,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                   planViewFilter === 'all' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
                 }`}
               >
-                {plans.length}
+                {validPlans.length}
               </span>
             </button>
           </div>
@@ -356,13 +377,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               <table className="w-full table-fixed text-left text-xs">
                 <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase text-[11px]">
                   <tr>
-                    <th className="py-2.5 px-2.5 w-[4%] text-center">#</th>
-                    <th className="py-2.5 px-2.5 w-[24%]">Mijoz va Manzil</th>
-                    <th className="py-2.5 px-2.5 w-[18%]">Reja izohi</th>
-                    <th className="py-2.5 px-2.5 w-[11%]">Holati</th>
-                    <th className="py-2.5 px-2.5 w-[21%]">Qilingan amal va Mahsulot</th>
-                    <th className="py-2.5 px-2.5 w-[11%] text-right">To'lov / Qarz</th>
-                    <th className="py-2.5 px-2.5 w-[11%] text-center">Amallar</th>
+                    <th className="py-2.5 px-2 w-[3%] text-center">#</th>
+                    <th className="py-2.5 px-2 w-[17%]">Mijoz va Manzil</th>
+                    <th className="py-2.5 px-2 w-[12%]">Joriy qarz / Haqdorlik</th>
+                    <th className="py-2.5 px-2 w-[16%]">Oxirgi moliya va mahsulot amaliyoti sanasi</th>
+                    <th className="py-2.5 px-2 w-[11%]">Reja izohi</th>
+                    <th className="py-2.5 px-2 w-[8%]">Holati</th>
+                    <th className="py-2.5 px-2 w-[15%]">Qilingan amal va Mahsulot</th>
+                    <th className="py-2.5 px-2 w-[9%] text-right">To'lov / Qarz</th>
+                    <th className="py-2.5 px-2 w-[9%] text-center">Amallar</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-rose-100/60">
@@ -371,6 +394,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                     const isDone = item.status === 'bajarildi';
                     const isEditingThisNote = editingNoteId === item.id;
                     const { paidAmount, debtAmount } = calcPlanFinancials(item);
+                    const lastOps = getClientLastOperations(
+                      item.clientId,
+                      resolvedClients,
+                      allSystemPlans
+                    );
 
                     return (
                       <tr
@@ -417,9 +445,79 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           </div>
                         </td>
 
+                        {/* 2.2. Joriy qarz / Haqdorlik (Alohida ustun) */}
+                        <td className="py-2.5 px-2">
+                          <div className="space-y-1 text-[10.5px]">
+                            {lastOps.currentDebt > 0 && (
+                              <div className="bg-rose-50 border border-rose-200 rounded-lg px-2 py-1">
+                                <div className="text-[9.5px] font-bold uppercase text-rose-800">
+                                  Qarzdorlik:
+                                </div>
+                                <div className="font-mono font-extrabold text-rose-700">
+                                  {formatMoney(lastOps.currentDebt)}
+                                </div>
+                              </div>
+                            )}
+                            {lastOps.currentAdvance > 0 && (
+                              <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1">
+                                <div className="text-[9.5px] font-bold uppercase text-emerald-800">
+                                  Haqdorlik:
+                                </div>
+                                <div className="font-mono font-extrabold text-emerald-700">
+                                  {formatMoney(lastOps.currentAdvance)}
+                                </div>
+                              </div>
+                            )}
+                            {lastOps.currentDebt <= 0 && lastOps.currentAdvance <= 0 && (
+                              <span className="inline-block px-2 py-0.5 rounded-md bg-neutral-100 text-neutral-500 font-mono text-[10px] border border-neutral-200">
+                                0 USD
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* 2.5. Last Financial & Product Operation Dates */}
+                        <td className="py-2.5 px-2">
+                          <div className="space-y-1.5 text-[10.5px]">
+                            <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-lg px-2 py-1">
+                              <div className="font-bold text-emerald-950 flex items-center gap-1">
+                                <Clock className="w-2.5 h-2.5 text-emerald-700 shrink-0" />
+                                <span>Oxirgi moliya:</span>
+                              </div>
+                              {lastOps.lastFinancialFormatted ? (
+                                <div className="font-mono font-semibold text-emerald-900 mt-0.5">
+                                  {lastOps.lastFinancialFormatted}
+                                </div>
+                              ) : (
+                                <div className="text-neutral-400 italic mt-0.5">Amaliyot yo'q</div>
+                              )}
+                            </div>
+
+                            <div className="bg-amber-50/70 border border-amber-200/80 rounded-lg px-2 py-1">
+                              <div className="font-bold text-amber-950 flex items-center gap-1">
+                                <Package className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                                <span>
+                                  {lastOps.lastProductType === 'qaytarilgan'
+                                    ? 'Mahsulot qaytarilgan:'
+                                    : lastOps.lastProductType === 'berilgan'
+                                    ? 'Mahsulot berilgan:'
+                                    : 'Oxirgi mahsulot:'}
+                                </span>
+                              </div>
+                              {lastOps.lastProductFormatted ? (
+                                <div className="font-mono font-semibold text-amber-900 mt-0.5">
+                                  {lastOps.lastProductFormatted}
+                                </div>
+                              ) : (
+                                <div className="text-neutral-400 italic mt-0.5">Amaliyot yo'q</div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
                         {/* 3. Plan Note */}
                         <td
-                          className="py-2.5 px-2.5"
+                          className="py-2.5 px-2"
                           onClick={(e) => e.stopPropagation()}
                         >
                           {isEditingThisNote && !isClosed ? (
@@ -799,11 +897,57 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       )}
                     </div>
 
-                    {/* Added Date */}
-                    <div className="mt-1 flex items-center gap-1 text-[10px] text-neutral-500 font-mono">
-                      <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                      <span>Qo'shilgan: {formatDate(item.createdAt)}</span>
-                    </div>
+                    {/* Added Date & Last Financial / Product Dates */}
+                    {(() => {
+                      const mobileLastOps = getClientLastOperations(
+                        item.clientId,
+                        resolvedClients,
+                        allSystemPlans
+                      );
+                      return (
+                        <div className="mt-1.5 space-y-1">
+                          <div className="flex items-center gap-1 text-[10px] text-neutral-500 font-mono">
+                            <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
+                            <span>Rejaga qo'shilgan: {formatDate(item.createdAt)}</span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                            {mobileLastOps.currentDebt > 0 && (
+                              <span className="px-2 py-0.5 rounded-md bg-rose-50 border border-rose-200 font-mono font-bold text-rose-700">
+                                Joriy qarz: {formatMoney(mobileLastOps.currentDebt)}
+                              </span>
+                            )}
+                            {mobileLastOps.currentAdvance > 0 && (
+                              <span className="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 font-mono font-bold text-emerald-700">
+                                Haqdorlik: {formatMoney(mobileLastOps.currentAdvance)}
+                              </span>
+                            )}
+                            {mobileLastOps.currentDebt <= 0 && mobileLastOps.currentAdvance <= 0 && (
+                              <span className="px-2 py-0.5 rounded-md bg-neutral-100 border border-neutral-200 font-mono text-neutral-600">
+                                Joriy qarz / Haqdorlik: 0 USD
+                              </span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[10px] bg-neutral-50 border border-neutral-200 rounded-lg p-1.5">
+                            <div>
+                              <span className="font-bold text-emerald-900">Oxirgi moliya: </span>
+                              <span className="font-mono text-neutral-800">
+                                {mobileLastOps.lastFinancialFormatted || "Amaliyot yo'q"}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="font-bold text-amber-900">
+                                {mobileLastOps.lastProductType === 'qaytarilgan'
+                                  ? 'Mahsulot qaytarilgan: '
+                                  : 'Mahsulot berilgan: '}
+                              </span>
+                              <span className="font-mono text-neutral-800">
+                                {mobileLastOps.lastProductFormatted || "Amaliyot yo'q"}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Planned Action & Planned Collection Amount (Mobile) */}
                     {(item.plannedAction || (item.plannedAmount && item.plannedAmount > 0)) && (
@@ -1066,162 +1210,14 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
       )}
 
       {/* Black-Bordered Printable PDF Modal for Selected Clients in Reja */}
-      {isPlanPdfModalOpen && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-xs overflow-y-auto">
-          <style>{`
-            @media print {
-              body * {
-                visibility: hidden !important;
-              }
-              #reja-printable-sheet,
-              #reja-printable-sheet * {
-                visibility: visible !important;
-              }
-              #reja-printable-sheet {
-                position: absolute !important;
-                left: 0 !important;
-                top: 0 !important;
-                width: 100% !important;
-                margin: 0 !important;
-                padding: 12px !important;
-                box-shadow: none !important;
-              }
-              .no-print-reja-controls {
-                display: none !important;
-              }
-            }
-          `}</style>
-          <div className="relative w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-neutral-300 my-4 overflow-hidden flex flex-col max-h-[92vh]">
-            {/* Top Controls */}
-            <div className="no-print-reja-controls px-5 py-3.5 bg-neutral-900 text-white flex items-center justify-between gap-3 shrink-0">
-              <div className="flex items-center gap-2.5">
-                <Printer className="w-5 h-5 text-rose-400" />
-                <div>
-                  <h3 className="text-sm sm:text-base font-bold leading-tight">
-                    Rejadagi mijozlar ro'yxati (PDF / Chop etish)
-                  </h3>
-                  <p className="text-[11px] text-neutral-300">
-                    Qora borderli tayyor jadval ({displayedPlans.length} ta mijoz)
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>Print / PDF saqlash</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsPlanPdfModalOpen(false)}
-                  className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white cursor-pointer"
-                  aria-label="Yopish"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Printable Black-Bordered Sheet */}
-            <div className="p-4 sm:p-6 overflow-y-auto bg-neutral-100 flex-1">
-              <div
-                id="reja-printable-sheet"
-                className="bg-white text-black p-5 sm:p-7 border-2 border-black mx-auto max-w-4xl space-y-4 font-sans"
-              >
-                <div className="border-b-2 border-black pb-3 flex items-start justify-between gap-4">
-                  <div>
-                    <h1 className="text-lg sm:text-xl font-extrabold uppercase tracking-wide text-black">
-                      REJADAGI MIJOZLAR RO'YXATI
-                    </h1>
-                    <p className="text-xs font-semibold text-black mt-0.5">
-                      Sana: {formatDate(new Date().toISOString())} | Jami mijozlar: {displayedPlans.length} ta
-                    </p>
-                  </div>
-                  <div className="text-right text-xs font-mono font-bold border border-black px-3 py-1.5">
-                    <div>
-                      Undirish rejasi jami:{' '}
-                      {formatMoney(
-                        displayedPlans.reduce((acc, p) => acc + (p.plannedAmount || 0), 0)
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <table className="w-full border-collapse border-2 border-black text-xs text-black">
-                  <thead>
-                    <tr className="bg-neutral-100 font-bold uppercase text-[11px]">
-                      <th className="border border-black py-2 px-2 text-center w-9">№</th>
-                      <th className="border border-black py-2 px-2.5 text-left">Mijoz F.I.Sh</th>
-                      <th className="border border-black py-2 px-2.5 text-left">Telefon</th>
-                      <th className="border border-black py-2 px-2.5 text-left">Manzil</th>
-                      <th className="border border-black py-2 px-2.5 text-left">
-                        Tanlangan amal
-                      </th>
-                      <th className="border border-black py-2 px-2.5 text-right">
-                        Undirish rejasi (USD)
-                      </th>
-                      <th className="border border-black py-2 px-2.5 text-left">
-                        Holati / Izoh
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayedPlans.map((item, index) => {
-                      const plannedLabel = formatPlannedActionLabel(
-                        item.plannedAction || item.actionDone
-                      );
-                      return (
-                        <tr key={item.id}>
-                          <td className="border border-black py-2 px-2 text-center font-mono font-bold">
-                            {index + 1}
-                          </td>
-                          <td className="border border-black py-2 px-2.5 font-bold">
-                            {item.clientName}
-                          </td>
-                          <td className="border border-black py-2 px-2.5 font-mono">
-                            {item.clientPhone}
-                          </td>
-                          <td className="border border-black py-2 px-2.5">
-                            {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') ||
-                              item.clientAddress ||
-                              '-'}
-                            {item.clientLandmark ? ` (${item.clientLandmark})` : ''}
-                          </td>
-                          <td className="border border-black py-2 px-2.5 font-semibold">
-                            {plannedLabel || '-'}
-                          </td>
-                          <td className="border border-black py-2 px-2.5 text-right font-mono font-bold">
-                            {item.plannedAmount && item.plannedAmount > 0
-                              ? formatMoney(item.plannedAmount)
-                              : '-'}
-                          </td>
-                          <td className="border border-black py-2 px-2.5">
-                            <div className="font-bold">
-                              {item.status === 'bajarildi'
-                                ? `Bajardi (${formatPlannedActionLabel(item.actionDone)})`
-                                : item.isClosed || item.status === 'yopildi'
-                                ? 'Yopilgan'
-                                : 'Rejada'}
-                            </div>
-                            {(item.planNote || item.reportNote) && (
-                              <div className="text-[11px]">
-                                {item.planNote || item.reportNote}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <RejaPrintModal
+        isOpen={isPlanPdfModalOpen}
+        onClose={() => setIsPlanPdfModalOpen(false)}
+        title="REJADAGI MIJOZLAR RO'YXATI"
+        plans={displayedPlans}
+        clients={resolvedClients}
+        allSystemPlans={allSystemPlans}
+      />
 
       {/* Yuk Xati Modal */}
       {nakladnoyData && (

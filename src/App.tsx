@@ -27,6 +27,9 @@ import {
   SystemLogPeriodArchive,
   MonthlyPlan,
   MonthlyPlanTarget,
+  MonthlyPlanDecadeTargets,
+  MonthlyPlanClientItem,
+  MonthlyProductPlanClientItem,
 } from './types';
 import { LoginView } from './components/LoginView';
 import { Navbar } from './components/Navbar';
@@ -48,6 +51,8 @@ import { WarehouseInventoryModal } from './components/WarehouseInventoryModal';
 import { AgentWarehouseTable } from './components/AgentWarehouseTable';
 import { MonthlyPlanProgressCard } from './components/MonthlyPlanProgressCard';
 import { CreateMonthlyPlanModal } from './components/CreateMonthlyPlanModal';
+import { MonthlyProductPlanProgressCard } from './components/MonthlyProductPlanProgressCard';
+import { CreateMonthlyProductPlanModal } from './components/CreateMonthlyProductPlanModal';
 import { AddWarehouseDebtModal } from './components/AddWarehouseDebtModal';
 import {
   addSystemLog,
@@ -138,11 +143,12 @@ export default function App() {
   );
   const [isWarehouseInventoryModalOpen, setIsWarehouseInventoryModalOpen] = useState(false);
 
-  // Monthly Plans state (1 oylik qarz undirish rejalari)
+  // Monthly Plans state (1 oylik qarz undirish va 1 oylik mahsulot berish rejalari)
   const [monthlyPlans, setMonthlyPlans] = useState<MonthlyPlan[]>(() =>
     storageService.getMonthlyPlans()
   );
   const [isCreateMonthlyPlanOpen, setIsCreateMonthlyPlanOpen] = useState(false);
+  const [isCreateMonthlyProductPlanOpen, setIsCreateMonthlyProductPlanOpen] = useState(false);
 
   // Add warehouse debt modal state
   const [isAddWarehouseDebtOpen, setIsAddWarehouseDebtOpen] = useState(false);
@@ -159,10 +165,17 @@ export default function App() {
   const isAdmin = user?.role === 'admin';
   const isAgent = user?.role === 'agent';
 
-  // Active monthly plan for tracker
+  // Active monthly debt collection plan for tracker
   const activeMonthlyPlan = useMemo(() => {
-    return storageService.getActiveMonthlyPlan(isAgent ? user?.username : undefined);
-  }, [monthlyPlans, isAgent, user]);
+    const plan = storageService.getActiveMonthlyPlan(isAgent ? user?.username : undefined);
+    return plan ? { ...plan } : null;
+  }, [monthlyPlans, clients, isAgent, user]);
+
+  // Active monthly product delivery plan for tracker (1 oylik qarz undiruv ostidagi yangi turdagi reja)
+  const activeMonthlyProductPlan = useMemo(() => {
+    const plan = storageService.getActiveMonthlyProductPlan(isAgent ? user?.username : undefined);
+    return plan ? { ...plan } : null;
+  }, [monthlyPlans, clients, dailyPlans, isAgent, user]);
 
   // Handle Save Warehouse Debt for client (adminc and adminc1)
   const handleSaveWarehouseDebt = (
@@ -220,17 +233,63 @@ export default function App() {
     }
   };
 
-  // Handle Save 1-Month Debt Collection Plan
+  // Handle Save or Edit 1-Month Debt Collection Plan
   const handleSaveMonthlyPlan = (
     targets: MonthlyPlanTarget[],
+    decadeTargets: MonthlyPlanDecadeTargets,
+    clientPlans: MonthlyPlanClientItem[],
     startDate: string,
     endDate: string,
-    notes?: string
+    notes?: string,
+    editReason?: string
   ) => {
     const currentUsername = user?.username || 'agentp1';
+    const isEditingActive =
+      activeMonthlyPlan &&
+      activeMonthlyPlan.status === 'active' &&
+      new Date(`${activeMonthlyPlan.endDate}T23:59:59`).getTime() >= Date.now();
+
+    if (isEditingActive && activeMonthlyPlan) {
+      const updatedPlan = storageService.updateMonthlyPlan(activeMonthlyPlan.id, {
+        targets,
+        decadeTargets,
+        clientPlans,
+        startDate,
+        endDate,
+        notes,
+        editedBy: currentUsername,
+        editReason: editReason || "Reja ma'lumotlari tahrirlandi",
+      });
+
+      if (updatedPlan) {
+        setMonthlyPlans(storageService.getMonthlyPlans());
+        syncMonthlyPlanToFirestore(updatedPlan);
+        addSystemLog({
+          userId: currentUsername,
+          userRole: user?.role || 'agent',
+          actionType: 'reja_tuzish',
+          actionTitle: `1 oylik qarz undirish rejasi tahrirlandi (@${currentUsername})`,
+          details: `Sabab/Izoh: "${editReason}". Muddat: ${startDate} dan ${endDate} gacha. Mijozlar soni: ${clientPlans.length} ta. Umumiy: ${targets.map((t) => `${new Intl.NumberFormat('uz-UZ').format(t.targetAmount)} ${t.currency}`).join(', ')}. 10 kunliklar: 1-chi=${new Intl.NumberFormat('uz-UZ').format(decadeTargets.decade1)} USD, 2-chi=${new Intl.NumberFormat('uz-UZ').format(decadeTargets.decade2)} USD, 3-chi=${new Intl.NumberFormat('uz-UZ').format(decadeTargets.decade3)} USD.`,
+          metadata: {
+            planId: updatedPlan.id,
+            targets,
+            decadeTargets,
+            clientsCount: clientPlans.length,
+            startDate,
+            endDate,
+            editReason,
+          },
+        });
+        showToast("Mavjud 1 oylik reja muvaffaqiyatli tahrirlandi va xronologiyaga yozildi!");
+      }
+      return;
+    }
+
     const newPlan = storageService.addMonthlyPlan({
       agentUsername: currentUsername,
       targets,
+      decadeTargets,
+      clientPlans,
       startDate,
       endDate,
       createdBy: currentUsername,
@@ -243,16 +302,102 @@ export default function App() {
       userId: currentUsername,
       userRole: user?.role || 'agent',
       actionType: 'reja_tuzish',
-      actionTitle: `1 oylik qarz undirish rejasi tuzildi (${currentUsername})`,
-      details: `Muddat: ${startDate} dan ${endDate} gacha. Maqsadlar: ${targets.map((t) => `${new Intl.NumberFormat('uz-UZ').format(t.targetAmount)} ${t.currency}`).join(', ')}`,
+      actionTitle: `1 oylik qarz undirish rejasi tuzildi (@${currentUsername})`,
+      details: `Muddat: ${startDate} dan ${endDate} gacha. Mijozlar soni: ${clientPlans.length} ta. Umumiy maqsad: ${targets.map((t) => `${new Intl.NumberFormat('uz-UZ').format(t.targetAmount)} ${t.currency}`).join(', ')}. 10 kunliklar: 1-chi=${new Intl.NumberFormat('uz-UZ').format(decadeTargets.decade1)} USD, 2-chi=${new Intl.NumberFormat('uz-UZ').format(decadeTargets.decade2)} USD, 3-chi=${new Intl.NumberFormat('uz-UZ').format(decadeTargets.decade3)} USD.`,
       metadata: {
         planId: newPlan.id,
         targets,
+        decadeTargets,
+        clientsCount: clientPlans.length,
         startDate,
         endDate,
       },
     });
     showToast("1 oylik qarz undirish rejasi muvaffaqiyatli saqlandi!");
+  };
+
+  // Handle Save or Edit 1-Month Product Delivery Plan (1 oylik mahsulot berish rejasi)
+  const handleSaveMonthlyProductPlan = (
+    targets: MonthlyPlanTarget[],
+    decadeTargets: MonthlyPlanDecadeTargets,
+    productClientPlans: MonthlyProductPlanClientItem[],
+    startDate: string,
+    endDate: string,
+    notes?: string,
+    editReason?: string
+  ) => {
+    const currentUsername = user?.username || 'agentp1';
+    const isEditingActive =
+      activeMonthlyProductPlan &&
+      activeMonthlyProductPlan.status === 'active' &&
+      new Date(`${activeMonthlyProductPlan.endDate}T23:59:59`).getTime() >= Date.now();
+
+    if (isEditingActive && activeMonthlyProductPlan) {
+      const updatedPlan = storageService.updateMonthlyProductPlan(activeMonthlyProductPlan.id, {
+        targets,
+        decadeTargets,
+        productClientPlans,
+        startDate,
+        endDate,
+        notes,
+        editedBy: currentUsername,
+        editReason: editReason || "Mahsulot rejasi tahrirlandi",
+      });
+
+      if (updatedPlan) {
+        setMonthlyPlans(storageService.getMonthlyPlans());
+        syncMonthlyPlanToFirestore(updatedPlan);
+        addSystemLog({
+          userId: currentUsername,
+          userRole: user?.role || 'agent',
+          actionType: 'reja_tuzish',
+          actionTitle: `1 oylik mahsulot berish rejasi tahrirlandi (@${currentUsername})`,
+          details: `Sabab/Izoh: "${editReason}". Muddat: ${startDate} — ${endDate}. Mijozlar soni: ${productClientPlans.length} ta. Umumiy reja: ${new Intl.NumberFormat('uz-UZ').format(targets[0]?.targetAmount || 0)}.`,
+          metadata: {
+            planId: updatedPlan.id,
+            planType: 'product_delivery',
+            targets,
+            decadeTargets,
+            clientsCount: productClientPlans.length,
+            startDate,
+            endDate,
+            editReason,
+          },
+        });
+        showToast("Mavjud 1 oylik mahsulot berish rejasi tahrirlandi va xronologiyaga yozildi!");
+      }
+      return;
+    }
+
+    const newPlan = storageService.addMonthlyProductPlan({
+      agentUsername: currentUsername,
+      targets,
+      decadeTargets,
+      productClientPlans,
+      startDate,
+      endDate,
+      createdBy: currentUsername,
+      notes,
+    });
+    setMonthlyPlans(storageService.getMonthlyPlans());
+    syncMonthlyPlanToFirestore(newPlan);
+    addSystemLog({
+      userId: currentUsername,
+      userRole: user?.role || 'agent',
+      actionType: 'reja_tuzish',
+      actionTitle: `1 oylik mahsulot berish rejasi tuzildi (@${currentUsername})`,
+      details: `Muddat: ${startDate} — ${endDate}. Mijozlar soni: ${productClientPlans.length} ta. Umumiy maqsad: ${new Intl.NumberFormat('uz-UZ').format(targets[0]?.targetAmount || 0)}.`,
+      metadata: {
+        planId: newPlan.id,
+        planType: 'product_delivery',
+        targets,
+        decadeTargets,
+        clientsCount: productClientPlans.length,
+        startDate,
+        endDate,
+      },
+    });
+    showToast("1 oylik mahsulot berish rejasi muvaffaqiyatli saqlandi!");
   };
 
   // Save Warehouse Intake Product
@@ -616,8 +761,36 @@ export default function App() {
       },
       onMonthlyPlansChange: (remoteMonthlyPlans) => {
         if (remoteMonthlyPlans && remoteMonthlyPlans.length > 0) {
-          storageService.saveMonthlyPlans(remoteMonthlyPlans);
-          setMonthlyPlans(remoteMonthlyPlans);
+          const localPlans = storageService.getMonthlyPlans();
+          const localMap = new Map<string, MonthlyPlan>();
+          localPlans.forEach((lp) => localMap.set(lp.id, lp));
+
+          const mergedMap = new Map<string, MonthlyPlan>();
+          localPlans.forEach((lp) => mergedMap.set(lp.id, lp));
+
+          remoteMonthlyPlans.forEach((rp) => {
+            const existing = localMap.get(rp.id);
+            if (!existing) {
+              mergedMap.set(rp.id, rp);
+            } else {
+              const rTime = new Date(rp.updatedAt || rp.createdAt || 0).getTime();
+              const lTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+              const rHistLen = rp.editHistory?.length || 0;
+              const lHistLen = existing.editHistory?.length || 0;
+              if (rHistLen > lHistLen || (rHistLen === lHistLen && rTime >= lTime)) {
+                mergedMap.set(rp.id, rp);
+              } else {
+                mergedMap.set(rp.id, existing);
+                syncMonthlyPlanToFirestore(existing);
+              }
+            }
+          });
+
+          const mergedList = Array.from(mergedMap.values()).sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+          storageService.saveMonthlyPlans(mergedList);
+          setMonthlyPlans(storageService.getMonthlyPlans());
         }
       },
     });
@@ -1112,7 +1285,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* Tab 1: Bugungi kunlik reja + Yuqorida 1 oylik reja ko'rsatkichi va tugmasi */}
+            {/* Tab 1: Bugungi kunlik reja + Yuqorida 1 oylik qarz undiruv va 1 oylik mahsulot berish rejalari */}
             {agentActiveTab === 'reja' && (
               <div className="space-y-4 animate-in fade-in duration-150">
                 <MonthlyPlanProgressCard
@@ -1122,8 +1295,16 @@ export default function App() {
                   onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
                 />
 
+                <MonthlyProductPlanProgressCard
+                  plan={activeMonthlyProductPlan}
+                  userRole={user.role}
+                  currentUsername={user.username}
+                  onOpenCreatePlan={() => setIsCreateMonthlyProductPlanOpen(true)}
+                />
+
                 <AgentDailyPlanTable
                   plans={dailyPlans}
+                  clients={clients}
                   onOpenCreatePlan={() => setIsCreatePlanOpen(true)}
                   onOpenMonthlyPlan={() => setIsCreateMonthlyPlanOpen(true)}
                   onOpenExecuteModal={(item) => setExecutingPlanItem(item)}
@@ -1213,15 +1394,24 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* ADMIN VIEW: BIRINCHI BO'LIB 1 OYLIK QARZ UNDIRISH FOIZI    */}
+        {/* ADMIN VIEW: BIRINCHI BO'LIB 1 OYLIK QARZ UNDIRISH VA MAHSULOT BERISH FOIZI */}
         {/* ========================================================= */}
         {isAdmin && (
-          <MonthlyPlanProgressCard
-            plan={activeMonthlyPlan}
-            userRole={user.role}
-            currentUsername={user.username}
-            onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
-          />
+          <div className="space-y-4">
+            <MonthlyPlanProgressCard
+              plan={activeMonthlyPlan}
+              userRole={user.role}
+              currentUsername={user.username}
+              onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
+            />
+
+            <MonthlyProductPlanProgressCard
+              plan={activeMonthlyProductPlan}
+              userRole={user.role}
+              currentUsername={user.username}
+              onOpenCreatePlan={() => setIsCreateMonthlyProductPlanOpen(true)}
+            />
+          </div>
         )}
 
         {/* ========================================================= */}
@@ -1516,7 +1706,7 @@ export default function App() {
             {isAdminPlansOpen && (
               <div className="p-5 sm:p-6 pt-0 border-t border-rose-100/70 animate-in fade-in duration-150">
                 <div className="pt-4">
-                  <AdminAgentPlansTable plans={dailyPlans} />
+                  <AdminAgentPlansTable plans={dailyPlans} clients={clients} />
                 </div>
               </div>
             )}
@@ -1697,6 +1887,16 @@ export default function App() {
         currentUsername={user.username}
         existingPlan={activeMonthlyPlan}
         onSavePlan={handleSaveMonthlyPlan}
+      />
+
+      {/* Agent & Admin: Create 1-Month Product Delivery Plan Modal */}
+      <CreateMonthlyProductPlanModal
+        isOpen={isCreateMonthlyProductPlanOpen}
+        onClose={() => setIsCreateMonthlyProductPlanOpen(false)}
+        warehouseProducts={warehouseProducts}
+        currentUsername={user.username}
+        existingPlan={activeMonthlyProductPlan}
+        onSavePlan={handleSaveMonthlyProductPlan}
       />
 
       {/* Agent: Create Daily Plan Modal */}

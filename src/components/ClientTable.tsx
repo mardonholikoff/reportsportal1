@@ -56,6 +56,13 @@ export const ClientTable: React.FC<Props> = ({
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
   const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
   const [selectedCreator, setSelectedCreator] = useState<string>('all');
+  // Mahsulotlar asosida filtr va tanlangan mahsulotlarni ko'p yoki kam asosida filtr/saralash
+  const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
+  const [productPresenceFilter, setProductPresenceFilter] = useState<'all' | 'has_products' | 'no_products'>('all');
+  const [productOrderMode, setProductOrderMode] = useState<'none' | 'qty_desc' | 'qty_asc' | 'sum_desc' | 'sum_asc'>('none');
+  const [minProductQty, setMinProductQty] = useState<string>('');
+  const [maxProductQty, setMaxProductQty] = useState<string>('');
+
   const [isExporting, setIsExporting] = useState(false);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -113,12 +120,93 @@ export const ClientTable: React.FC<Props> = ({
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'uz'));
   }, [clients]);
 
+  // Extract all unique products across clients (with client count and total qty)
+  const uniqueProductCatalog = useMemo(() => {
+    const map = new Map<
+      string,
+      { name: string; unit: string; clientsSet: Set<string>; totalQty: number; totalSum: number }
+    >();
+    clients.forEach((c) => {
+      (c.products || []).forEach((p) => {
+        const cleanName = (p.name || '').trim();
+        if (!cleanName) return;
+        const key = cleanName.toLowerCase();
+        const existing = map.get(key) || {
+          name: cleanName,
+          unit: p.unit || 'dona',
+          clientsSet: new Set<string>(),
+          totalQty: 0,
+          totalSum: 0,
+        };
+        existing.clientsSet.add(c.id);
+        existing.totalQty += Number(p.quantity) || 0;
+        existing.totalSum += Number(p.totalPrice) || (Number(p.quantity) || 0) * (Number(p.unitPrice) || 0);
+        map.set(key, existing);
+      });
+    });
+    return Array.from(map.values())
+      .map((item) => ({
+        name: item.name,
+        key: item.name.toLowerCase(),
+        unit: item.unit,
+        clientsCount: item.clientsSet.size,
+        totalQty: Math.round(item.totalQty * 100) / 100,
+        totalSum: Math.round(item.totalSum * 100) / 100,
+      }))
+      .sort((a, b) => b.clientsCount - a.clientsCount || a.name.localeCompare(b.name, 'uz'));
+  }, [clients]);
+
+  // Helper: get client's quantity and sum for the currently selected product(s) (or all products if none selected)
+  const getClientProductMetrics = (client: Client) => {
+    const prods = client.products || [];
+    const selectedSet = new Set(selectedProducts.map((s) => s.toLowerCase()));
+    let matchedQty = 0;
+    let matchedSum = 0;
+    let matchedCount = 0;
+
+    prods.forEach((p) => {
+      const pKey = (p.name || '').trim().toLowerCase();
+      if (!pKey) return;
+      if (selectedSet.size === 0 || selectedSet.has(pKey)) {
+        const q = Number(p.quantity) || 0;
+        const val = Number(p.totalPrice) || q * (Number(p.unitPrice) || 0);
+        matchedQty += q;
+        matchedSum += val;
+        matchedCount++;
+      }
+    });
+
+    return {
+      matchedQty: Math.round(matchedQty * 100) / 100,
+      matchedSum: Math.round(matchedSum * 100) / 100,
+      matchedCount,
+    };
+  };
+
+  const toggleProductSelection = (prodName: string) => {
+    setSelectedProducts((prev) => {
+      const exists = prev.some((p) => p.toLowerCase() === prodName.toLowerCase());
+      const next = exists
+        ? prev.filter((p) => p.toLowerCase() !== prodName.toLowerCase())
+        : [...prev, prodName];
+      if (next.length > 0 && productOrderMode === 'none') {
+        setProductOrderMode('qty_desc');
+      }
+      return next;
+    });
+  };
+
   const isAnyFilterActive =
     searchQuery.trim() !== '' ||
     filterType !== 'all' ||
     selectedRegion !== 'all' ||
     selectedDistrict !== 'all' ||
-    selectedCreator !== 'all';
+    selectedCreator !== 'all' ||
+    selectedProducts.length > 0 ||
+    productPresenceFilter !== 'all' ||
+    productOrderMode !== 'none' ||
+    minProductQty.trim() !== '' ||
+    maxProductQty.trim() !== '';
 
   const resetAllFilters = () => {
     setSearchQuery('');
@@ -126,6 +214,11 @@ export const ClientTable: React.FC<Props> = ({
     setSelectedRegion('all');
     setSelectedDistrict('all');
     setSelectedCreator('all');
+    setSelectedProducts([]);
+    setProductPresenceFilter('all');
+    setProductOrderMode('none');
+    setMinProductQty('');
+    setMaxProductQty('');
     setSortType('newest');
   };
 
@@ -206,8 +299,56 @@ export const ClientTable: React.FC<Props> = ({
       );
     }
 
-    // Sorting
+    // Mahsulot bor/yo'qligi bo'yicha filtr
+    if (productPresenceFilter === 'has_products') {
+      result = result.filter((c) => c.products && c.products.length > 0);
+    } else if (productPresenceFilter === 'no_products') {
+      result = result.filter((c) => !c.products || c.products.length === 0);
+    }
+
+    // Tanlangan mahsulot(lar) asosida filtr (kimda qanday mahsulot borligi)
+    if (selectedProducts.length > 0) {
+      const selSet = new Set(selectedProducts.map((s) => s.toLowerCase()));
+      result = result.filter((c) =>
+        (c.products || []).some((p) => selSet.has((p.name || '').trim().toLowerCase()))
+      );
+    }
+
+    // Tanlangan mahsulot(lar) miqdori (ko'p yoki kam / min-max) bo'yicha filtr
+    const minQ = minProductQty.trim() !== '' ? Number(minProductQty) : null;
+    const maxQ = maxProductQty.trim() !== '' ? Number(maxProductQty) : null;
+    if ((minQ !== null && !isNaN(minQ)) || (maxQ !== null && !isNaN(maxQ))) {
+      result = result.filter((c) => {
+        const { matchedQty } = getClientProductMetrics(c);
+        if (minQ !== null && !isNaN(minQ) && matchedQty < minQ) return false;
+        if (maxQ !== null && !isNaN(maxQ) && matchedQty > maxQ) return false;
+        return matchedQty > 0 || minQ === 0;
+      });
+    }
+
+    // Sorting (agar mahsulotni ko'p yoki kam asosida tartiblash tanlangan bo'lsa, birinchi navbatda u ishlaydi)
     result.sort((a, b) => {
+      if (productOrderMode !== 'none') {
+        const aM = getClientProductMetrics(a);
+        const bM = getClientProductMetrics(b);
+        if (productOrderMode === 'qty_desc') {
+          if (bM.matchedQty !== aM.matchedQty) return bM.matchedQty - aM.matchedQty;
+          return bM.matchedSum - aM.matchedSum;
+        }
+        if (productOrderMode === 'qty_asc') {
+          if (aM.matchedQty !== bM.matchedQty) return aM.matchedQty - bM.matchedQty;
+          return aM.matchedSum - bM.matchedSum;
+        }
+        if (productOrderMode === 'sum_desc') {
+          if (bM.matchedSum !== aM.matchedSum) return bM.matchedSum - aM.matchedSum;
+          return bM.matchedQty - aM.matchedQty;
+        }
+        if (productOrderMode === 'sum_asc') {
+          if (aM.matchedSum !== bM.matchedSum) return aM.matchedSum - bM.matchedSum;
+          return aM.matchedQty - bM.matchedQty;
+        }
+      }
+
       if (sortType === 'name') {
         return a.name.localeCompare(b.name, 'uz');
       }
@@ -224,12 +365,38 @@ export const ClientTable: React.FC<Props> = ({
     });
 
     return result;
-  }, [clients, deferredSearchQuery, filterType, sortType, selectedRegion, selectedDistrict, selectedCreator]);
+  }, [
+    clients,
+    deferredSearchQuery,
+    filterType,
+    sortType,
+    selectedRegion,
+    selectedDistrict,
+    selectedCreator,
+    selectedProducts,
+    productPresenceFilter,
+    productOrderMode,
+    minProductQty,
+    maxProductQty,
+  ]);
 
   // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [deferredSearchQuery, filterType, sortType, selectedRegion, selectedDistrict, selectedCreator, pageSize]);
+  }, [
+    deferredSearchQuery,
+    filterType,
+    sortType,
+    selectedRegion,
+    selectedDistrict,
+    selectedCreator,
+    selectedProducts,
+    productPresenceFilter,
+    productOrderMode,
+    minProductQty,
+    maxProductQty,
+    pageSize,
+  ]);
 
   const totalPages = useMemo(() => {
     if (pageSize === 'all') return 1;
@@ -533,6 +700,188 @@ export const ClientTable: React.FC<Props> = ({
               <X className="w-3.5 h-3.5" />
               <span>Filtrlarni tozalash</span>
             </button>
+          )}
+        </div>
+
+        {/* =================================================================== */}
+        {/* MAHSULOTLARI ASOSIDA FILTR VA KO'P YOKI KAM ASOSIDA SARALASH BLOKI  */}
+        {/* =================================================================== */}
+        <div className="pt-2.5 border-t border-neutral-100 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-indigo-900 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 uppercase">
+                <Package className="w-3.5 h-3.5 text-indigo-700" />
+                <span>Mahsulotlar asosida filtr (Kimda qanday mahsulot bor va Ko'p / Kam):</span>
+              </span>
+
+              {/* Mahsulot bor/yo'q tezkor tugmalar */}
+              <div className="flex items-center gap-1 bg-neutral-100 p-0.5 rounded-lg border border-neutral-200 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setProductPresenceFilter('all')}
+                  className={`px-2 py-1 rounded-md font-bold cursor-pointer transition ${
+                    productPresenceFilter === 'all'
+                      ? 'bg-white text-neutral-900 shadow-2xs'
+                      : 'text-neutral-600 hover:text-neutral-900'
+                  }`}
+                >
+                  Barchasi
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductPresenceFilter('has_products')}
+                  className={`px-2 py-1 rounded-md font-bold cursor-pointer transition ${
+                    productPresenceFilter === 'has_products'
+                      ? 'bg-indigo-700 text-white shadow-2xs'
+                      : 'text-neutral-600 hover:text-neutral-900'
+                  }`}
+                >
+                  Mahsuloti borlar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProductPresenceFilter('no_products')}
+                  className={`px-2 py-1 rounded-md font-bold cursor-pointer transition ${
+                    productPresenceFilter === 'no_products'
+                      ? 'bg-neutral-800 text-white shadow-2xs'
+                      : 'text-neutral-600 hover:text-neutral-900'
+                  }`}
+                >
+                  Mahsulotsiz
+                </button>
+              </div>
+
+              {/* Dropdown orqali mahsulot qo'shish/tanlash */}
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50/70 hover:bg-indigo-100/70 rounded-xl border border-indigo-200 text-xs">
+                <Package className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) return;
+                    if (val === '__CLEAR__') {
+                      setSelectedProducts([]);
+                    } else {
+                      toggleProductSelection(val);
+                    }
+                  }}
+                  className="bg-transparent outline-none cursor-pointer text-indigo-950 font-bold max-w-[220px] truncate"
+                >
+                  <option value="">
+                    {selectedProducts.length > 0
+                      ? `+ Yana mahsulot tanlash (${selectedProducts.length} ta tanlangan)`
+                      : 'Mahsulotni tanlang...'}
+                  </option>
+                  {selectedProducts.length > 0 && (
+                    <option value="__CLEAR__">✕ Tanlangan mahsulotlarni tozalash</option>
+                  )}
+                  {uniqueProductCatalog.map((prod) => {
+                    const isSel = selectedProducts.some(
+                      (s) => s.toLowerCase() === prod.key
+                    );
+                    return (
+                      <option key={prod.key} value={prod.name}>
+                        {isSel ? '✓ ' : ''}
+                        {prod.name} ({prod.clientsCount} mijozda, jami {formatNumber(prod.totalQty)} {prod.unit})
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+            </div>
+
+            {/* Tanlangan mahsulotlarni Ko'p yoki Kam asosida tartiblash va Min/Max miqdor */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 bg-amber-50/90 px-2.5 py-1.5 rounded-xl border border-amber-200 text-xs">
+                <ArrowUpDown className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                <span className="text-[11px] font-bold text-amber-900">Ko'p / Kam:</span>
+                <select
+                  value={productOrderMode}
+                  onChange={(e) =>
+                    setProductOrderMode(
+                      e.target.value as 'none' | 'qty_desc' | 'qty_asc' | 'sum_desc' | 'sum_asc'
+                    )
+                  }
+                  className="bg-transparent outline-none cursor-pointer text-amber-950 font-bold"
+                >
+                  <option value="none">Oddiy tartib</option>
+                  <option value="qty_desc">Ko'pdan kamga (Miqdori ko'plar avval ↓)</option>
+                  <option value="qty_asc">Kamdan ko'pga (Miqdori kamlar avval ↑)</option>
+                  <option value="sum_desc">Ko'pdan kamga (Summasi ko'plar avval ↓)</option>
+                  <option value="sum_asc">Kamdan ko'pga (Summasi kamlar avval ↑)</option>
+                </select>
+              </div>
+
+              {/* Min va Max miqdor filtri */}
+              <div className="flex items-center gap-1.5 bg-neutral-50 px-2.5 py-1 rounded-xl border border-neutral-200 text-xs">
+                <span className="text-[10px] font-bold text-neutral-500 uppercase">Miqdor:</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  placeholder="Min (kamida)"
+                  value={minProductQty}
+                  onChange={(e) => setMinProductQty(e.target.value)}
+                  className="w-24 px-2 py-1 rounded-lg bg-white border border-neutral-200 text-xs font-mono font-bold text-neutral-900 outline-none focus:border-indigo-500"
+                />
+                <span className="text-neutral-400">—</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  placeholder="Max (ko'pi)"
+                  value={maxProductQty}
+                  onChange={(e) => setMaxProductQty(e.target.value)}
+                  className="w-24 px-2 py-1 rounded-lg bg-white border border-neutral-200 text-xs font-mono font-bold text-neutral-900 outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Tezkor mahsulot tugmalari (bir bosishda mahsulotni tanlash) */}
+          {uniqueProductCatalog.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-bold text-neutral-400 uppercase mr-1">
+                Mavjud mahsulotlar:
+              </span>
+              {uniqueProductCatalog.slice(0, 14).map((prod) => {
+                const isSelected = selectedProducts.some(
+                  (s) => s.toLowerCase() === prod.key
+                );
+                return (
+                  <button
+                    key={prod.key}
+                    type="button"
+                    onClick={() => toggleProductSelection(prod.name)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer flex items-center gap-1.5 border ${
+                      isSelected
+                        ? 'bg-indigo-700 text-white border-indigo-800 shadow-2xs'
+                        : 'bg-neutral-50 hover:bg-indigo-50 text-neutral-700 border-neutral-200'
+                    }`}
+                  >
+                    <span>{prod.name}</span>
+                    <span
+                      className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
+                        isSelected
+                          ? 'bg-white/20 text-white'
+                          : 'bg-neutral-200/80 text-neutral-700'
+                      }`}
+                    >
+                      {prod.clientsCount} mijoz • {formatNumber(prod.totalQty)} {prod.unit}
+                    </span>
+                  </button>
+                );
+              })}
+              {selectedProducts.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedProducts([])}
+                  className="px-2 py-1 rounded-lg text-[11px] font-bold bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100 cursor-pointer"
+                >
+                  ✕ Mahsulot tanlovini tozalash
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

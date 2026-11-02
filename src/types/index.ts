@@ -244,16 +244,79 @@ export interface MonthlyPlanTarget {
   targetAmount: number;
 }
 
+export interface MonthlyPlanDecadeTargets {
+  decade1: number; // Birinchi 10 kunlik uchun reja summasi (USD)
+  decade2: number; // Ikkinchi 10 kunlik uchun reja summasi (USD)
+  decade3: number; // Uchinchi 10 kunlik uchun reja summasi (USD)
+}
+
+export interface MonthlyPlanEditLog {
+  id: string;
+  editedBy: string; // Kim tahrir qilgani
+  editedAt: string; // Qachon tahrir qilingani (ISO)
+  reason: string; // Tahrir izohi (majburiy)
+  changesSummary?: string; // O'zgarishlar qisqacha tavsifi
+}
+
+export interface MonthlyPlanClientItem {
+  clientId: string;
+  clientName: string;
+  clientCode?: string;
+  clientPhone?: string;
+  initialDebt: number; // Mijozning reja tuzilgandagi qarzi (USD)
+  targetAmount: number; // Shu tanlangan muddatda umumiy unishi mumkin bo'lgan summa (USD)
+  decade1: number; // 1-chi 10 kunlikda unishi mumkin (USD)
+  decade2: number; // 2-chi 10 kunlikda unishi mumkin (USD)
+  decade3: number; // 3-chi 10 kunlikda unishi mumkin (USD)
+}
+
+export interface PlannedProductDeliveryItem {
+  id: string;
+  warehouseId: string;
+  productName: string;
+  brand?: string;
+  unit: string;
+  quantity: number;
+  originalUnitPrice: number; // Ombordagi bazaviy narx (1 birlik)
+  discountPercent: number; // Foiz hisobida chegirma (%)
+  discountAmount?: number; // Son (summa) chegirmasi (1 birlikdan ayirilgan chegirma)
+  unitPrice: number; // Chegirmadan keyingi yakuniy narx (1 birlik uchun)
+  totalPrice: number; // Avtomatik shakllangan summa (quantity * unitPrice)
+}
+
+export interface MonthlyProductPlanClientItem {
+  clientId: string;
+  clientName: string;
+  clientCode?: string;
+  clientPhone?: string;
+  targetAmount: number; // 30 kunda jami beriladigan mahsulot summasi (avtomatik hisoblangan)
+  plannedProducts: PlannedProductDeliveryItem[]; // 30 kunlik reja uchun ombordan tanlangan mahsulotlar
+  // Legacy compatibility fields
+  decade1?: number;
+  decade2?: number;
+  decade3?: number;
+  decade1Products?: PlannedProductDeliveryItem[];
+  decade2Products?: PlannedProductDeliveryItem[];
+  decade3Products?: PlannedProductDeliveryItem[];
+}
+
 export interface MonthlyPlan {
   id: string;
+  planType?: 'debt_collection' | 'product_delivery'; // 'debt_collection' (1 oylik qarz undiruv) | 'product_delivery' (1 oylik mahsulot berish)
   agentUsername: string; // 'agentp1' | 'agentc1' | 'adminc'
-  targets: MonthlyPlanTarget[]; // USD maqsadli summa
+  targets: MonthlyPlanTarget[]; // Maqsadli summa
+  decadeTargets?: MonthlyPlanDecadeTargets; // 1-chi, 2-chi va 3-chi 10 kunliklar rejasi
+  clientPlans?: MonthlyPlanClientItem[]; // Mijozlar kesimida umumiy va 10 kunliklar undiruv rejasi
+  productClientPlans?: MonthlyProductPlanClientItem[]; // Mijozlar kesimida 10 kunliklar bo'yicha ombordan mahsulot berish rejasi
   initialClientDebts?: Record<string, number>; // Reja tuzilgan vaqtdagi eski mavjud mijozlar qarzdorligi (USD)
   initialTotalDebt?: number; // Reja tuzilgan vaqtdagi jami eski qarzdorlik (USD)
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
   createdAt: string;
   createdBy: string;
+  updatedAt?: string;
+  updatedBy?: string;
   notes?: string;
+  editHistory?: MonthlyPlanEditLog[]; // Tahrirlar xronologiyasi
   status: 'active' | 'completed' | 'cancelled';
 }
