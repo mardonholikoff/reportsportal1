@@ -1,6 +1,12 @@
 export function formatMoney(amount: number | undefined | null): string {
-  if (amount === undefined || amount === null || isNaN(amount)) return "0 so'm";
-  return new Intl.NumberFormat('uz-UZ').format(Math.round(amount)) + " so'm";
+  if (amount === undefined || amount === null || isNaN(amount)) return '0 USD';
+  const rounded = Math.round(amount * 100) / 100;
+  return (
+    new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: rounded % 1 === 0 ? 0 : 2,
+      maximumFractionDigits: 2,
+    }).format(rounded) + ' USD'
+  );
 }
 
 export function formatNumber(val: number | undefined | null): string {

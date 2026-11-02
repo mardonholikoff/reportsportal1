@@ -4,6 +4,9 @@ export interface ProductItem {
   unit: string; // 'kg', 'dona', 'metr', 'litr', 'qop', 'tonna', etc.
   quantity: number;
   unitPrice: number;
+  originalUnitPrice?: number;
+  discountPercent?: number;
+  discountAmount?: number;
   totalPrice: number;
   warehouseId?: string;
 }
@@ -23,6 +26,7 @@ export interface Client {
   id: string;
   name: string;
   phone: string;
+  phones?: string[];
   address: string;
   region?: string; // Viloyat yoki shahar
   district?: string; // Tuman
@@ -99,6 +103,8 @@ export interface DailyPlanItem {
   closedAt?: string;
   closeReason?: string;
   closedBy?: string;
+  plannedAction?: PlanActionType;
+  plannedAmount?: number;
   actionDone?: PlanActionType;
   financialAction?: {
     method: FinancialMethodType;
@@ -175,6 +181,11 @@ export interface WarehouseProduct {
   totalSum: number; // Avtomatik umumiy summa
   totalPieces: number; // Avtomatik umumiy dona
   totalVolume: number; // Avtomatik umumiy hajm
+
+  // 5-BLOK: Eng kam sotilish narxi (Agentlar mijozga sotayotganda ko'rinadigan narx)
+  minSellingPricingUnitType?: 'piece' | 'package'; // Eng kam sotilish narxi birligi
+  minSellingPrice?: number; // Eng kam sotilish narxi qiymati (USD)
+
   createdBy: string; // 'adminc'
   createdAt: string;
   notes?: string;
@@ -236,7 +247,9 @@ export interface MonthlyPlanTarget {
 export interface MonthlyPlan {
   id: string;
   agentUsername: string; // 'agentp1' | 'agentc1' | 'adminc'
-  targets: MonthlyPlanTarget[]; // Valyuta va summa juftliklari
+  targets: MonthlyPlanTarget[]; // USD maqsadli summa
+  initialClientDebts?: Record<string, number>; // Reja tuzilgan vaqtdagi eski mavjud mijozlar qarzdorligi (USD)
+  initialTotalDebt?: number; // Reja tuzilgan vaqtdagi jami eski qarzdorlik (USD)
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
   createdAt: string;

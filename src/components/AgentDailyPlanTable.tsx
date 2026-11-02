@@ -16,13 +16,16 @@ import {
   Package,
   RotateCcw,
   Target,
+  Printer,
 } from 'lucide-react';
+import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 
 interface Props {
   plans: DailyPlanItem[];
   onOpenCreatePlan: () => void;
   onOpenMonthlyPlan?: () => void;
   onOpenExecuteModal: (item: DailyPlanItem) => void;
+  onMarkPlannedActionDone?: (item: DailyPlanItem) => void;
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
   onClosePlanItem?: (planItemId: string, closeReason?: string) => void;
 }
@@ -76,6 +79,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   onOpenCreatePlan,
   onOpenMonthlyPlan,
   onOpenExecuteModal,
+  onMarkPlannedActionDone,
   onUpdatePlanNote,
   onClosePlanItem,
 }) => {
@@ -90,6 +94,52 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   const [confirmCloseItem, setConfirmCloseItem] = useState<DailyPlanItem | null>(null);
   const [closeReason, setCloseReason] = useState<string>('');
   const [selectedPresetReason, setSelectedPresetReason] = useState<string>('');
+  const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
+  const [isPlanPdfModalOpen, setIsPlanPdfModalOpen] = useState<boolean>(false);
+
+  const formatPlannedActionLabel = (action?: string) => {
+    if (action === 'telefon qilindi') return 'Telefon qilish';
+    if (action === 'joyiga borildi') return 'Joyiga borish';
+    if (action === 'telefon qilindi + joyiga borildi') return 'Telefon qilish va joyiga borish';
+    return action || '';
+  };
+
+  const handleOpenNakladnoy = (item: DailyPlanItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const { paidAmount, debtAmount } = calcPlanFinancials(item);
+    const hasDelivered = item.productsDelivered && item.productsDelivered.length > 0;
+    const hasReturned = item.productsReturned && item.productsReturned.length > 0;
+
+    setNakladnoyData({
+      docNumber: `NK-${item.id.slice(-6).toUpperCase()}`,
+      date: item.completedAt || item.createdAt,
+      operationTitle: hasReturned && !hasDelivered ? 'Mahsulot qaytarish' : 'Mahsulot topshirish / Hisob-kitob',
+      clientName: item.clientName,
+      clientPhones: item.clientPhone ? [item.clientPhone] : [],
+      clientAddress: [item.clientRegion, item.clientDistrict, item.clientLandmark]
+        .filter(Boolean)
+        .join(', ') || item.clientAddress,
+      authorUsername: item.agentUsername || 'agentp1',
+      productsDelivered: item.productsDelivered || [],
+      productsReturned: item.productsReturned || [],
+      paymentInfo: {
+        paymentLabel:
+          item.deliveryPayment?.paymentLabel ||
+          item.financialAction?.methodLabel ||
+          (debtAmount > 0 ? 'Nasiya (Qarzga)' : 'Naqd pul'),
+        paidAmount,
+        debtAmount,
+      },
+      financialPayment: item.financialAction
+        ? {
+            methodLabel: item.financialAction.methodLabel,
+            amount: item.financialAction.amount,
+            note: item.financialAction.note,
+          }
+        : undefined,
+      note: item.reportNote || item.planNote,
+    });
+  };
 
   const activePlans = plans.filter((p) => !p.isClosed && p.status !== 'yopildi');
   const closedPlans = plans.filter((p) => p.isClosed || p.status === 'yopildi');
@@ -220,6 +270,18 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               </span>
             </button>
           </div>
+
+          {displayedPlans.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsPlanPdfModalOpen(true)}
+              className="flex items-center gap-1.5 bg-neutral-900 hover:bg-black text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+              title="Rejadagi mijozlar ro'yxatini qora borderli PDF formatda chiqarish"
+            >
+              <Printer className="w-4 h-4" />
+              <span>Rejani PDF (Print)</span>
+            </button>
+          )}
 
           {onOpenMonthlyPlan && (
             <button
@@ -436,80 +498,101 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                              <span>Rejada</span>
+                              <span>Jarayonda</span>
                             </span>
                           )}
                         </td>
 
-                        {/* 5. Action done & Products & Payment/Credit Type */}
+                        {/* 5. Action done & Planned Action / Planned Amount & Products */}
                         <td className="py-2.5 px-2.5">
-                          {item.actionDone ? (
-                            <div className="space-y-1">
-                              {/* Visit / Call badge */}
+                          <div className="space-y-1">
+                            {/* Tanlangan reja amali va undirish summasi */}
+                            {(item.plannedAction || (item.plannedAmount && item.plannedAmount > 0)) && (
                               <div className="flex flex-wrap items-center gap-1">
-                                <span
-                                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                    item.actionDone === 'joyiga borildi'
-                                      ? 'bg-rose-100 text-rose-900 border border-rose-200'
-                                      : item.actionDone === 'telefon qilindi'
-                                      ? 'bg-blue-100 text-blue-900 border border-blue-200'
-                                      : 'bg-neutral-100 text-neutral-800 border border-neutral-200'
-                                  }`}
-                                >
-                                  {item.actionDone === 'joyiga borildi'
-                                    ? 'Joyiga borildi'
-                                    : item.actionDone === 'telefon qilindi'
-                                    ? 'Telefon qilindi'
-                                    : item.actionDone === 'telefon qilindi + joyiga borildi'
-                                    ? 'Telefon + Joyiga borildi'
-                                    : item.actionDone}
-                                </span>
-
-                                {/* Payment / Credit type badge */}
-                                {item.deliveryPayment && (
-                                  <span
-                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                      item.deliveryPayment.paymentType === 'qarzga'
-                                        ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                                        : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                    }`}
-                                  >
-                                    {item.deliveryPayment.paymentType === 'qarzga'
-                                      ? "Qarzga (Nasiya)"
-                                      : `${item.deliveryPayment.paymentLabel || item.deliveryPayment.paymentType}`}
+                                {item.plannedAction && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
+                                    Reja: {formatPlannedActionLabel(item.plannedAction)}
+                                  </span>
+                                )}
+                                {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-50 text-emerald-900 border border-emerald-200">
+                                    Undirish: {formatMoney(item.plannedAmount)}
                                   </span>
                                 )}
                               </div>
+                            )}
 
-                              {/* Delivered Products info */}
-                              {item.productsDelivered && item.productsDelivered.length > 0 && (
-                                <div
-                                  className="text-[11px] text-neutral-800 font-medium truncate flex items-center gap-1"
-                                  title={item.productsDelivered.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
-                                >
-                                  <Package className="w-3 h-3 text-rose-700 shrink-0" />
-                                  <span className="truncate">
-                                    {item.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                            {item.actionDone ? (
+                              <div className="space-y-1">
+                                {/* Visit / Call badge */}
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <span
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                      item.actionDone === 'joyiga borildi'
+                                        ? 'bg-rose-100 text-rose-900 border border-rose-200'
+                                        : item.actionDone === 'telefon qilindi'
+                                        ? 'bg-blue-100 text-blue-900 border border-blue-200'
+                                        : 'bg-neutral-100 text-neutral-800 border border-neutral-200'
+                                    }`}
+                                  >
+                                    Bajardi:{' '}
+                                    {item.actionDone === 'joyiga borildi'
+                                      ? 'Joyiga borildi'
+                                      : item.actionDone === 'telefon qilindi'
+                                      ? 'Telefon qilindi'
+                                      : item.actionDone === 'telefon qilindi + joyiga borildi'
+                                      ? 'Telefon + Joyiga borildi'
+                                      : item.actionDone}
                                   </span>
-                                </div>
-                              )}
 
-                              {/* Returned Products info */}
-                              {item.productsReturned && item.productsReturned.length > 0 && (
-                                <div
-                                  className="text-[10px] text-amber-800 font-medium truncate flex items-center gap-1"
-                                  title={item.productsReturned.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
-                                >
-                                  <RotateCcw className="w-2.5 h-2.5 text-amber-700 shrink-0" />
-                                  <span className="truncate">
-                                    Qaytdi: {item.productsReturned.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
-                                  </span>
+                                  {/* Payment / Credit type badge */}
+                                  {item.deliveryPayment && (
+                                    <span
+                                      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                        item.deliveryPayment.paymentType === 'qarzga'
+                                          ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                          : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                      }`}
+                                    >
+                                      {item.deliveryPayment.paymentType === 'qarzga'
+                                        ? 'Qarzga (Nasiya)'
+                                        : `${item.deliveryPayment.paymentLabel || item.deliveryPayment.paymentType}`}
+                                    </span>
+                                  )}
                                 </div>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="text-neutral-400 italic text-[11px]">Amal qilinmagan</span>
-                          )}
+
+                                {/* Delivered Products info */}
+                                {item.productsDelivered && item.productsDelivered.length > 0 && (
+                                  <div
+                                    className="text-[11px] text-neutral-800 font-medium truncate flex items-center gap-1"
+                                    title={item.productsDelivered.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
+                                  >
+                                    <Package className="w-3 h-3 text-rose-700 shrink-0" />
+                                    <span className="truncate">
+                                      {item.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* Returned Products info */}
+                                {item.productsReturned && item.productsReturned.length > 0 && (
+                                  <div
+                                    className="text-[10px] text-amber-800 font-medium truncate flex items-center gap-1"
+                                    title={item.productsReturned.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
+                                  >
+                                    <RotateCcw className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                                    <span className="truncate">
+                                      Qaytdi: {item.productsReturned.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400 italic text-[11px] block">
+                                Bajarilishi kutilmoqda
+                              </span>
+                            )}
+                          </div>
                         </td>
 
                         {/* 6. Financial: To'lov / Qarz alohida */}
@@ -543,43 +626,100 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             >
                               Qarz: +{formatMoney(debtAmount)}
                             </div>
+                          ) : item.plannedAmount && item.plannedAmount > 0 ? (
+                            <div
+                              className="font-mono font-semibold text-neutral-600 text-[10px]"
+                              title="Rejadagi undirish summasi"
+                            >
+                              Reja: {formatMoney(item.plannedAmount)}
+                            </div>
                           ) : (
                             <span className="text-neutral-400 text-xs">-</span>
                           )}
                         </td>
 
-                        {/* 7. Actions & Close */}
+                        {/* 7. Actions & Close (Yuk xati Print only when 2, 3, or 4 exists) */}
                         <td
                           className="py-2.5 px-2.5 text-center"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          {isClosed ? (
-                            <div className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-neutral-100 text-neutral-500 text-[11px] font-semibold border border-neutral-200">
-                              <Lock className="w-3 h-3 text-neutral-500" />
-                              <span>Yopilgan</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-center gap-1">
-                              <button
-                                type="button"
-                                onClick={() => onOpenExecuteModal(item)}
-                                className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
-                                title="Amal bajarish"
-                              >
-                                <Edit3 className="w-3 h-3" />
-                                <span>{isDone ? "Yana" : "Amal"}</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleOpenConfirmClose(item)}
-                                className="px-1.5 py-1 rounded-lg border border-rose-300 hover:bg-rose-50 text-rose-800 text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer"
-                                title="Oxirgi marta yopish"
-                              >
-                                <Lock className="w-3 h-3 text-rose-700" />
-                                <span>Yopish</span>
-                              </button>
-                            </div>
-                          )}
+                          {(() => {
+                            const has234 =
+                              paidAmount > 0 ||
+                              debtAmount > 0 ||
+                              (item.productsDelivered && item.productsDelivered.length > 0) ||
+                              (item.productsReturned && item.productsReturned.length > 0);
+
+                            if (isClosed) {
+                              return (
+                                <div className="flex items-center justify-center gap-1">
+                                  {has234 && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => handleOpenNakladnoy(item, e)}
+                                      className="px-2 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                                      title="Yuk xati (PDF) chiqarish"
+                                    >
+                                      <Printer className="w-3 h-3" />
+                                      <span>Yuk xati</span>
+                                    </button>
+                                  )}
+                                  <div className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-neutral-100 text-neutral-500 text-[11px] font-semibold border border-neutral-200">
+                                    <Lock className="w-3 h-3 text-neutral-500" />
+                                    <span>Yopilgan</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div className="flex items-center justify-center gap-1 flex-wrap">
+                                {!isDone && onMarkPlannedActionDone && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onMarkPlannedActionDone(item);
+                                    }}
+                                    className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                                    title="Tanlangan reja amalini Bajarildi deb belgilash"
+                                  >
+                                    <Check className="w-3 h-3 stroke-[2.5]" />
+                                    <span>Bajarildi</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenExecuteModal(item)}
+                                  className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                                  title="Amal tafsilotlari yoki qo'shimcha amal qo'shish"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                  <span>{isDone ? "+ Amal" : "Amal / Hisobot"}</span>
+                                </button>
+                                {has234 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleOpenNakladnoy(item, e)}
+                                    className="px-1.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer"
+                                    title="Yuk xati (PDF) qora borderlar bilan chiqarish"
+                                  >
+                                    <Printer className="w-3 h-3" />
+                                    <span>Yuk xati</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenConfirmClose(item)}
+                                  className="px-1.5 py-1 rounded-lg border border-rose-300 hover:bg-rose-50 text-rose-800 text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer"
+                                  title="Oxirgi marta yopish"
+                                >
+                                  <Lock className="w-3 h-3 text-rose-700" />
+                                  <span>Yopish</span>
+                                </button>
+                              </div>
+                            );
+                          })()}
                         </td>
                       </tr>
                     );
@@ -637,7 +777,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           </span>
                         ) : (
                           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800">
-                            Rejada
+                            Jarayonda
                           </span>
                         )}
                       </div>
@@ -665,6 +805,22 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       <span>Qo'shilgan: {formatDate(item.createdAt)}</span>
                     </div>
 
+                    {/* Planned Action & Planned Collection Amount (Mobile) */}
+                    {(item.plannedAction || (item.plannedAmount && item.plannedAmount > 0)) && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        {item.plannedAction && (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
+                            Rejadagi amal: {formatPlannedActionLabel(item.plannedAction)}
+                          </span>
+                        )}
+                        {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-emerald-50 text-emerald-900 border border-emerald-200">
+                            Undirish rejasi: {formatMoney(item.plannedAmount)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {/* Plan Note if any */}
                     {item.planNote && (
                       <div className="mt-1.5 text-[11px] text-neutral-700 bg-rose-50/60 px-2 py-1 rounded-lg border border-rose-100/80">
@@ -678,6 +834,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       <div className="mt-2 p-2 rounded-xl bg-neutral-50 border border-neutral-200/80 space-y-1 text-[11px]">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="font-bold text-neutral-900 bg-white px-1.5 py-0.5 rounded border border-neutral-200 text-[10px]">
+                            Bajardi:{' '}
                             {item.actionDone === 'joyiga borildi'
                               ? 'Joyiga borildi'
                               : item.actionDone === 'telefon qilindi'
@@ -695,7 +852,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                               }`}
                             >
                               {item.deliveryPayment.paymentType === 'qarzga'
-                                ? "Qarzga (Nasiya)"
+                                ? 'Qarzga (Nasiya)'
                                 : `To'lov: ${item.deliveryPayment.paymentLabel || item.deliveryPayment.paymentType}`}
                             </span>
                           )}
@@ -742,16 +899,42 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         )}
                       </div>
 
-                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                        {(paidAmount > 0 ||
+                          debtAmount > 0 ||
+                          (item.productsDelivered && item.productsDelivered.length > 0) ||
+                          (item.productsReturned && item.productsReturned.length > 0)) && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleOpenNakladnoy(item, e)}
+                            className="px-2.5 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold cursor-pointer flex items-center gap-1"
+                          >
+                            <Printer className="w-3 h-3" />
+                            <span>Yuk xati (PDF)</span>
+                          </button>
+                        )}
                         {!isClosed ? (
                           <>
+                            {!isDone && onMarkPlannedActionDone && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onMarkPlannedActionDone(item);
+                                }}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1"
+                              >
+                                <Check className="w-3 h-3 stroke-[2.5]" />
+                                <span>Bajarildi</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => onOpenExecuteModal(item)}
                               className="px-3 py-1.5 rounded-xl bg-rose-700 text-white text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1"
                             >
                               <Edit3 className="w-3 h-3" />
-                              <span>{isDone ? "Yana amal" : "Amal bajarish"}</span>
+                              <span>{isDone ? "Qo'shimcha amal" : "Amal / Hisobot"}</span>
                             </button>
                             <button
                               type="button"
@@ -880,6 +1063,173 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Black-Bordered Printable PDF Modal for Selected Clients in Reja */}
+      {isPlanPdfModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-xs overflow-y-auto">
+          <style>{`
+            @media print {
+              body * {
+                visibility: hidden !important;
+              }
+              #reja-printable-sheet,
+              #reja-printable-sheet * {
+                visibility: visible !important;
+              }
+              #reja-printable-sheet {
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 100% !important;
+                margin: 0 !important;
+                padding: 12px !important;
+                box-shadow: none !important;
+              }
+              .no-print-reja-controls {
+                display: none !important;
+              }
+            }
+          `}</style>
+          <div className="relative w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-neutral-300 my-4 overflow-hidden flex flex-col max-h-[92vh]">
+            {/* Top Controls */}
+            <div className="no-print-reja-controls px-5 py-3.5 bg-neutral-900 text-white flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <Printer className="w-5 h-5 text-rose-400" />
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold leading-tight">
+                    Rejadagi mijozlar ro'yxati (PDF / Chop etish)
+                  </h3>
+                  <p className="text-[11px] text-neutral-300">
+                    Qora borderli tayyor jadval ({displayedPlans.length} ta mijoz)
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Print / PDF saqlash</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsPlanPdfModalOpen(false)}
+                  className="p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white cursor-pointer"
+                  aria-label="Yopish"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Printable Black-Bordered Sheet */}
+            <div className="p-4 sm:p-6 overflow-y-auto bg-neutral-100 flex-1">
+              <div
+                id="reja-printable-sheet"
+                className="bg-white text-black p-5 sm:p-7 border-2 border-black mx-auto max-w-4xl space-y-4 font-sans"
+              >
+                <div className="border-b-2 border-black pb-3 flex items-start justify-between gap-4">
+                  <div>
+                    <h1 className="text-lg sm:text-xl font-extrabold uppercase tracking-wide text-black">
+                      REJADAGI MIJOZLAR RO'YXATI
+                    </h1>
+                    <p className="text-xs font-semibold text-black mt-0.5">
+                      Sana: {formatDate(new Date().toISOString())} | Jami mijozlar: {displayedPlans.length} ta
+                    </p>
+                  </div>
+                  <div className="text-right text-xs font-mono font-bold border border-black px-3 py-1.5">
+                    <div>
+                      Undirish rejasi jami:{' '}
+                      {formatMoney(
+                        displayedPlans.reduce((acc, p) => acc + (p.plannedAmount || 0), 0)
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <table className="w-full border-collapse border-2 border-black text-xs text-black">
+                  <thead>
+                    <tr className="bg-neutral-100 font-bold uppercase text-[11px]">
+                      <th className="border border-black py-2 px-2 text-center w-9">№</th>
+                      <th className="border border-black py-2 px-2.5 text-left">Mijoz F.I.Sh</th>
+                      <th className="border border-black py-2 px-2.5 text-left">Telefon</th>
+                      <th className="border border-black py-2 px-2.5 text-left">Manzil</th>
+                      <th className="border border-black py-2 px-2.5 text-left">
+                        Tanlangan amal
+                      </th>
+                      <th className="border border-black py-2 px-2.5 text-right">
+                        Undirish rejasi (USD)
+                      </th>
+                      <th className="border border-black py-2 px-2.5 text-left">
+                        Holati / Izoh
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {displayedPlans.map((item, index) => {
+                      const plannedLabel = formatPlannedActionLabel(
+                        item.plannedAction || item.actionDone
+                      );
+                      return (
+                        <tr key={item.id}>
+                          <td className="border border-black py-2 px-2 text-center font-mono font-bold">
+                            {index + 1}
+                          </td>
+                          <td className="border border-black py-2 px-2.5 font-bold">
+                            {item.clientName}
+                          </td>
+                          <td className="border border-black py-2 px-2.5 font-mono">
+                            {item.clientPhone}
+                          </td>
+                          <td className="border border-black py-2 px-2.5">
+                            {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') ||
+                              item.clientAddress ||
+                              '-'}
+                            {item.clientLandmark ? ` (${item.clientLandmark})` : ''}
+                          </td>
+                          <td className="border border-black py-2 px-2.5 font-semibold">
+                            {plannedLabel || '-'}
+                          </td>
+                          <td className="border border-black py-2 px-2.5 text-right font-mono font-bold">
+                            {item.plannedAmount && item.plannedAmount > 0
+                              ? formatMoney(item.plannedAmount)
+                              : '-'}
+                          </td>
+                          <td className="border border-black py-2 px-2.5">
+                            <div className="font-bold">
+                              {item.status === 'bajarildi'
+                                ? `Bajardi (${formatPlannedActionLabel(item.actionDone)})`
+                                : item.isClosed || item.status === 'yopildi'
+                                ? 'Yopilgan'
+                                : 'Rejada'}
+                            </div>
+                            {(item.planNote || item.reportNote) && (
+                              <div className="text-[11px]">
+                                {item.planNote || item.reportNote}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Yuk Xati Modal */}
+      {nakladnoyData && (
+        <NakladnoyModal
+          isOpen={!!nakladnoyData}
+          onClose={() => setNakladnoyData(null)}
+          data={nakladnoyData}
+        />
       )}
     </div>
   );

@@ -11,24 +11,35 @@ import {
   deleteDoc,
   onSnapshot,
   getDocFromServer,
+  writeBatch,
   Firestore,
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Client, DailyPlanItem, WarehouseProduct, SystemLog, MonthlyPlan } from '../types';
-import { getDeletedClientIds, markClientAsDeleted } from './storage';
+import {
+  getDeletedClientIds,
+  markClientAsDeleted,
+  getDeletedWarehouseIds,
+  markWarehouseProductAsDeleted,
+} from './storage';
 
 // Initialize Firebase App singleton
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore with offline persistence
+// Initialize Firestore with offline persistence and ignoreUndefinedProperties
 let dbInstance: Firestore;
 try {
-  dbInstance = initializeFirestore(app, {
-    localCache: persistentLocalCache({
-      tabManager: persistentMultipleTabManager(),
-    }),
-  }, firebaseConfig.firestoreDatabaseId);
+  dbInstance = initializeFirestore(
+    app,
+    {
+      ignoreUndefinedProperties: true,
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    },
+    firebaseConfig.firestoreDatabaseId
+  );
 } catch {
   // If already initialized
   dbInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -36,6 +47,11 @@ try {
 
 export const db = dbInstance;
 export const auth = getAuth(app);
+
+// Helper to strip undefined fields recursively so Firestore setDoc never rejects payload
+function cleanFirestoreData<T>(data: T): T {
+  return JSON.parse(JSON.stringify(data));
+}
 
 // Connection test helper
 export async function testFirestoreConnection(): Promise<boolean> {
@@ -74,10 +90,11 @@ export async function getClientIpAddress(): Promise<string> {
 }
 
 // -------------------------------------------------------------
-// System Audit Log Service
+// System Audit Log Service (with In-Memory Read/Write Cache)
 // -------------------------------------------------------------
 const SYSTEM_LOGS_STORAGE_KEY = 'savdo_system_logs_v1';
 const SYSTEM_ARCHIVES_STORAGE_KEY = 'savdo_system_archives_v1';
+let localSystemLogsCache: SystemLog[] | null = null;
 
 // Seed initial realistic logs for previous and current months if local storage is blank
 function getInitialSampleLogs(): SystemLog[] {
@@ -158,11 +175,15 @@ function getInitialSampleLogs(): SystemLog[] {
 }
 
 export function getLocalSystemLogs(): SystemLog[] {
+  if (localSystemLogsCache) return localSystemLogsCache;
   try {
     const raw = localStorage.getItem(SYSTEM_LOGS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        localSystemLogsCache = parsed;
+        return parsed;
+      }
     }
     const sample = getInitialSampleLogs();
     saveLocalSystemLogs(sample);
@@ -174,7 +195,9 @@ export function getLocalSystemLogs(): SystemLog[] {
 
 export function saveLocalSystemLogs(logs: SystemLog[]): void {
   try {
-    localStorage.setItem(SYSTEM_LOGS_STORAGE_KEY, JSON.stringify(logs.slice(0, 500)));
+    const sliced = logs.slice(0, 500);
+    localSystemLogsCache = sliced;
+    localStorage.setItem(SYSTEM_LOGS_STORAGE_KEY, JSON.stringify(sliced));
   } catch (e) {
     console.error('Failed to save local system logs', e);
   }
@@ -193,8 +216,14 @@ export function deleteLocalSystemLogs(logIds: string[]): void {
 
 export async function deleteSystemLogsFromFirestore(logIds: string[]): Promise<void> {
   try {
-    for (const id of logIds) {
-      await deleteDoc(doc(db, 'systemLogs', id));
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < logIds.length; i += CHUNK_SIZE) {
+      const chunk = logIds.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((id) => {
+        batch.delete(doc(db, 'systemLogs', id));
+      });
+      await batch.commit();
     }
   } catch (err) {
     console.warn('Deferred system logs deletion from Firestore:', err);
@@ -297,13 +326,13 @@ export async function addSystemLog(entry: {
   };
 
   // 1. Save immediately to LocalStorage (works offline!)
-  const localLogs = getLocalSystemLogs();
+  const localLogs = [...getLocalSystemLogs()];
   localLogs.unshift(log);
   saveLocalSystemLogs(localLogs);
 
   // 2. Sync to Firestore (if offline, Firestore IndexedDB persistence queues it automatically)
   try {
-    await setDoc(doc(db, 'systemLogs', log.id), log);
+    await setDoc(doc(db, 'systemLogs', log.id), cleanFirestoreData(log));
   } catch (err) {
     console.warn('Firestore log write deferred to offline queue:', err);
   }
@@ -316,21 +345,52 @@ export async function addSystemLog(entry: {
 // Firestore Realtime Collections Synchronizers
 // -------------------------------------------------------------
 
-// Sync Clients
+// Sync Clients (Single & Batched Bulk)
 export async function syncClientToFirestore(client: Client): Promise<void> {
   try {
-    await setDoc(doc(db, 'clients', client.id), client);
+    await setDoc(doc(db, 'clients', client.id), cleanFirestoreData(client));
   } catch (e) {
     console.warn('Deferred client sync to Firestore (offline queue)', e);
   }
 }
 
-export async function deleteClientFromFirestore(clientId: string): Promise<boolean> {
+export async function syncClientsBulkToFirestore(clients: Client[]): Promise<void> {
+  if (!clients || clients.length === 0) return;
+  try {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < clients.length; i += CHUNK_SIZE) {
+      const chunk = clients.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (let j = 0; j < chunk.length; j++) {
+        const c = chunk[j];
+        batch.set(doc(db, 'clients', c.id), cleanFirestoreData(c));
+      }
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn('Deferred bulk clients sync to Firestore (offline queue)', e);
+  }
+}
+
+export async function deleteClientFromFirestore(
+  clientId: string,
+  knownPlanIds: string[] = []
+): Promise<boolean> {
   markClientAsDeleted(clientId);
   try {
+    // 1. Delete client document from Firestore
     await deleteDoc(doc(db, 'clients', clientId));
 
-    // Cascade delete any daily plans for this client from Firestore
+    // 2. Immediately delete any known dailyPlan IDs for this client
+    for (const planId of knownPlanIds) {
+      try {
+        await deleteDoc(doc(db, 'dailyPlans', planId));
+      } catch {
+        // ignore individual plan delete error
+      }
+    }
+
+    // 3. Cascade delete any remaining daily plans for this client from Firestore
     try {
       const plansSnap = await getDocs(collection(db, 'dailyPlans'));
       for (const pDoc of plansSnap.docs) {
@@ -343,6 +403,32 @@ export async function deleteClientFromFirestore(clientId: string): Promise<boole
       // ignore plan cascade errors
     }
 
+    // 4. Clean monthlyPlans in Firestore if any reference this clientId in initialClientDebts
+    try {
+      const mpSnap = await getDocs(collection(db, 'monthlyPlans'));
+      for (const mpDoc of mpSnap.docs) {
+        const mpData = mpDoc.data() as MonthlyPlan;
+        if (mpData.initialClientDebts && clientId in mpData.initialClientDebts) {
+          const updatedDebts = { ...mpData.initialClientDebts };
+          delete updatedDebts[clientId];
+          const updatedTotal = Object.values(updatedDebts).reduce(
+            (sum, v) => sum + (Number(v) || 0),
+            0
+          );
+          await setDoc(
+            mpDoc.ref,
+            cleanFirestoreData({
+              ...mpData,
+              initialClientDebts: updatedDebts,
+              initialTotalDebt: updatedTotal,
+            })
+          );
+        }
+      }
+    } catch {
+      // ignore monthly plan cascade errors
+    }
+
     return true;
   } catch (e) {
     console.error('Failed to delete client from Firestore:', e);
@@ -353,7 +439,7 @@ export async function deleteClientFromFirestore(clientId: string): Promise<boole
 // Sync Daily Plans
 export async function syncPlanToFirestore(plan: DailyPlanItem): Promise<void> {
   try {
-    await setDoc(doc(db, 'dailyPlans', plan.id), plan);
+    await setDoc(doc(db, 'dailyPlans', plan.id), cleanFirestoreData(plan));
   } catch (e) {
     console.warn('Deferred plan sync to Firestore (offline queue)', e);
   }
@@ -370,14 +456,35 @@ export async function deletePlanFromFirestore(planId: string): Promise<void> {
 // Sync Warehouse Products
 export async function syncWarehouseProductToFirestore(product: WarehouseProduct): Promise<void> {
   try {
-    await setDoc(doc(db, 'warehouseProducts', product.id), product);
+    await setDoc(doc(db, 'warehouseProducts', product.id), cleanFirestoreData(product));
   } catch (e) {
     console.warn('Deferred warehouse sync to Firestore (offline queue)', e);
   }
 }
 
+export async function syncWarehouseProductsBulkToFirestore(
+  products: WarehouseProduct[]
+): Promise<void> {
+  if (!products || products.length === 0) return;
+  try {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < products.length; i += CHUNK_SIZE) {
+      const chunk = products.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (let j = 0; j < chunk.length; j++) {
+        const p = chunk[j];
+        batch.set(doc(db, 'warehouseProducts', p.id), cleanFirestoreData(p));
+      }
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn('Deferred bulk warehouse sync to Firestore (offline queue)', e);
+  }
+}
+
 export async function deleteWarehouseProductFromFirestore(productId: string): Promise<void> {
   try {
+    markWarehouseProductAsDeleted(productId);
     await deleteDoc(doc(db, 'warehouseProducts', productId));
   } catch (e) {
     console.warn('Deferred warehouse delete from Firestore', e);
@@ -387,7 +494,7 @@ export async function deleteWarehouseProductFromFirestore(productId: string): Pr
 // Sync Monthly Plans
 export async function syncMonthlyPlanToFirestore(plan: MonthlyPlan): Promise<void> {
   try {
-    await setDoc(doc(db, 'monthlyPlans', plan.id), plan);
+    await setDoc(doc(db, 'monthlyPlans', plan.id), cleanFirestoreData(plan));
   } catch (e) {
     console.warn('Deferred monthly plan sync to Firestore', e);
   }
@@ -399,6 +506,26 @@ export async function deleteMonthlyPlanFromFirestore(planId: string): Promise<vo
   } catch (e) {
     console.warn('Deferred monthly plan delete from Firestore', e);
   }
+}
+
+// Debounce helper for high-frequency Firestore snapshot bursts (SRE protection)
+function createDebouncedCallback<T>(fn: ((data: T) => void) | undefined, delayMs = 80) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const invoke = (data: T) => {
+    if (!fn) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn(data);
+    }, delayMs);
+  };
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  return { invoke, cancel };
 }
 
 // Subscribe to real-time updates from Firestore
@@ -413,22 +540,27 @@ export function subscribeToFirestoreData(callbacks: {
 
   // Monthly plans listener
   if (callbacks.onMonthlyPlansChange) {
+    const debounced = createDebouncedCallback(callbacks.onMonthlyPlansChange, 80);
     const unsub = onSnapshot(
       collection(db, 'monthlyPlans'),
       (snapshot) => {
         const list: MonthlyPlan[] = [];
         snapshot.forEach((d) => list.push(d.data() as MonthlyPlan));
-        callbacks.onMonthlyPlansChange?.(list);
+        debounced.invoke(list);
       },
       (error) => {
         console.warn('Monthly plans listener error (offline mode):', error.message);
       }
     );
-    unsubscribers.push(unsub);
+    unsubscribers.push(() => {
+      debounced.cancel();
+      unsub();
+    });
   }
 
   // Clients listener
   if (callbacks.onClientsChange) {
+    const debounced = createDebouncedCallback(callbacks.onClientsChange, 80);
     const unsub = onSnapshot(
       collection(db, 'clients'),
       (snapshot) => {
@@ -442,17 +574,21 @@ export function subscribeToFirestoreData(callbacks: {
             deleteDoc(d.ref).catch(() => {});
           }
         });
-        callbacks.onClientsChange?.(list);
+        debounced.invoke(list);
       },
       (error) => {
         console.warn('Clients snapshot listener error (offline mode active):', error.message);
       }
     );
-    unsubscribers.push(unsub);
+    unsubscribers.push(() => {
+      debounced.cancel();
+      unsub();
+    });
   }
 
   // Daily plans listener
   if (callbacks.onPlansChange) {
+    const debounced = createDebouncedCallback(callbacks.onPlansChange, 80);
     const unsub = onSnapshot(
       collection(db, 'dailyPlans'),
       (snapshot) => {
@@ -466,50 +602,84 @@ export function subscribeToFirestoreData(callbacks: {
             deleteDoc(d.ref).catch(() => {});
           }
         });
-        callbacks.onPlansChange?.(list);
+        debounced.invoke(list);
       },
       (error) => {
         console.warn('Plans snapshot listener error (offline mode active):', error.message);
       }
     );
-    unsubscribers.push(unsub);
+    unsubscribers.push(() => {
+      debounced.cancel();
+      unsub();
+    });
   }
 
   // Warehouse products listener
   if (callbacks.onWarehouseChange) {
+    const debounced = createDebouncedCallback(callbacks.onWarehouseChange, 80);
     const unsub = onSnapshot(
       collection(db, 'warehouseProducts'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const list: WarehouseProduct[] = [];
-          snapshot.forEach((d) => list.push(d.data() as WarehouseProduct));
-          callbacks.onWarehouseChange?.(list);
-        }
+        const deletedWhIds = getDeletedWarehouseIds();
+        const list: WarehouseProduct[] = [];
+        snapshot.forEach((d) => {
+          if (!deletedWhIds.has(d.id)) {
+            list.push(d.data() as WarehouseProduct);
+          } else {
+            // Document was marked deleted, ensure purged in Firestore too
+            deleteDoc(d.ref).catch(() => {});
+          }
+        });
+        debounced.invoke(list);
       },
       (error) => {
         console.warn('Warehouse snapshot listener error (offline mode active):', error.message);
       }
     );
-    unsubscribers.push(unsub);
+    unsubscribers.push(() => {
+      debounced.cancel();
+      unsub();
+    });
   }
 
-  // System logs listener
+  // System logs listener (also propagates deleted client & warehouse IDs across all sessions/agents)
   if (callbacks.onLogsChange) {
+    const debounced = createDebouncedCallback(callbacks.onLogsChange, 100);
     const unsub = onSnapshot(
       collection(db, 'systemLogs'),
       (snapshot) => {
         const list: SystemLog[] = [];
-        snapshot.forEach((d) => list.push(d.data() as SystemLog));
+        snapshot.forEach((d) => {
+          const logItem = d.data() as SystemLog;
+          list.push(logItem);
+          if (logItem.actionType === 'mijoz_ochirish') {
+            const delId =
+              logItem.metadata?.deletedClientId || logItem.metadata?.clientId;
+            if (delId && typeof delId === 'string') {
+              markClientAsDeleted(delId);
+            }
+          }
+          if (logItem.actionType === 'ombor_ochirish') {
+            const delWhId =
+              logItem.metadata?.deletedWarehouseId || logItem.metadata?.productId;
+            if (delWhId && typeof delWhId === 'string') {
+              markWarehouseProductAsDeleted(delWhId);
+            }
+          }
+        });
         list.sort(
           (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
-        callbacks.onLogsChange?.(list);
+        debounced.invoke(list);
       },
       (error) => {
         console.warn('System logs snapshot listener error (offline mode active):', error.message);
       }
     );
-    unsubscribers.push(unsub);
+    unsubscribers.push(() => {
+      debounced.cancel();
+      unsub();
+    });
   }
 
   return () => {
@@ -526,33 +696,39 @@ export async function bootstrapFirestoreData(
   localWarehouse: WarehouseProduct[]
 ): Promise<void> {
   try {
-    // If already bootstrapped once in this environment, never recreate deleted clients!
+    const deletedIds = getDeletedClientIds();
+
+    // Always ensure any local dailyPlans are pushed to Firestore if missing remotely
+    const toUploadPlans = localPlans.filter((p) => !deletedIds.has(p.clientId));
+    if (toUploadPlans.length > 0) {
+      const plansSnap = await getDocs(collection(db, 'dailyPlans'));
+      const remotePlanIds = new Set(plansSnap.docs.map((d) => d.id));
+      for (const p of toUploadPlans) {
+        if (!remotePlanIds.has(p.id)) {
+          await setDoc(doc(db, 'dailyPlans', p.id), cleanFirestoreData(p));
+        }
+      }
+    }
+
+    // If initial seed already bootstrapped once, skip re-uploading initial clients/warehouse
     if (localStorage.getItem(BOOTSTRAP_FLAG_KEY)) {
       return;
     }
 
-    const deletedIds = getDeletedClientIds();
     const toUploadClients = localClients.filter((c) => !deletedIds.has(c.id));
-
     const clientSnap = await getDocs(collection(db, 'clients'));
     if (clientSnap.empty && toUploadClients.length > 0) {
       for (const c of toUploadClients) {
-        await setDoc(doc(db, 'clients', c.id), c);
+        await setDoc(doc(db, 'clients', c.id), cleanFirestoreData(c));
       }
     }
 
-    const toUploadPlans = localPlans.filter((p) => !deletedIds.has(p.clientId));
-    const plansSnap = await getDocs(collection(db, 'dailyPlans'));
-    if (plansSnap.empty && toUploadPlans.length > 0) {
-      for (const p of toUploadPlans) {
-        await setDoc(doc(db, 'dailyPlans', p.id), p);
-      }
-    }
-
+    const deletedWhIds = getDeletedWarehouseIds();
+    const toUploadWarehouse = localWarehouse.filter((w) => !deletedWhIds.has(w.id));
     const whSnap = await getDocs(collection(db, 'warehouseProducts'));
-    if (whSnap.empty && localWarehouse.length > 0) {
-      for (const w of localWarehouse) {
-        await setDoc(doc(db, 'warehouseProducts', w.id), w);
+    if (whSnap.empty && toUploadWarehouse.length > 0) {
+      for (const w of toUploadWarehouse) {
+        await setDoc(doc(db, 'warehouseProducts', w.id), cleanFirestoreData(w));
       }
     }
 

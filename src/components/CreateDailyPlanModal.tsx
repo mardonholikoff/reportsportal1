@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Client } from '../types';
+import { Client, DailyPlanItem, PlanActionType } from '../types';
 import { formatMoney, formatDate, formatShortDate } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import {
@@ -16,20 +16,36 @@ import {
   RotateCcw,
   SlidersHorizontal,
   Clock,
-  Activity,
   History,
   Lock,
+  Phone,
+  DollarSign,
 } from 'lucide-react';
 
 export interface PlanSelectionItem {
   clientId: string;
+  plannedAction?: PlanActionType;
+  plannedAmount?: number;
   planNote?: string;
 }
+
+interface SelectedClientDraft {
+  plannedAction: PlanActionType;
+  plannedAmount: number | '';
+  planNote: string;
+}
+
+const PLANNED_ACTION_OPTIONS: { id: PlanActionType; label: string }[] = [
+  { id: 'telefon qilindi', label: 'Telefon qilish' },
+  { id: 'joyiga borildi', label: 'Joyiga borish' },
+  { id: 'telefon qilindi + joyiga borildi', label: 'Telefon qilish va joyiga borish' },
+];
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   clients: Client[];
+  existingPlans?: DailyPlanItem[];
   onConfirmPlan: (selections: PlanSelectionItem[]) => void;
 }
 
@@ -40,6 +56,7 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
   isOpen,
   onClose,
   clients,
+  existingPlans = [],
   onConfirmPlan,
 }) => {
   // Search & Filter States
@@ -51,8 +68,10 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
   const [selectedProduct, setSelectedProduct] = useState<string>('all');
   const [showFiltersPanel, setShowFiltersPanel] = useState<boolean>(false);
 
-  // Selected Clients and their respective notes: { [clientId]: note }
-  const [selectedClientsMap, setSelectedClientsMap] = useState<Record<string, string>>({});
+  // Selected Clients and their respective plannedAction, plannedAmount, and planNote
+  const [selectedClientsMap, setSelectedClientsMap] = useState<Record<string, SelectedClientDraft>>(
+    {}
+  );
 
   // Extract unique regions
   const uniqueRegions = useMemo(() => {
@@ -166,6 +185,11 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
     return count;
   }, [selectedRegion, selectedDistrict, debtFilter, advanceFilter, selectedProduct]);
 
+  // Allaqachon rejada bor bo'lgan mijozlar ID lari (faqat 1 marta tanlash mumkin)
+  const alreadyPlannedClientIds = useMemo(() => {
+    return new Set(existingPlans.map((p) => p.clientId));
+  }, [existingPlans]);
+
   // Safe early exit AFTER all hooks have executed
   if (!isOpen) return null;
 
@@ -183,12 +207,18 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
   const selectedCount = Object.keys(selectedClientsMap).length;
 
   const toggleSelect = (id: string) => {
+    if (alreadyPlannedClientIds.has(id)) return;
+    const clientObj = clients.find((c) => c.id === id);
     setSelectedClientsMap((prev) => {
       const copy = { ...prev };
       if (id in copy) {
         delete copy[id];
       } else {
-        copy[id] = '';
+        copy[id] = {
+          plannedAction: 'joyiga borildi',
+          plannedAmount: clientObj && clientObj.currentDebt > 0 ? clientObj.currentDebt : '',
+          planNote: '',
+        };
       }
       return copy;
     });
@@ -198,8 +228,12 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
     setSelectedClientsMap((prev) => {
       const copy = { ...prev };
       filteredClients.forEach((c) => {
-        if (!(c.id in copy)) {
-          copy[c.id] = '';
+        if (!alreadyPlannedClientIds.has(c.id) && !(c.id in copy)) {
+          copy[c.id] = {
+            plannedAction: 'joyiga borildi',
+            plannedAmount: c.currentDebt > 0 ? c.currentDebt : '',
+            planNote: '',
+          };
         }
       });
       return copy;
@@ -210,10 +244,34 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
     setSelectedClientsMap({});
   };
 
+  const handleUpdateAction = (id: string, plannedAction: PlanActionType) => {
+    setSelectedClientsMap((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || { plannedAction: 'joyiga borildi', plannedAmount: '', planNote: '' }),
+        plannedAction,
+      },
+    }));
+  };
+
+  const handleUpdateAmount = (id: string, val: string) => {
+    const parsed = val === '' ? '' : Math.max(0, parseFloat(val) || 0);
+    setSelectedClientsMap((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || { plannedAction: 'joyiga borildi', plannedAmount: '', planNote: '' }),
+        plannedAmount: parsed,
+      },
+    }));
+  };
+
   const handleUpdateNote = (id: string, note: string) => {
     setSelectedClientsMap((prev) => ({
       ...prev,
-      [id]: note,
+      [id]: {
+        ...(prev[id] || { plannedAction: 'joyiga borildi', plannedAmount: '', planNote: '' }),
+        planNote: note,
+      },
     }));
   };
 
@@ -221,9 +279,14 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
     const entries = Object.entries(selectedClientsMap);
     if (entries.length === 0) return;
 
-    const payload: PlanSelectionItem[] = entries.map(([clientId, planNote]) => ({
+    const payload: PlanSelectionItem[] = entries.map(([clientId, draft]) => ({
       clientId,
-      planNote: planNote.trim() || undefined,
+      plannedAction: draft.plannedAction,
+      plannedAmount:
+        typeof draft.plannedAmount === 'number' && draft.plannedAmount > 0
+          ? draft.plannedAmount
+          : undefined,
+      planNote: draft.planNote.trim() || undefined,
     }));
 
     onConfirmPlan(payload);
@@ -590,33 +653,53 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
             </div>
           ) : (
             filteredClients.map((client) => {
-              const isSelected = client.id in selectedClientsMap;
-              const currentNote = selectedClientsMap[client.id] || '';
+              const isAlreadyInPlan = alreadyPlannedClientIds.has(client.id);
+              const isSelected = !isAlreadyInPlan && client.id in selectedClientsMap;
+              const currentDraft = selectedClientsMap[client.id] || {
+                plannedAction: 'joyiga borildi' as PlanActionType,
+                plannedAmount: '',
+                planNote: '',
+              };
 
               return (
                 <div
                   key={client.id}
                   className={`p-3.5 rounded-2xl border transition-all ${
-                    isSelected
+                    isAlreadyInPlan
+                      ? 'bg-neutral-50 border-neutral-200 opacity-80'
+                      : isSelected
                       ? 'bg-rose-50/70 border-rose-300 shadow-xs ring-1 ring-rose-200'
                       : 'bg-white border-neutral-200 hover:border-rose-200'
                   }`}
                 >
                   <div
-                    onClick={() => toggleSelect(client.id)}
-                    className="flex items-start justify-between gap-3 cursor-pointer"
+                    onClick={() => {
+                      if (!isAlreadyInPlan) toggleSelect(client.id);
+                    }}
+                    className={`flex items-start justify-between gap-3 ${
+                      isAlreadyInPlan ? 'cursor-not-allowed' : 'cursor-pointer'
+                    }`}
                   >
                     <div className="flex items-start gap-3">
                       <div className="text-rose-700 mt-0.5 shrink-0">
-                        {isSelected ? (
+                        {isAlreadyInPlan ? (
+                          <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-emerald-100 text-emerald-700 border border-emerald-300">
+                            <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                          </span>
+                        ) : isSelected ? (
                           <CheckSquare className="w-5 h-5 fill-rose-100" />
                         ) : (
                           <Square className="w-5 h-5 text-neutral-400" />
                         )}
                       </div>
                       <div>
-                        <div className="font-bold text-xs sm:text-sm text-neutral-900">
-                          {client.name}
+                        <div className="font-bold text-xs sm:text-sm text-neutral-900 flex items-center gap-2 flex-wrap">
+                          <span>{client.name}</span>
+                          {isAlreadyInPlan && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              Rejada bor (1 marta tanlangan)
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-neutral-600 flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
                           <span className="font-mono font-medium">{client.phone}</span>
@@ -725,20 +808,85 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                     </div>
                   </div>
 
-                  {/* Note / Izoh Input for this Selected Client */}
+                  {/* Planned Action, Planned Collection Amount & Note for Selected Client */}
                   {isSelected && (
-                    <div className="mt-2.5 pt-2 border-t border-rose-200/60 flex items-center gap-2 animate-in fade-in duration-100">
-                      <div className="flex items-center gap-1 text-[11px] font-bold text-rose-900 shrink-0">
-                        <FileText className="w-3.5 h-3.5 text-rose-700" />
-                        <span>Reja izohi:</span>
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-3 pt-3 border-t border-rose-200/80 space-y-2.5 animate-in fade-in duration-100"
+                    >
+                      {/* 1. Amal turini avval tanlash */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-rose-950 mb-1.5 flex items-center gap-1">
+                          <Phone className="w-3 h-3 text-rose-700" />
+                          <span>1. Rejadagi amal turini tanlang: *</span>
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                          {PLANNED_ACTION_OPTIONS.map((opt) => {
+                            const active = currentDraft.plannedAction === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => handleUpdateAction(client.id, opt.id)}
+                                className={`px-3 py-2 rounded-xl border text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                                  active
+                                    ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
+                                    : 'bg-white text-neutral-700 border-rose-200 hover:bg-rose-100/50'
+                                }`}
+                              >
+                                {active && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                                <span>{opt.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                      <input
-                        type="text"
-                        placeholder="Ushbu mijoz bo'yicha izoh (masalan: qarzni undirish, 10 qop sement yetkazish...)"
-                        value={currentNote}
-                        onChange={(e) => handleUpdateNote(client.id, e.target.value)}
-                        className="flex-1 px-2.5 py-1.5 bg-white rounded-lg border border-rose-200 text-xs text-neutral-900 placeholder:text-neutral-400 outline-none focus:border-rose-500 font-medium"
-                      />
+
+                      {/* 2. Undirish rejadagi summa (USD) va 3. Izoh */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="text-[11px] font-bold text-rose-950 flex items-center gap-1">
+                              <DollarSign className="w-3 h-3 text-rose-700" />
+                              <span>2. Undirish rejadagi summa (USD):</span>
+                            </label>
+                            {client.currentDebt > 0 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateAmount(client.id, String(client.currentDebt))
+                                }
+                                className="text-[10px] font-bold text-rose-700 hover:text-rose-900 underline cursor-pointer"
+                              >
+                                Joriy qarz ({formatMoney(client.currentDebt)})
+                              </button>
+                            )}
+                          </div>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            placeholder="Masalan: 500 USD"
+                            value={currentDraft.plannedAmount}
+                            onChange={(e) => handleUpdateAmount(client.id, e.target.value)}
+                            className="w-full px-3 py-1.5 bg-white rounded-lg border border-rose-200 text-xs font-mono font-bold text-neutral-900 placeholder:text-neutral-400 outline-none focus:border-rose-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-rose-950 mb-1 flex items-center gap-1">
+                            <FileText className="w-3 h-3 text-rose-700" />
+                            <span>3. Reja izohi (ixtiyoriy):</span>
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Ushbu mijoz bo'yicha izoh..."
+                            value={currentDraft.planNote}
+                            onChange={(e) => handleUpdateNote(client.id, e.target.value)}
+                            className="w-full px-3 py-1.5 bg-white rounded-lg border border-rose-200 text-xs text-neutral-900 placeholder:text-neutral-400 outline-none focus:border-rose-500 font-medium"
+                          />
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { WarehouseProduct, MonthlyPlan, MonthlyPlanTarget } from '../types';
+import { WarehouseProduct, MonthlyPlanTarget, MonthlyPlan } from '../types';
 import { formatMoney } from '../utils/format';
-import { X, Target, Plus, Trash2, Calendar, CheckCircle2, DollarSign } from 'lucide-react';
+import { storageService } from '../services/storage';
+import { X, Calendar, Target, CheckCircle2, AlertCircle } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
@@ -17,159 +18,108 @@ interface Props {
   ) => void;
 }
 
-interface TargetRow {
-  id: string;
-  currency: string;
-  amount: number | '';
-}
-
 export const CreateMonthlyPlanModal: React.FC<Props> = ({
   isOpen,
   onClose,
-  warehouseProducts,
-  currentUsername,
   existingPlan,
   onSavePlan,
 }) => {
-  // Extract unique currencies from warehouse products
-  const warehouseCurrencies = useMemo(() => {
-    const set = new Set<string>();
-    warehouseProducts.forEach((p) => {
-      if (p.currency && p.currency.trim()) {
-        set.add(p.currency.trim());
-      }
-    });
-    if (set.size === 0) {
-      set.add('USD');
-      set.add("so'm");
-    }
-    return Array.from(set);
-  }, [warehouseProducts]);
+  // Default start date (today) and end date (+30 days / 1 month)
+  const defaultDates = useMemo(() => {
+    const now = new Date();
+    const start = now.toISOString().slice(0, 10);
+    const nextMonth = new Date(now.getTime() + 30 * 24 * 3600 * 1000);
+    const end = nextMonth.toISOString().slice(0, 10);
+    return { start, end };
+  }, []);
 
-  const [rows, setRows] = useState<TargetRow[]>([]);
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
+  // Calculate existing clients' current total debt at this moment
+  const currentExistingTotalDebt = useMemo(() => {
+    if (!isOpen) return 0;
+    const allClients = storageService.getClients();
+    const total = allClients.reduce((sum, c) => sum + (c.currentDebt > 0 ? c.currentDebt : 0), 0);
+    return Math.round(total * 100) / 100;
+  }, [isOpen]);
+
+  const [targetAmount, setTargetAmount] = useState<number | ''>('');
+  const [startDate, setStartDate] = useState<string>(defaultDates.start);
+  const [endDate, setEndDate] = useState<string>(defaultDates.end);
   const [notes, setNotes] = useState<string>('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
-      const defaultCurr = warehouseCurrencies[0] || 'USD';
-      const now = new Date();
-      const startStr = now.toISOString().slice(0, 10);
-      const endMonth = new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-
-      if (existingPlan && existingPlan.targets && existingPlan.targets.length > 0) {
-        setRows(
-          existingPlan.targets.map((t, idx) => ({
-            id: `row_${idx}_${Date.now()}`,
-            currency: t.currency || defaultCurr,
-            amount: t.targetAmount,
-          }))
+      setErrorMsg(null);
+      if (existingPlan && existingPlan.targets.length > 0) {
+        setTargetAmount(
+          existingPlan.targets[0].targetAmount > 0
+            ? existingPlan.targets[0].targetAmount
+            : currentExistingTotalDebt || ''
         );
-        setStartDate(existingPlan.startDate || startStr);
-        setEndDate(existingPlan.endDate || endMonth);
+        setStartDate(existingPlan.startDate || defaultDates.start);
+        setEndDate(existingPlan.endDate || defaultDates.end);
         setNotes(existingPlan.notes || '');
       } else {
-        // Initial 1st row with currency & amount
-        setRows([
-          {
-            id: `row_init_${Date.now()}`,
-            currency: defaultCurr,
-            amount: 100000,
-          },
-        ]);
-        setStartDate(startStr);
-        setEndDate(endMonth);
-        setNotes('Mijozlardan qarzdorlik to\'lovlarini undirish bo\'yicha 1 oylik maqsad');
+        setTargetAmount(currentExistingTotalDebt > 0 ? currentExistingTotalDebt : '');
+        setStartDate(defaultDates.start);
+        setEndDate(defaultDates.end);
+        setNotes('');
       }
     }
-  }, [isOpen, existingPlan, warehouseCurrencies]);
+  }, [isOpen, existingPlan, defaultDates, currentExistingTotalDebt]);
 
   if (!isOpen) return null;
 
-  const handleAddRow = () => {
-    const nextCurr = warehouseCurrencies.find((c) => !rows.some((r) => r.currency === c)) || warehouseCurrencies[0] || 'USD';
-    setRows((prev) => [
-      ...prev,
-      {
-        id: `row_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        currency: nextCurr,
-        amount: '',
-      },
-    ]);
+  const setPresetDuration = (days: number) => {
+    const startObj = startDate ? new Date(startDate) : new Date();
+    const endObj = new Date(startObj.getTime() + days * 24 * 3600 * 1000);
+    setEndDate(endObj.toISOString().slice(0, 10));
   };
-
-  const handleRemoveRow = (id: string) => {
-    if (rows.length <= 1) return;
-    setRows((prev) => prev.filter((r) => r.id !== id));
-  };
-
-  const handleUpdateRow = (id: string, field: 'currency' | 'amount', value: any) => {
-    setRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== id) return r;
-        if (field === 'currency') {
-          return { ...r, currency: value };
-        } else {
-          const num = value === '' ? '' : Math.max(0, parseFloat(value));
-          return { ...r, amount: num };
-        }
-      })
-    );
-  };
-
-  // Quick Date Presets
-  const handleSetPreset30Days = () => {
-    const now = new Date();
-    setStartDate(now.toISOString().slice(0, 10));
-    const nextMonth = new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-    setEndDate(nextMonth);
-  };
-
-  const handleSetPresetCurrentMonth = () => {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
-    setStartDate(firstDay);
-    setEndDate(lastDay);
-  };
-
-  const isFormValid =
-    rows.length > 0 &&
-    rows.every((r) => r.currency.trim().length > 0 && typeof r.amount === 'number' && r.amount > 0) &&
-    startDate.length > 0 &&
-    endDate.length > 0 &&
-    startDate <= endDate;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isFormValid) return;
+    setErrorMsg(null);
 
-    const targets: MonthlyPlanTarget[] = rows.map((r) => ({
-      currency: r.currency.trim(),
-      targetAmount: typeof r.amount === 'number' ? r.amount : Number(r.amount) || 0,
-    }));
+    const numAmt = typeof targetAmount === 'number' ? targetAmount : Number(targetAmount) || 0;
+    const finalTargetAmount = numAmt > 0 ? numAmt : currentExistingTotalDebt;
 
-    onSavePlan(targets, startDate, endDate, notes.trim());
+    if (finalTargetAmount <= 0) {
+      setErrorMsg('Iltimos, reja summasini (USD) kiriting!');
+      return;
+    }
+
+    if (!startDate || !endDate) {
+      setErrorMsg('Reja amal qilish muddatini (boshlanish va tugash sanasini) tanlang!');
+      return;
+    }
+
+    if (new Date(endDate) < new Date(startDate)) {
+      setErrorMsg("Tugash sanasi boshlanish sanasidan keyin bo'lishi kerak!");
+      return;
+    }
+
+    onSavePlan(
+      [{ currency: 'USD', targetAmount: finalTargetAmount }],
+      startDate,
+      endDate,
+      notes.trim() || undefined
+    );
     onClose();
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-      <div className="relative w-full max-w-xl bg-white rounded-3xl shadow-2xl border border-rose-200 overflow-hidden flex flex-col max-h-[92vh]">
+      <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-rose-200 overflow-hidden flex flex-col max-h-[92vh]">
         {/* Header */}
-        <div className="px-5 py-4 bg-gradient-to-r from-rose-800 via-rose-700 to-amber-700 text-white flex items-center justify-between shrink-0">
+        <div className="px-5 py-4 bg-gradient-to-r from-rose-800 via-rose-700 to-rose-900 text-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center text-amber-300 border border-white/10">
+            <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center text-white border border-white/20">
               <Target className="w-5 h-5" />
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-bold font-display leading-tight">
-                1 oylik reja tuzish (Qarz undirish)
+                1 oylik qarz undirish rejasini tuzish
               </h2>
-              <p className="text-[11px] text-rose-100 font-medium">
-                Ombor mahsulotlari valyutalarida qarz undirish maqsadlarini belgilash ({currentUsername})
-              </p>
             </div>
           </div>
           <button
@@ -181,183 +131,138 @@ export const CreateMonthlyPlanModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Body */}
-        <form onSubmit={handleSubmit} className="p-5 sm:p-6 overflow-y-auto space-y-4">
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-neutral-900 uppercase tracking-wide flex items-center gap-1.5">
-                <DollarSign className="w-4 h-4 text-rose-700" />
-                <span>Reja valyutalari va summalari</span>
-              </label>
-              <span className="text-[11px] font-semibold text-neutral-500">
-                Ombordagi narxlar valyutasi bo'yicha
+        {/* Form Body */}
+        <form onSubmit={handleSubmit} className="p-5 sm:p-6 overflow-y-auto space-y-5">
+          {errorMsg && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {/* Mavjud eski qarzdorlik ma'lumoti va USD Summa */}
+          <div className="p-4 rounded-2xl bg-rose-50/50 border border-rose-200/80 space-y-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-neutral-700">
+                Hozirgi mavjud mijozlar umumiy qarzi:
+              </span>
+              <span className="font-bold font-mono text-rose-900 text-sm">
+                {formatMoney(currentExistingTotalDebt)}
               </span>
             </div>
 
-            {/* Target Rows (1-qator: Valyuta, keyingi qator: Summa, + qo'shish imkoni) */}
-            <div className="space-y-3">
-              {rows.map((row, index) => (
-                <div
-                  key={row.id}
-                  className="p-3.5 sm:p-4 rounded-2xl bg-neutral-50 border border-neutral-200/90 space-y-3 relative group"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-rose-900 bg-rose-100/80 px-2 py-0.5 rounded-md">
-                      {index + 1}-maqsadli valyuta
-                    </span>
-                    {rows.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveRow(row.id)}
-                        className="text-neutral-400 hover:text-rose-600 p-1 rounded-lg hover:bg-rose-50 transition cursor-pointer"
-                        title="Ushbu qatorni o'chirish"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* 1-qator: Valyuta (ombordagi mahsulot narxlaridagi valyutalardan biri) */}
-                    <div>
-                      <label className="block text-[11px] font-bold text-neutral-700 mb-1">
-                        1-qator: Valyuta <span className="text-rose-600">*</span>
-                      </label>
-                      <select
-                        value={row.currency}
-                        onChange={(e) => handleUpdateRow(row.id, 'currency', e.target.value)}
-                        className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs sm:text-sm font-bold text-neutral-900 focus:outline-rose-600 bg-white"
-                        required
-                      >
-                        {warehouseCurrencies.map((c) => (
-                          <option key={c} value={c}>
-                            {c} (Ombor valyutasi)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* Keyingi qator: Summa */}
-                    <div>
-                      <label className="block text-[11px] font-bold text-neutral-700 mb-1">
-                        Keyingi qator: Summa <span className="text-rose-600">*</span>
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          min="1"
-                          step="any"
-                          value={row.amount}
-                          onChange={(e) => handleUpdateRow(row.id, 'amount', e.target.value)}
-                          placeholder="Reja summasi (masalan: 100000)"
-                          className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs sm:text-sm font-bold font-mono text-neutral-900 focus:outline-rose-600 bg-white tabular-nums pr-12"
-                          required
-                        />
-                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-bold text-neutral-500 font-mono">
-                          {row.currency}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {typeof row.amount === 'number' && row.amount > 0 && (
-                    <div className="text-[11px] text-neutral-600 font-mono">
-                      Qarz undirish rejasi: <strong className="text-neutral-900">{formatMoney(row.amount)} {row.currency}</strong>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            {/* "+ Yana qo'shish" tugmasi */}
-            <div className="pt-1">
-              <button
-                type="button"
-                onClick={handleAddRow}
-                className="w-full py-2.5 px-3 rounded-xl border border-dashed border-rose-300 hover:border-rose-500 bg-rose-50/50 hover:bg-rose-50 text-rose-800 text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Yana valyuta va summa qo'shish</span>
-              </button>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-bold text-neutral-800">
+                  Summa (USD) <span className="text-rose-600">*</span>
+                </label>
+                {currentExistingTotalDebt > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setTargetAmount(currentExistingTotalDebt)}
+                    className="text-[11px] font-bold text-rose-700 hover:text-rose-900 underline cursor-pointer"
+                  >
+                    Joriy umumiy qarzni qo'yish ({formatMoney(currentExistingTotalDebt)})
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0.01"
+                  step="any"
+                  value={targetAmount}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setTargetAmount(val === '' ? '' : Math.max(0, parseFloat(val)));
+                  }}
+                  placeholder="Masalan: 10000"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-sm sm:text-base font-bold font-mono focus:outline-rose-600 bg-white tabular-nums pr-16"
+                  required
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold font-mono text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md">
+                  USD
+                </span>
+              </div>
+              <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+                * Reja foizi faqat hozirgi mavjud (eski) qarzdorliklar yopilganda ko'payadi. Reja tuzilgandan keyin qo'shilgan yangi qarzlar ushbu foizga ta'sir qilmaydi.
+              </p>
             </div>
           </div>
 
-          {/* Muddat tanlash imkoni */}
-          <div className="p-4 rounded-2xl bg-amber-50/60 border border-amber-200 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-amber-950 uppercase tracking-wide flex items-center gap-1.5">
-                <Calendar className="w-4 h-4 text-amber-700" />
-                <span>Muddat tanlash <span className="text-rose-600">*</span></span>
-              </label>
+          {/* Muddat tanlash */}
+          <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-rose-700" />
+                <h3 className="text-xs sm:text-sm font-bold text-neutral-900 uppercase tracking-wide">
+                  Reja muddati (Sana oralig'i)
+                </h3>
+              </div>
 
-              {/* Quick Preset Buttons */}
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
-                  onClick={handleSetPreset30Days}
-                  className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200/70 hover:bg-amber-200 text-amber-900 transition cursor-pointer"
+                  onClick={() => setPresetDuration(15)}
+                  className="px-2 py-1 rounded-lg bg-white border border-neutral-200 hover:border-rose-300 text-[11px] font-semibold text-neutral-700 cursor-pointer"
                 >
-                  1 oy (30 kun)
+                  15 kun
                 </button>
                 <button
                   type="button"
-                  onClick={handleSetPresetCurrentMonth}
-                  className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200/70 hover:bg-amber-200 text-amber-900 transition cursor-pointer"
+                  onClick={() => setPresetDuration(30)}
+                  className="px-2 py-1 rounded-lg bg-rose-100 border border-rose-300 text-[11px] font-bold text-rose-900 cursor-pointer"
                 >
-                  Joriy oy
+                  1 oy (30 kun)
                 </button>
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
-                  Boshlanish sanasi
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Boshlanish sanasi <span className="text-rose-600">*</span>
                 </label>
                 <input
                   type="date"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-neutral-300 text-xs sm:text-sm font-semibold focus:outline-rose-600 bg-white"
+                  className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs sm:text-sm font-mono font-semibold text-neutral-900 bg-white focus:outline-rose-600"
                   required
                 />
               </div>
+
               <div>
-                <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
-                  Tugash sanasi
+                <label className="block text-xs font-bold text-neutral-700 mb-1">
+                  Tugash sanasi <span className="text-rose-600">*</span>
                 </label>
                 <input
                   type="date"
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
-                  min={startDate}
-                  className="w-full px-3 py-2 rounded-xl border border-neutral-300 text-xs sm:text-sm font-semibold focus:outline-rose-600 bg-white"
+                  className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs sm:text-sm font-mono font-semibold text-neutral-900 bg-white focus:outline-rose-600"
                   required
                 />
               </div>
             </div>
-
-            <div className="text-[11px] text-neutral-600">
-              Tanlangan muddat: <strong className="text-neutral-900 font-mono">{startDate}</strong> dan <strong className="text-neutral-900 font-mono">{endDate}</strong> gacha
-            </div>
           </div>
 
-          {/* Izoh */}
+          {/* Ixtiyoriy izoh */}
           <div>
             <label className="block text-xs font-bold text-neutral-700 mb-1">
-              Reja izohi (Ixtiyoriy)
+              Qo'shimcha izoh (Ixtiyoriy)
             </label>
             <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Masalan: Ushbu oylik reja doirasida eng yirik qarzdorlar qoplanadi"
-              className="w-full px-3 py-2 text-xs rounded-xl border border-neutral-300 text-neutral-900 focus:outline-rose-600 bg-white"
+              placeholder="Masalan: Oylik qarz undirish maqsadi..."
+              className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs text-neutral-900 bg-white focus:outline-rose-600"
             />
           </div>
 
-          {/* Footer Submit Buttons */}
-          <div className="pt-2 flex items-center justify-end gap-2.5">
+          {/* Footer Buttons */}
+          <div className="pt-2 flex items-center justify-end gap-2.5 border-t border-neutral-100">
             <button
               type="button"
               onClick={onClose}
@@ -367,8 +272,7 @@ export const CreateMonthlyPlanModal: React.FC<Props> = ({
             </button>
             <button
               type="submit"
-              disabled={!isFormValid}
-              className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 active:bg-rose-900 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer min-h-[42px] flex items-center gap-1.5"
+              className="px-6 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer min-h-[42px] flex items-center gap-1.5"
             >
               <CheckCircle2 className="w-4 h-4" />
               <span>Saqlash</span>

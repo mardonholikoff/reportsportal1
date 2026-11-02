@@ -20,15 +20,22 @@ const DAILY_PLANS_KEY = 'savdo_daily_plans_v1';
 const WAREHOUSE_KEY = 'savdo_warehouse_products_v1';
 const MONTHLY_PLANS_KEY = 'savdo_monthly_plans_v1';
 export const DELETED_CLIENT_IDS_KEY = 'savdo_deleted_client_ids_v1';
+export const DELETED_WAREHOUSE_IDS_KEY = 'savdo_deleted_warehouse_ids_v1';
 export const APP_INITIALIZED_KEY = 'savdo_app_initialized_v1';
+
+let deletedClientIdsCache: Set<string> | null = null;
+let deletedWarehouseIdsCache: Set<string> | null = null;
 
 export function getDeletedClientIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();
+  if (deletedClientIdsCache) return deletedClientIdsCache;
   try {
     const raw = localStorage.getItem(DELETED_CLIENT_IDS_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
+    deletedClientIdsCache = raw ? new Set(JSON.parse(raw)) : new Set();
+    return deletedClientIdsCache;
   } catch {
-    return new Set();
+    deletedClientIdsCache = new Set();
+    return deletedClientIdsCache;
   }
 }
 
@@ -36,10 +43,36 @@ export function markClientAsDeleted(clientId: string): void {
   if (typeof window === 'undefined') return;
   try {
     const ids = getDeletedClientIds();
+    if (ids.has(clientId)) return;
     ids.add(clientId);
     localStorage.setItem(DELETED_CLIENT_IDS_KEY, JSON.stringify(Array.from(ids)));
   } catch (e) {
     console.error('Failed to mark client as deleted', e);
+  }
+}
+
+export function getDeletedWarehouseIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  if (deletedWarehouseIdsCache) return deletedWarehouseIdsCache;
+  try {
+    const raw = localStorage.getItem(DELETED_WAREHOUSE_IDS_KEY);
+    deletedWarehouseIdsCache = raw ? new Set(JSON.parse(raw)) : new Set();
+    return deletedWarehouseIdsCache;
+  } catch {
+    deletedWarehouseIdsCache = new Set();
+    return deletedWarehouseIdsCache;
+  }
+}
+
+export function markWarehouseProductAsDeleted(productId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const ids = getDeletedWarehouseIds();
+    if (ids.has(productId)) return;
+    ids.add(productId);
+    localStorage.setItem(DELETED_WAREHOUSE_IDS_KEY, JSON.stringify(Array.from(ids)));
+  } catch (e) {
+    console.error('Failed to mark warehouse product as deleted', e);
   }
 }
 
@@ -57,14 +90,16 @@ const INITIAL_WAREHOUSE_PRODUCTS: WarehouseProduct[] = [
     packageUnitName: 'korobka',
     piecesPerPackage: 4,
     pricingUnitType: 'piece',
-    currency: 'UZS',
-    price: 380000,
+    currency: 'USD',
+    price: 30,
     intakeDate: new Date().toISOString().slice(0, 10),
     intakeUnitType: 'package',
     intakeQuantity: 20,
-    totalSum: 30400000,
+    totalSum: 2400,
     totalPieces: 80,
     totalVolume: 400,
+    minSellingPricingUnitType: 'piece',
+    minSellingPrice: 35,
     createdBy: 'adminc',
     createdAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
     notes: "Boshlang'ich ombor zaxirasi",
@@ -82,14 +117,16 @@ const INITIAL_WAREHOUSE_PRODUCTS: WarehouseProduct[] = [
     packageUnitName: 'blok',
     piecesPerPackage: 10,
     pricingUnitType: 'piece',
-    currency: 'UZS',
-    price: 54000,
+    currency: 'USD',
+    price: 4.5,
     intakeDate: new Date().toISOString().slice(0, 10),
     intakeUnitType: 'package',
     intakeQuantity: 15,
-    totalSum: 8100000,
+    totalSum: 675,
     totalPieces: 150,
     totalVolume: 450,
+    minSellingPricingUnitType: 'piece',
+    minSellingPrice: 5.5,
     createdBy: 'adminc',
     createdAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
     notes: "To'g'ridan-to'g'ri zavoddan keltirildi",
@@ -102,6 +139,7 @@ const INITIAL_CLIENTS: Client[] = [
     id: 'cli_1',
     name: 'Akromjon Karimov',
     phone: '+998 90 123 45 67',
+    phones: ['+998 90 123 45 67'],
     region: 'Toshkent shahri',
     district: 'Chilonzor tumani',
     landmark: '19-mavze, 45-uy',
@@ -112,29 +150,29 @@ const INITIAL_CLIENTS: Client[] = [
         name: 'Sement M500 (Ohangaron)',
         unit: 'qop',
         quantity: 50,
-        unitPrice: 65000,
-        totalPrice: 3250000,
+        unitPrice: 5,
+        totalPrice: 250,
       },
       {
         id: 'p1_2',
         name: 'Armatura 12mm (Bekobod)',
         unit: 'metr',
         quantity: 120,
-        unitPrice: 11500,
-        totalPrice: 1380000,
+        unitPrice: 1,
+        totalPrice: 120,
       },
       {
         id: 'p1_3',
         name: 'Gipsokarton 9.5mm (Knauf)',
         unit: 'dona',
         quantity: 25,
-        unitPrice: 52000,
-        totalPrice: 1300000,
+        unitPrice: 4,
+        totalPrice: 100,
       },
     ],
-    currentDebt: 1850000,
+    currentDebt: 150,
     currentAdvance: 0,
-    notes: 'Qolgan 1 850 000 so\'mni hafta oxirigacha beradi.',
+    notes: 'Qolgan 150 USD ni hafta oxirigacha beradi.',
     createdAt: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString(),
     updatedAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
     createdBy: 'adminc',
@@ -147,7 +185,7 @@ const INITIAL_CLIENTS: Client[] = [
         timestamp: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString(),
         type: 'created',
         title: "Mijoz ro'yxatga qo'shildi",
-        details: "Boshlang'ich mahsulotlar va 1 850 000 so'm qarz bilan kiritildi.",
+        details: "Boshlang'ich mahsulotlar va 150 USD qarz bilan kiritildi.",
       },
     ],
   },
@@ -155,6 +193,7 @@ const INITIAL_CLIENTS: Client[] = [
     id: 'cli_2',
     name: 'Shohruh Mirzayev',
     phone: '+998 93 987 65 43',
+    phones: ['+998 93 987 65 43'],
     region: 'Samarqand viloyati',
     district: 'Samarqand shahri',
     landmark: "Registon ko'chasi, 12-uy",
@@ -165,21 +204,21 @@ const INITIAL_CLIENTS: Client[] = [
         name: 'Kafel yelim (Master)',
         unit: 'qop',
         quantity: 20,
-        unitPrice: 48000,
-        totalPrice: 960000,
+        unitPrice: 4,
+        totalPrice: 80,
       },
       {
         id: 'p2_2',
         name: 'Kafel 60x60 oq mramor',
         unit: 'metr kvadrat',
         quantity: 45,
-        unitPrice: 95000,
-        totalPrice: 4275000,
+        unitPrice: 7.5,
+        totalPrice: 337.5,
       },
     ],
     currentDebt: 0,
-    currentAdvance: 350000,
-    notes: 'Keyingi buyurtma uchun 350 000 so\'m oldindan bergan.',
+    currentAdvance: 30,
+    notes: 'Keyingi buyurtma uchun 30 USD oldindan bergan.',
     createdAt: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
     updatedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
     createdBy: 'adminc',
@@ -192,7 +231,7 @@ const INITIAL_CLIENTS: Client[] = [
         timestamp: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
         type: 'created',
         title: "Mijoz ro'yxatga qo'shildi",
-        details: "350 000 so'm avans to'lovi bilan kiritildi.",
+        details: "30 USD avans to'lovi bilan kiritildi.",
       },
     ],
   },
@@ -200,6 +239,7 @@ const INITIAL_CLIENTS: Client[] = [
     id: 'cli_3',
     name: 'Dilnoza Saidova',
     phone: '+998 97 555 44 33',
+    phones: ['+998 97 555 44 33'],
     region: 'Buxoro viloyati',
     district: 'Buxoro shahri',
     landmark: "G'ijduvon shoh ko'chasi, 88-bino",
@@ -210,19 +250,19 @@ const INITIAL_CLIENTS: Client[] = [
         name: 'Fasad bo\'yoq (Dufa)',
         unit: 'litr',
         quantity: 30,
-        unitPrice: 42000,
-        totalPrice: 1260000,
+        unitPrice: 3.5,
+        totalPrice: 105,
       },
       {
         id: 'p3_2',
         name: 'Shpatlevka (Saten)',
         unit: 'qop',
         quantity: 15,
-        unitPrice: 38000,
-        totalPrice: 570000,
+        unitPrice: 3,
+        totalPrice: 45,
       },
     ],
-    currentDebt: 630000,
+    currentDebt: 50,
     currentAdvance: 0,
     notes: 'Yetkazib berilgan, to\'lov kutilmoqda.',
     createdAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
@@ -245,6 +285,12 @@ const INITIAL_CLIENTS: Client[] = [
 
 class StorageService {
   private listeners: Set<() => void> = new Set();
+  private clientsCache: Client[] | null = null;
+  private clientsMapCache: Map<string, Client> | null = null;
+  private plansCache: DailyPlanItem[] | null = null;
+  private warehouseCache: WarehouseProduct[] | null = null;
+  private monthlyPlansCache: MonthlyPlan[] | null = null;
+  private notifyPending: boolean = false;
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -297,8 +343,21 @@ class StorageService {
           // ignore
         }
       }
-      window.addEventListener('storage', () => this.notify());
+      window.addEventListener('storage', () => {
+        this.invalidateAllCaches();
+        this.notify();
+      });
     }
+  }
+
+  public invalidateAllCaches(): void {
+    this.clientsCache = null;
+    this.clientsMapCache = null;
+    this.plansCache = null;
+    this.warehouseCache = null;
+    this.monthlyPlansCache = null;
+    deletedClientIdsCache = null;
+    deletedWarehouseIdsCache = null;
   }
 
   public subscribe(cb: () => void): () => void {
@@ -307,20 +366,37 @@ class StorageService {
   }
 
   private notify() {
-    this.listeners.forEach((cb) => cb());
+    if (this.notifyPending) return;
+    this.notifyPending = true;
+    queueMicrotask(() => {
+      this.notifyPending = false;
+      this.listeners.forEach((cb) => cb());
+    });
+  }
+
+  private rebuildClientsMap(clients: Client[]) {
+    const map = new Map<string, Client>();
+    for (let i = 0; i < clients.length; i++) {
+      map.set(clients[i].id, clients[i]);
+    }
+    this.clientsMapCache = map;
   }
 
   public getClients(): Client[] {
     if (typeof window === 'undefined') return [];
+    if (this.clientsCache) return this.clientsCache;
     try {
       const data = localStorage.getItem(STORAGE_KEY);
       const isInit = localStorage.getItem(APP_INITIALIZED_KEY);
       if (!data) {
-        return isInit ? [] : INITIAL_CLIENTS;
+        const fallback = isInit ? [] : INITIAL_CLIENTS;
+        this.clientsCache = fallback;
+        this.rebuildClientsMap(fallback);
+        return fallback;
       }
       const deletedIds = getDeletedClientIds();
       const parsed: Client[] = JSON.parse(data);
-      return parsed
+      const normalized = parsed
         .filter((c) => !deletedIds.has(c.id))
         .map((c) => {
           let region = c.region;
@@ -341,6 +417,9 @@ class StorageService {
             logs: c.logs || [],
           };
         });
+      this.clientsCache = normalized;
+      this.rebuildClientsMap(normalized);
+      return normalized;
     } catch (e) {
       console.error('Failed to parse clients:', e);
       return [];
@@ -349,19 +428,27 @@ class StorageService {
 
   public saveClients(clients: Client[]): void {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(clients));
+    const deletedIds = getDeletedClientIds();
+    const clean = clients.filter((c) => c && c.id && !deletedIds.has(c.id));
+    this.clientsCache = clean;
+    this.rebuildClientsMap(clean);
+    this.plansCache = null; // Invalidate plans cache in case activeClientIds changed
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
     this.notify();
   }
 
   public getClientById(id: string): Client | undefined {
-    return this.getClients().find((c) => c.id === id);
+    if (!this.clientsMapCache) {
+      this.getClients();
+    }
+    return this.clientsMapCache?.get(id);
   }
 
   public addClient(
     clientData: Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'logs'>,
     author: string = 'adminc'
   ): Client {
-    const clients = this.getClients();
+    const clients = [...this.getClients()];
     const clientId = 'cli_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
     const nowStr = new Date().toISOString();
 
@@ -372,7 +459,7 @@ class StorageService {
       timestamp: nowStr,
       type: 'created',
       title: "Mijoz ro'yxatga qo'shildi",
-      details: `${author} tomonidan yangi mijoz kiritildi. Qarz: ${clientData.currentDebt || 0} so'm, Avans: ${clientData.currentAdvance || 0} so'm`,
+      details: `${author} tomonidan yangi mijoz kiritildi. Qarz: ${clientData.currentDebt || 0} USD, Avans: ${clientData.currentAdvance || 0} USD`,
     };
 
     const newClient: Client = {
@@ -391,8 +478,66 @@ class StorageService {
     return newClient;
   }
 
+  public addClientsBulk(
+    clientsData: Array<Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'logs'>>,
+    author: string = 'adminc'
+  ): Client[] {
+    const existingClients = this.getClients();
+    const nowStr = new Date().toISOString();
+    const createdClients: Client[] = [];
+
+    clientsData.forEach((clientData, idx) => {
+      const clientId =
+        'cli_' + Date.now() + '_' + idx + '_' + Math.random().toString(36).substring(2, 6);
+      const initialLog: ClientAuditLog = {
+        id: 'log_' + Date.now() + '_' + idx + '_init',
+        clientId,
+        author,
+        timestamp: nowStr,
+        type: 'created',
+        title: "Mijoz Excel (.xlsx) orqali ro'yxatga qo'shildi",
+        details: `${author} tomonidan Excel fayldan yuklandi. Qarz: ${clientData.currentDebt || 0} USD, Avans: ${clientData.currentAdvance || 0} USD`,
+      };
+
+      const newClient: Client = {
+        ...clientData,
+        id: clientId,
+        createdAt: nowStr,
+        updatedAt: nowStr,
+        createdBy: author,
+        syncStatus: navigator.onLine ? 'synced' : 'pending',
+        logs: [initialLog],
+      };
+
+      createdClients.push(newClient);
+    });
+
+    // Batch write to syncQueue once (O(N) instead of O(N^2))
+    if (typeof window !== 'undefined' && createdClients.length > 0) {
+      try {
+        const queue = this.getSyncQueue();
+        for (let i = 0; i < createdClients.length; i++) {
+          queue.push({
+            action: 'create',
+            client: createdClients[i],
+            timestamp: nowStr,
+          });
+        }
+        // Keep queue bounded so localStorage never overflows
+        const boundedQueue = queue.length > 2000 ? queue.slice(queue.length - 2000) : queue;
+        localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(boundedQueue));
+      } catch {
+        // ignore quota issues on sync queue
+      }
+    }
+
+    const updatedAll = [...createdClients, ...existingClients];
+    this.saveClients(updatedAll);
+    return createdClients;
+  }
+
   public updateClient(id: string, updates: Partial<Omit<Client, 'id' | 'createdAt'>>): Client | null {
-    const clients = this.getClients();
+    const clients = [...this.getClients()];
     const index = clients.findIndex((c) => c.id === id);
     if (index === -1) return null;
 
@@ -431,25 +576,90 @@ class StorageService {
   }
 
   public deleteClient(id: string): boolean {
+    // 1. Mark client ID as permanently deleted
     markClientAsDeleted(id);
-    const clients = this.getClients();
-    const filtered = clients.filter((c) => c.id !== id);
-    if (filtered.length === clients.length) return false;
+    const deletedIds = getDeletedClientIds();
 
-    this.saveClients(filtered);
-    this.addToSyncQueue({ action: 'delete', clientId: id });
-
-    // Cascade delete any daily plans for this client
-    try {
-      const plans = this.getDailyPlans();
-      const remainingPlans = plans.filter((p) => p.clientId !== id);
-      if (remainingPlans.length !== plans.length) {
-        this.saveDailyPlans(remainingPlans);
+    // 2. Purge from raw clients storage directly (do not rely on pre-filtered getClients)
+    if (typeof window !== 'undefined') {
+      try {
+        const rawClients = localStorage.getItem(STORAGE_KEY);
+        const parsedClients: Client[] = rawClients ? JSON.parse(rawClients) : INITIAL_CLIENTS;
+        const remainingClients = parsedClients.filter(
+          (c) => c.id !== id && !deletedIds.has(c.id)
+        );
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(remainingClients));
+      } catch (e) {
+        console.error('Failed to purge client from localStorage:', e);
       }
-    } catch (e) {
-      console.warn('Failed to cascade delete daily plans for client', id, e);
+
+      // 3. Cascade delete all daily plans (active, completed, or closed) for this client
+      try {
+        const rawPlans = localStorage.getItem(DAILY_PLANS_KEY);
+        if (rawPlans) {
+          const parsedPlans: DailyPlanItem[] = JSON.parse(rawPlans);
+          const remainingPlans = parsedPlans.filter(
+            (p) => p.clientId !== id && !deletedIds.has(p.clientId)
+          );
+          localStorage.setItem(DAILY_PLANS_KEY, JSON.stringify(remainingPlans));
+        }
+      } catch (e) {
+        console.warn('Failed to cascade delete daily plans for client', id, e);
+      }
+
+      // 4. Cascade clean monthly plans initialClientDebts snapshot
+      try {
+        const rawMonthly = localStorage.getItem(MONTHLY_PLANS_KEY);
+        if (rawMonthly) {
+          const parsedMonthly: MonthlyPlan[] = JSON.parse(rawMonthly);
+          let monthlyChanged = false;
+          const updatedMonthly = parsedMonthly.map((mp) => {
+            if (mp.initialClientDebts && id in mp.initialClientDebts) {
+              monthlyChanged = true;
+              const copyDebts = { ...mp.initialClientDebts };
+              delete copyDebts[id];
+              const newInitialTotal = Object.values(copyDebts).reduce(
+                (acc, v) => acc + (Number(v) || 0),
+                0
+              );
+              return {
+                ...mp,
+                initialClientDebts: copyDebts,
+                initialTotalDebt: newInitialTotal,
+              };
+            }
+            return mp;
+          });
+          if (monthlyChanged) {
+            localStorage.setItem(MONTHLY_PLANS_KEY, JSON.stringify(updatedMonthly));
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to clean monthly plans for deleted client', id, e);
+      }
+
+      // 5. Remove any pending create/update items for this client from syncQueue and record delete
+      try {
+        const queue = this.getSyncQueue().filter(
+          (q) => q.clientId !== id && q.client?.id !== id
+        );
+        queue.push({
+          action: 'delete',
+          clientId: id,
+          timestamp: new Date().toISOString(),
+        });
+        localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
+      } catch {
+        // ignore
+      }
+      // Invalidate in-memory caches after deletion
+      this.clientsCache = null;
+      this.clientsMapCache = null;
+      this.plansCache = null;
+      this.monthlyPlansCache = null;
     }
 
+    this.notify();
     return true;
   }
 
@@ -478,7 +688,7 @@ class StorageService {
       timestamp: new Date().toISOString(),
       type: 'payment',
       title: "Hisob-kitob yangilandi",
-      details: `${author} tomonidan o'zgartirildi: ${noteAddition || ''}. Yangi qarz: ${newDebt} so'm, Yangi avans: ${newAdvance} so'm.`,
+      details: `${author} tomonidan o'zgartirildi: ${noteAddition || ''}. Yangi qarz: ${newDebt} USD, Yangi avans: ${newAdvance} USD.`,
       amountChanged: Math.abs((client.currentDebt || 0) - newDebt),
     });
 
@@ -494,55 +704,176 @@ class StorageService {
   // DAILY PLANS (Kunlik rejalar — 24 soatlik amal qilish muddati)
   // =========================================================================
 
+  // Bir mijoz rejada faqat bir marta bo'lishini ta'minlash (dublikatlarni tozalash)
+  public deduplicatePlansByClient(plans: DailyPlanItem[]): {
+    uniquePlans: DailyPlanItem[];
+    duplicateIds: string[];
+  } {
+    const byClient = new Map<string, DailyPlanItem>();
+    const duplicateIds: string[] = [];
+
+    const scorePlan = (p: DailyPlanItem): number => {
+      let score = 0;
+      if (p.isClosed || p.status === 'yopildi') score += 1000;
+      if (p.status === 'bajarildi' || p.actionDone) score += 500;
+      score += (p.actionsCount || (p.actionsHistory ? p.actionsHistory.length : 0)) * 50;
+      return score;
+    };
+
+    for (const plan of plans) {
+      if (!plan || !plan.clientId) continue;
+      const key = plan.clientId;
+      const existing = byClient.get(key);
+      if (!existing) {
+        byClient.set(key, plan);
+      } else {
+        const existingScore = scorePlan(existing);
+        const currentScore = scorePlan(plan);
+        const existingTime = new Date(
+          existing.completedAt || existing.closedAt || existing.createdAt || 0
+        ).getTime();
+        const currentTime = new Date(
+          plan.completedAt || plan.closedAt || plan.createdAt || 0
+        ).getTime();
+
+        const pickCurrent =
+          currentScore > existingScore ||
+          (currentScore === existingScore && currentTime > existingTime);
+
+        if (pickCurrent) {
+          if (existing.id !== plan.id) duplicateIds.push(existing.id);
+          byClient.set(key, {
+            ...plan,
+            plannedAction: plan.plannedAction || existing.plannedAction,
+            plannedAmount: plan.plannedAmount ?? existing.plannedAmount,
+            planNote: plan.planNote || existing.planNote,
+          });
+        } else {
+          if (plan.id !== existing.id) duplicateIds.push(plan.id);
+          byClient.set(key, {
+            ...existing,
+            plannedAction: existing.plannedAction || plan.plannedAction,
+            plannedAmount: existing.plannedAmount ?? plan.plannedAmount,
+            planNote: existing.planNote || plan.planNote,
+          });
+        }
+      }
+    }
+
+    const uniquePlans = Array.from(byClient.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return { uniquePlans, duplicateIds };
+  }
+
   public getDailyPlans(): DailyPlanItem[] {
     if (typeof window === 'undefined') return [];
+    if (this.plansCache) return this.plansCache;
     try {
       const raw = localStorage.getItem(DAILY_PLANS_KEY);
-      return raw ? JSON.parse(raw) : [];
+      if (!raw) {
+        this.plansCache = [];
+        return [];
+      }
+      const deletedIds = getDeletedClientIds();
+      if (!this.clientsMapCache) {
+        this.getClients();
+      }
+      const parsed: DailyPlanItem[] = JSON.parse(raw);
+      const filtered = parsed.filter(
+        (p) =>
+          p &&
+          p.clientId &&
+          !deletedIds.has(p.clientId) &&
+          (this.clientsMapCache ? this.clientsMapCache.has(p.clientId) : true)
+      );
+      const { uniquePlans, duplicateIds } = this.deduplicatePlansByClient(filtered);
+      if (duplicateIds.length > 0 || filtered.length !== parsed.length) {
+        localStorage.setItem(DAILY_PLANS_KEY, JSON.stringify(uniquePlans));
+      }
+      this.plansCache = uniquePlans;
+      return uniquePlans;
     } catch {
+      this.plansCache = [];
       return [];
     }
   }
 
   public saveDailyPlans(plans: DailyPlanItem[]): void {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(DAILY_PLANS_KEY, JSON.stringify(plans));
+    const { uniquePlans } = this.deduplicatePlansByClient(plans);
+    this.plansCache = uniquePlans;
+    localStorage.setItem(DAILY_PLANS_KEY, JSON.stringify(uniquePlans));
     this.notify();
   }
 
-  // Faqat oxirgi 24 soat ichida tuzilgan faol rejalarni olish
+  // Rejalarni olish (Admin uchun barcha agentlar rejalari, agent uchun o'z rejalari)
   public getActive24hPlans(agentUsername?: string): DailyPlanItem[] {
     const all = this.getDailyPlans();
-    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
 
     return all.filter((item) => {
-      const createdTime = new Date(item.createdAt).getTime();
-      const isWithin24h = createdTime >= twentyFourHoursAgo;
-      if (!isWithin24h) return false;
-
       if (agentUsername) {
-        return item.agentUsername === agentUsername;
+        return item.agentUsername?.toLowerCase() === agentUsername.toLowerCase();
       }
       return true;
     });
   }
 
-  // Kunlik reja tuzish (agent tomonidan tanlangan mijozlar va izohlar)
+  // Kunlik reja tuzish (agent tomonidan tanlangan mijozlar, amal turi, undirish summasi va izohlar)
+  // Har bir mijoz faqat bir marta tanlanadi va avtomatik bajarildi bo'lmaydi (status: 'rejalashtirilgan')
   public createDailyPlan(
     agentUsername: string,
-    selections: Array<{ clientId: string; planNote?: string } | string>
+    selections: Array<
+      | {
+          clientId: string;
+          plannedAction?: PlanActionType;
+          plannedAmount?: number;
+          planNote?: string;
+        }
+      | string
+    >
   ): DailyPlanItem[] {
     const allClients = this.getClients();
     const existingPlans = this.getDailyPlans();
     const nowStr = new Date().toISOString();
 
-    const newItems: DailyPlanItem[] = [];
+    const touchedItems: DailyPlanItem[] = [];
+    const seenClientIds = new Set<string>();
 
     selections.forEach((sel) => {
       const cId = typeof sel === 'string' ? sel : sel.clientId;
+      if (!cId || seenClientIds.has(cId)) return;
+      seenClientIds.add(cId);
+
       const note = typeof sel === 'string' ? undefined : sel.planNote;
+      const plannedAction =
+        typeof sel === 'string' ? 'joyiga borildi' : sel.plannedAction || 'joyiga borildi';
+      const plannedAmount =
+        typeof sel === 'string'
+          ? undefined
+          : sel.plannedAmount && sel.plannedAmount > 0
+          ? sel.plannedAmount
+          : undefined;
       const client = allClients.find((c) => c.id === cId);
       if (!client) return;
+
+      // Agar mijoz allaqachon rejada mavjud bo'lsa, ikkinchi marta dublikat yaratmasdan mavjudini yangilaymiz
+      const existingIdx = existingPlans.findIndex((p) => p.clientId === client.id);
+      if (existingIdx !== -1) {
+        const current = existingPlans[existingIdx];
+        if (!current.isClosed && current.status !== 'yopildi') {
+          const updatedItem: DailyPlanItem = {
+            ...current,
+            plannedAction,
+            plannedAmount,
+            planNote: note?.trim() || current.planNote || undefined,
+          };
+          existingPlans[existingIdx] = updatedItem;
+          touchedItems.push(updatedItem);
+        }
+        return;
+      }
 
       const planItem: DailyPlanItem = {
         id: 'plan_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
@@ -556,14 +887,16 @@ class StorageService {
         clientLandmark: client.landmark,
         createdAt: nowStr,
         status: 'rejalashtirilgan',
+        plannedAction,
+        plannedAmount,
         planNote: note?.trim() || undefined,
       };
-      newItems.push(planItem);
+      existingPlans.unshift(planItem);
+      touchedItems.push(planItem);
     });
 
-    const updatedPlans = [...newItems, ...existingPlans];
-    this.saveDailyPlans(updatedPlans);
-    return newItems;
+    this.saveDailyPlans(existingPlans);
+    return touchedItems;
   }
 
   // Rejadagi mijozga izoh qo'shish yoki o'zgartirish
@@ -669,7 +1002,7 @@ class StorageService {
         timestamp: nowStr,
         type: 'payment',
         title: `Moliyaviy amaliyot: ${report.financialAction.methodLabel}`,
-        details: `${author} tomonidan to'lov qabul qilindi: ${new Intl.NumberFormat('uz-UZ').format(amt)} ${report.financialAction.currency || 'so\'m'}. ${report.financialAction.note ? `Izoh: ${report.financialAction.note}` : ''}`,
+        details: `${author} tomonidan to'lov qabul qilindi: ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(amt)} USD. ${report.financialAction.note ? `Izoh: ${report.financialAction.note}` : ''}`,
         amountChanged: amt,
       });
     }
@@ -730,8 +1063,8 @@ class StorageService {
 
         const payDesc =
           payType === 'qarzga'
-            ? `Qarzga berildi (+${new Intl.NumberFormat('uz-UZ').format(debtAdded)} so'm qarzga yozildi)`
-            : `To'lov shakli: ${deliveryPay?.paymentLabel || payType} (${new Intl.NumberFormat('uz-UZ').format(paidAmt)} ${deliveryPay?.currency || "so'm"})${debtAdded > 0 ? `, qoldiq qarz: +${new Intl.NumberFormat('uz-UZ').format(debtAdded)} so'm` : ''}`;
+            ? `Qarzga berildi (+${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD qarzga yozildi)`
+            : `To'lov shakli: ${deliveryPay?.paymentLabel || payType} (${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(paidAmt)} USD)${debtAdded > 0 ? `, qoldiq qarz: +${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD` : ''}`;
 
         clientLogs.unshift({
           id: 'log_' + Date.now() + '_prod',
@@ -740,7 +1073,7 @@ class StorageService {
           timestamp: nowStr,
           type: 'product_added',
           title: "Yangi mahsulotlar topshirildi",
-          details: `${author} tomonidan topshirildi: ${prodSumStr}. Qiymati: ${new Intl.NumberFormat('uz-UZ').format(totalDeliveredValue)} so'm. ${payDesc}`,
+          details: `${author} tomonidan topshirildi: ${prodSumStr}. Qiymati: ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(totalDeliveredValue)} USD. ${payDesc}`,
           amountChanged: debtAdded > 0 ? debtAdded : paidAmt,
         });
       }
@@ -799,7 +1132,7 @@ class StorageService {
           timestamp: nowStr,
           type: 'product_added',
           title: "Mahsulot omborga qaytarildi",
-          details: `${author} tomonidan qabul qilindi va omborga qo'shildi: ${returnedStr}. Qarz ${new Intl.NumberFormat('uz-UZ').format(totalReturnedValue)} so'm kamaytirildi.`,
+          details: `${author} tomonidan qabul qilindi va omborga qo'shildi: ${returnedStr}. Qarz ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(totalReturnedValue)} USD kamaytirildi.`,
           amountChanged: totalReturnedValue,
         });
       }
@@ -996,21 +1329,45 @@ class StorageService {
   // WAREHOUSE MANAGEMENT (Ombor zaxirasi)
   // ==========================================
   public getWarehouseProducts(): WarehouseProduct[] {
+    if (this.warehouseCache) return this.warehouseCache;
     try {
+      const deletedIds = getDeletedWarehouseIds();
       const data = localStorage.getItem(WAREHOUSE_KEY);
       if (!data) {
-        localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(INITIAL_WAREHOUSE_PRODUCTS));
-        return INITIAL_WAREHOUSE_PRODUCTS;
+        const initialFiltered = INITIAL_WAREHOUSE_PRODUCTS.filter((p) => !deletedIds.has(p.id));
+        localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(initialFiltered));
+        this.warehouseCache = initialFiltered;
+        return initialFiltered;
       }
-      return JSON.parse(data);
+      const parsed: WarehouseProduct[] = JSON.parse(data);
+      const filtered = parsed
+        .filter((p) => p && p.id && !deletedIds.has(p.id))
+        .map((p) => ({
+          ...p,
+          currency: 'USD',
+          minSellingPricingUnitType: p.minSellingPricingUnitType || p.pricingUnitType || 'piece',
+          minSellingPrice: p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0,
+        }));
+      if (filtered.length !== parsed.length) {
+        localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(filtered));
+      }
+      this.warehouseCache = filtered;
+      return filtered;
     } catch {
-      return INITIAL_WAREHOUSE_PRODUCTS;
+      const deletedIds = getDeletedWarehouseIds();
+      const fallback = INITIAL_WAREHOUSE_PRODUCTS.filter((p) => !deletedIds.has(p.id));
+      this.warehouseCache = fallback;
+      return fallback;
     }
   }
 
   public saveWarehouseProducts(items: WarehouseProduct[]): void {
     try {
-      localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(items));
+      const deletedIds = getDeletedWarehouseIds();
+      const cleanItems = items.filter((p) => p && p.id && !deletedIds.has(p.id));
+      this.warehouseCache = cleanItems;
+      localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(cleanItems));
+      this.notify();
     } catch (e) {
       console.error('Failed to save warehouse products to localStorage:', e);
     }
@@ -1019,7 +1376,7 @@ class StorageService {
   public addWarehouseProduct(
     productData: Omit<WarehouseProduct, 'id' | 'createdAt'>
   ): WarehouseProduct {
-    const products = this.getWarehouseProducts();
+    const products = [...this.getWarehouseProducts()];
     const newProduct: WarehouseProduct = {
       ...productData,
       id: `wh_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -1030,10 +1387,60 @@ class StorageService {
     return newProduct;
   }
 
+  public addWarehouseProductsBulk(
+    productsData: Array<Omit<WarehouseProduct, 'id' | 'createdAt'>>
+  ): WarehouseProduct[] {
+    if (!productsData || productsData.length === 0) return [];
+    const existing = [...this.getWarehouseProducts()];
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const created: WarehouseProduct[] = productsData.map((data, idx) => ({
+      ...data,
+      currency: 'USD',
+      id: `wh_${nowMs}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: nowIso,
+    }));
+
+    const combined = [...created, ...existing];
+    this.saveWarehouseProducts(combined);
+    return created;
+  }
+
+  public updateWarehouseProduct(
+    id: string,
+    productData: Omit<WarehouseProduct, 'id' | 'createdAt'>
+  ): WarehouseProduct | null {
+    const products = [...this.getWarehouseProducts()];
+    const index = products.findIndex((p) => p.id === id);
+    if (index === -1) return null;
+
+    const existing = products[index];
+    const updatedProduct: WarehouseProduct = {
+      ...existing,
+      ...productData,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      currency: 'USD',
+    };
+    products[index] = updatedProduct;
+    this.saveWarehouseProducts(products);
+    return updatedProduct;
+  }
+
   public deleteWarehouseProduct(id: string): void {
-    const products = this.getWarehouseProducts();
-    const updated = products.filter((p) => p.id !== id);
-    this.saveWarehouseProducts(updated);
+    markWarehouseProductAsDeleted(id);
+    try {
+      const raw = localStorage.getItem(WAREHOUSE_KEY);
+      const currentList: WarehouseProduct[] = raw ? JSON.parse(raw) : this.getWarehouseProducts();
+      const deletedIds = getDeletedWarehouseIds();
+      const updated = currentList.filter((p) => p && p.id !== id && !deletedIds.has(p.id));
+      this.warehouseCache = updated;
+      localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Failed to delete warehouse product from localStorage:', e);
+    }
+    this.notify();
   }
 
   public deductProductFromWarehouse(
@@ -1108,7 +1515,7 @@ class StorageService {
         packageUnitName: item.unit || 'dona',
         piecesPerPackage: 1,
         pricingUnitType: 'piece',
-        currency: "so'm",
+        currency: 'USD',
         price: item.unitPrice || 0,
         intakeDate: new Date().toISOString().slice(0, 10),
         intakeUnitType: 'piece',
@@ -1116,6 +1523,8 @@ class StorageService {
         totalSum: Math.round((item.unitPrice || 0) * item.quantity),
         totalPieces: item.quantity,
         totalVolume: item.quantity,
+        minSellingPricingUnitType: 'piece',
+        minSellingPrice: item.unitPrice || 0,
         createdBy: author,
         createdAt: new Date().toISOString(),
         notes: `${author} tomonidan mijozdan qaytarib olindi`,
@@ -1130,32 +1539,53 @@ class StorageService {
   // MONTHLY DEBT RECOVERY PLANS (1 oylik reja)
   // ==========================================
   public getMonthlyPlans(): MonthlyPlan[] {
+    if (this.monthlyPlansCache) return this.monthlyPlansCache;
     try {
       const data = localStorage.getItem(MONTHLY_PLANS_KEY);
       if (!data) {
-        // Seed default 1-month plan for the current month
         const now = new Date();
         const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
         const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+        const existingClients = this.getClients();
+        const initialClientDebts: Record<string, number> = {};
+        let initialTotalDebt = 0;
+        existingClients.forEach((c) => {
+          if (c.currentDebt && c.currentDebt > 0) {
+            initialClientDebts[c.id] = c.currentDebt;
+            initialTotalDebt += c.currentDebt;
+          }
+        });
+
+        const defaultTarget = initialTotalDebt > 0 ? initialTotalDebt : 10000;
 
         const initialPlan: MonthlyPlan = {
           id: 'month_plan_seed_1',
           agentUsername: 'agentp1',
           targets: [
-            { currency: 'USD', targetAmount: 100000 },
+            { currency: 'USD', targetAmount: defaultTarget },
           ],
+          initialClientDebts,
+          initialTotalDebt: defaultTarget,
           startDate: startOfMonth,
           endDate: endOfMonth,
-          createdAt: new Date().toISOString(),
+          createdAt: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(),
           createdBy: 'agentp1',
-          notes: 'Mijozlardan qarz mablag\'larini undirish bo\'yicha 1 oylik maqsadli reja',
+          notes: "Mavjud mijozlardan eski qarzdorliklarni undirish bo'yicha 1 oylik reja",
           status: 'active',
         };
         const list = [initialPlan];
         localStorage.setItem(MONTHLY_PLANS_KEY, JSON.stringify(list));
+        this.monthlyPlansCache = list;
         return list;
       }
-      return JSON.parse(data);
+      const parsed: MonthlyPlan[] = JSON.parse(data);
+      const normalized = parsed.map((p) => ({
+        ...p,
+        targets: (p.targets || []).map((t) => ({ ...t, currency: 'USD' })),
+      }));
+      this.monthlyPlansCache = normalized;
+      return normalized;
     } catch {
       return [];
     }
@@ -1163,6 +1593,7 @@ class StorageService {
 
   public saveMonthlyPlans(plans: MonthlyPlan[]): void {
     try {
+      this.monthlyPlansCache = plans;
       localStorage.setItem(MONTHLY_PLANS_KEY, JSON.stringify(plans));
       this.notify();
     } catch (e) {
@@ -1174,7 +1605,6 @@ class StorageService {
     planData: Omit<MonthlyPlan, 'id' | 'createdAt'>
   ): MonthlyPlan {
     const plans = this.getMonthlyPlans();
-    // Archive or complete previous active plans for this agent if overlapping
     const updatedPlans = plans.map((p) => {
       if (p.agentUsername === planData.agentUsername && p.status === 'active') {
         return { ...p, status: 'completed' as const };
@@ -1182,8 +1612,31 @@ class StorageService {
       return p;
     });
 
+    // Snapshot existing clients and their current debts at the moment this plan is created
+    const existingClients = this.getClients();
+    const initialClientDebts: Record<string, number> = planData.initialClientDebts || {};
+    let initialTotalDebt = planData.initialTotalDebt || 0;
+
+    if (Object.keys(initialClientDebts).length === 0) {
+      initialTotalDebt = 0;
+      existingClients.forEach((c) => {
+        if (c.currentDebt && c.currentDebt > 0) {
+          initialClientDebts[c.id] = c.currentDebt;
+          initialTotalDebt += c.currentDebt;
+        }
+      });
+    }
+
+    const normalizedTargets = (planData.targets || []).map((t) => ({
+      currency: 'USD',
+      targetAmount: t.targetAmount > 0 ? t.targetAmount : initialTotalDebt,
+    }));
+
     const newPlan: MonthlyPlan = {
       ...planData,
+      targets: normalizedTargets,
+      initialClientDebts,
+      initialTotalDebt,
       id: `mp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       createdAt: new Date().toISOString(),
     };
@@ -1198,135 +1651,220 @@ class StorageService {
       const found = plans.find((p) => p.agentUsername === agentUsername && p.status === 'active');
       if (found) return found;
     }
-    // Return latest active plan
     const active = plans.find((p) => p.status === 'active');
     return active || (plans.length > 0 ? plans[0] : null);
   }
 
-  // Calculate actual collected debt payments within the plan's timeframe
+  // Calculate progress strictly from pre-existing client debts at the time the plan was created.
+  // Optimized with O(1) Map indexes so it runs in O(N + M) instead of O(N * M).
   public calculateMonthlyPlanProgress(plan: MonthlyPlan) {
     const startDateObj = new Date(plan.startDate + 'T00:00:00');
     const endDateObj = new Date(plan.endDate + 'T23:59:59');
+    const planCreatedTime = new Date(plan.createdAt || plan.startDate + 'T00:00:00');
 
-    // Collect all payment transactions occurring between startDate and endDate
-    type PaymentItem = {
-      amount: number;
-      currency: string;
-      timestamp: string;
-      source: string;
-    };
-    const paymentItems: PaymentItem[] = [];
-
-    // 1. From Daily Plans actions
+    const clients = this.getClients();
+    const clientsMap = this.clientsMapCache || new Map(clients.map((c) => [c.id, c]));
+    const deletedIds = getDeletedClientIds();
     const dailyPlans = this.getDailyPlans();
-    dailyPlans.forEach((dp) => {
-      if (dp.actionsHistory && dp.actionsHistory.length > 0) {
-        dp.actionsHistory.forEach((act) => {
-          if (act.financialAction && act.financialAction.amount > 0) {
-            const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
-            if (actTime >= startDateObj && actTime <= endDateObj) {
-              paymentItems.push({
-                amount: act.financialAction.amount,
-                currency: act.financialAction.currency || 'USD',
-                timestamp: act.timestamp,
-                source: `dailyPlan_${dp.id}`,
-              });
-            }
-          }
-          if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
-            const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
-            if (actTime >= startDateObj && actTime <= endDateObj) {
-              paymentItems.push({
-                amount: act.deliveryPayment.paidAmount,
-                currency: act.deliveryPayment.currency || 'USD',
-                timestamp: act.timestamp,
-                source: `deliveryPay_${dp.id}`,
-              });
+
+    // Index dailyPlans by clientId in O(M)
+    const plansByClient = new Map<string, DailyPlanItem[]>();
+    for (let i = 0; i < dailyPlans.length; i++) {
+      const dp = dailyPlans[i];
+      const existing = plansByClient.get(dp.clientId);
+      if (existing) {
+        existing.push(dp);
+      } else {
+        plansByClient.set(dp.clientId, [dp]);
+      }
+    }
+
+    // 1. Determine baseline old debts snapshot (faol eski qarzdorliklar, o'chirilgan mijozlarsiz)
+    const baselineDebts: Record<string, number> = {};
+    if (plan.initialClientDebts && Object.keys(plan.initialClientDebts).length > 0) {
+      Object.entries(plan.initialClientDebts).forEach(([cId, debt]) => {
+        if (debt > 0 && !deletedIds.has(cId) && clientsMap.has(cId)) {
+          baselineDebts[cId] = debt;
+        }
+      });
+    } else {
+      // Fallback for plans without snapshot: include only clients created on or before plan creation
+      clients.forEach((c) => {
+        const cCreated = new Date(c.createdAt || 0);
+        if (cCreated <= planCreatedTime && c.currentDebt > 0 && !deletedIds.has(c.id)) {
+          baselineDebts[c.id] = c.currentDebt;
+        }
+      });
+    }
+
+    const oldClientIds = Object.keys(baselineDebts);
+    let totalOldDebtRecovered = 0;
+    let totalPaymentsCount = 0;
+
+    // 2. For each pre-existing debtor client, calculate how much of their OLD debt was closed
+    oldClientIds.forEach((clientId) => {
+      const oldDebt = baselineDebts[clientId] || 0;
+      if (oldDebt <= 0) return;
+
+      const clientObj = clientsMap.get(clientId);
+      let paymentsClosingOldDebt = 0;
+      let newDebtsAddedAfterPlan = 0;
+
+      // Check daily plan actions for this client via O(1) Map lookup
+      const clientDailyPlans = plansByClient.get(clientId) || [];
+      clientDailyPlans.forEach((dp) => {
+          if (dp.actionsHistory && dp.actionsHistory.length > 0) {
+            dp.actionsHistory.forEach((act) => {
+              const actTime = new Date(act.timestamp || dp.completedAt || dp.createdAt);
+              const isInPeriod =
+                actTime >= startDateObj &&
+                actTime <= endDateObj &&
+                actTime >= planCreatedTime;
+
+              if (isInPeriod) {
+                // Direct financial payment toward debt
+                if (act.financialAction && act.financialAction.amount > 0) {
+                  paymentsClosingOldDebt += act.financialAction.amount;
+                  totalPaymentsCount++;
+                }
+                // Delivery payment: new debt added vs overpayment closing old debt
+                if (act.deliveryPayment) {
+                  const debtAdded = act.deliveryPayment.debtAmount || 0;
+                  if (debtAdded > 0) {
+                    newDebtsAddedAfterPlan += debtAdded;
+                  }
+                  const overpaid = Math.max(
+                    0,
+                    (act.deliveryPayment.paidAmount || 0) - (act.deliveryPayment.totalAmount || 0)
+                  );
+                  if (overpaid > 0) {
+                    paymentsClosingOldDebt += overpaid;
+                    totalPaymentsCount++;
+                  }
+                }
+                // Product returns reducing debt
+                if (act.productsReturned && act.productsReturned.length > 0) {
+                  const retVal = act.productsReturned.reduce(
+                    (s, r) => s + (r.quantity || 0) * (r.unitPrice || 0),
+                    0
+                  );
+                  if (retVal > 0) {
+                    paymentsClosingOldDebt += retVal;
+                  }
+                }
+              }
+            });
+          } else if (dp.completedAt) {
+            const compTime = new Date(dp.completedAt);
+            const isInPeriod =
+              compTime >= startDateObj &&
+              compTime <= endDateObj &&
+              compTime >= planCreatedTime;
+
+            if (isInPeriod) {
+              if (dp.financialAction && dp.financialAction.amount > 0) {
+                paymentsClosingOldDebt += dp.financialAction.amount;
+                totalPaymentsCount++;
+              }
+              if (dp.deliveryPayment) {
+                const debtAdded = dp.deliveryPayment.debtAmount || 0;
+                if (debtAdded > 0) {
+                  newDebtsAddedAfterPlan += debtAdded;
+                }
+                const overpaid = Math.max(
+                  0,
+                  (dp.deliveryPayment.paidAmount || 0) - (dp.deliveryPayment.totalAmount || 0)
+                );
+                if (overpaid > 0) {
+                  paymentsClosingOldDebt += overpaid;
+                  totalPaymentsCount++;
+                }
+              }
             }
           }
         });
-      } else {
-        if (dp.financialAction && dp.financialAction.amount > 0 && dp.completedAt) {
-          const compTime = new Date(dp.completedAt);
-          if (compTime >= startDateObj && compTime <= endDateObj) {
-            paymentItems.push({
-              amount: dp.financialAction.amount,
-              currency: dp.financialAction.currency || 'USD',
-              timestamp: dp.completedAt,
-              source: `dailyPlanSingle_${dp.id}`,
-            });
-          }
-        }
-      }
-    });
 
-    // 2. From Client audit logs for independent payments (e.g. Quick payments)
-    const clients = this.getClients();
-    clients.forEach((c) => {
-      (c.logs || []).forEach((l) => {
-        // Exclude logs that were generated automatically from daily plan financial actions (ending with _fin)
-        if (l.type === 'payment' && l.amountChanged && l.amountChanged > 0 && !l.id.endsWith('_fin')) {
+      // Check client audit logs for independent payments or new debt additions after plan creation
+      if (clientObj && clientObj.logs) {
+        clientObj.logs.forEach((l) => {
           const logTime = new Date(l.timestamp);
-          if (logTime >= startDateObj && logTime <= endDateObj) {
-            // Determine currency from title or details
-            let curr = 'USD';
-            const text = `${l.title} ${l.details}`.toLowerCase();
-            if (text.includes("so'm") || text.includes('uzs') || text.includes('som')) {
-              curr = "so'm";
-            } else if (text.includes('usd') || text.includes('$') || text.includes('dollar')) {
-              curr = 'USD';
-            }
-            paymentItems.push({
-              amount: l.amountChanged,
-              currency: curr,
-              timestamp: l.timestamp,
-              source: `clientLog_${l.id}`,
-            });
+          const isInPeriod =
+            logTime >= startDateObj &&
+            logTime <= endDateObj &&
+            logTime >= planCreatedTime;
+          if (!isInPeriod) return;
+
+          const text = `${l.title} ${l.details}`.toLowerCase();
+          const isDebtAddition =
+            text.includes("qarz qo'shildi") ||
+            text.includes("qarzdorlik qo'shildi") ||
+            l.id.endsWith('_whdebt');
+
+          if (isDebtAddition && l.amountChanged && l.amountChanged > 0) {
+            newDebtsAddedAfterPlan += l.amountChanged;
+          } else if (
+            l.type === 'payment' &&
+            l.amountChanged &&
+            l.amountChanged > 0 &&
+            !l.id.endsWith('_fin') &&
+            !isDebtAddition
+          ) {
+            paymentsClosingOldDebt += l.amountChanged;
+            totalPaymentsCount++;
           }
-        }
-      });
+        });
+      }
+
+      // Direct comparison of client's current debt excluding new debts added after plan creation
+      let directOldDebtReduction = 0;
+      if (clientObj) {
+        const currentDebtWithoutNewDebts = Math.max(
+          0,
+          (clientObj.currentDebt || 0) - newDebtsAddedAfterPlan
+        );
+        directOldDebtReduction = Math.max(0, oldDebt - currentDebtWithoutNewDebts);
+      }
+
+      // Old debt recovered from this client is capped at their initial oldDebt
+      // so paying off new debts never inflates the recovery of old debt
+      const recoveredForClient = Math.min(
+        oldDebt,
+        Math.max(paymentsClosingOldDebt, directOldDebtReduction)
+      );
+
+      totalOldDebtRecovered += recoveredForClient;
     });
 
-    // Helper to check if currencies match
-    const currencyMatches = (c1: string, c2: string) => {
-      const norm1 = c1.trim().toLowerCase();
-      const norm2 = c2.trim().toLowerCase();
-      if (norm1 === norm2) return true;
-      const isSom1 = norm1 === "so'm" || norm1 === 'uzs' || norm1 === 'som';
-      const isSom2 = norm2 === "so'm" || norm2 === 'uzs' || norm2 === 'som';
-      if (isSom1 && isSom2) return true;
-      const isUsd1 = norm1 === 'usd' || norm1 === '$' || norm1 === 'dollar';
-      const isUsd2 = norm2 === 'usd' || norm2 === '$' || norm2 === 'dollar';
-      if (isUsd1 && isUsd2) return true;
-      return false;
-    };
+    const baselineTotalOldDebt =
+      plan.initialTotalDebt && plan.initialTotalDebt > 0
+        ? plan.initialTotalDebt
+        : Object.values(baselineDebts).reduce((s, v) => s + v, 0);
 
-    // Calculate progress for each target
-    const targetResults = plan.targets.map((tgt) => {
-      const collected = paymentItems
-        .filter((item) => currencyMatches(item.currency, tgt.currency))
-        .reduce((sum, item) => sum + item.amount, 0);
+    const rawTarget = plan.targets?.[0]?.targetAmount || 0;
+    const effectiveTarget =
+      plan.id === 'month_plan_seed_1' && baselineTotalOldDebt > 0
+        ? baselineTotalOldDebt
+        : rawTarget > 0
+        ? rawTarget
+        : baselineTotalOldDebt;
 
-      const percentage = tgt.targetAmount > 0
-        ? Math.min(1000, Math.round(((collected / tgt.targetAmount) * 100) * 10) / 10)
+    const collectedRounded = Math.round(totalOldDebtRecovered * 100) / 100;
+    const targetRounded = Math.round(effectiveTarget * 100) / 100;
+    const percentage =
+      targetRounded > 0
+        ? Math.min(100, Math.round(((collectedRounded / targetRounded) * 100) * 10) / 10)
         : 0;
+    const remainingAmount = Math.max(0, Math.round((targetRounded - collectedRounded) * 100) / 100);
 
-      const remainingAmount = Math.max(0, tgt.targetAmount - collected);
-
-      return {
-        currency: tgt.currency,
-        targetAmount: tgt.targetAmount,
-        collectedAmount: collected,
+    const targetResults = [
+      {
+        currency: 'USD',
+        targetAmount: targetRounded,
+        collectedAmount: collectedRounded,
         percentage,
         remainingAmount,
-      };
-    });
-
-    const totalTarget = targetResults.reduce((s, t) => s + t.targetAmount, 0);
-    const totalCollected = targetResults.reduce((s, t) => s + t.collectedAmount, 0);
-    const overallPercentage = totalTarget > 0
-      ? Math.min(1000, Math.round(((totalCollected / totalTarget) * 100) * 10) / 10)
-      : (targetResults[0]?.percentage || 0);
+      },
+    ];
 
     const nowMs = Date.now();
     const endMs = endDateObj.getTime();
@@ -1335,10 +1873,11 @@ class StorageService {
 
     return {
       targetResults,
-      overallPercentage,
+      overallPercentage: percentage,
+      initialTotalDebt: Math.round(baselineTotalOldDebt * 100) / 100,
       daysLeft,
       isExpired,
-      totalPaymentsCount: paymentItems.length,
+      totalPaymentsCount,
     };
   }
 }

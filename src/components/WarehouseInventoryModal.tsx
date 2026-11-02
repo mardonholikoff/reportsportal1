@@ -10,6 +10,7 @@ import {
   DollarSign,
   Trash2,
   PackagePlus,
+  Edit3,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
 
@@ -17,6 +18,7 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   products: WarehouseProduct[];
+  onEditProduct: (product: WarehouseProduct) => void;
   onDeleteProduct: (id: string) => void;
   onOpenIntakeModal: () => void;
 }
@@ -25,6 +27,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
   isOpen,
   onClose,
   products,
+  onEditProduct,
   onDeleteProduct,
   onOpenIntakeModal,
 }) => {
@@ -147,7 +150,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
             </div>
             <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 shadow-2xs">
               <span className="text-emerald-700 mr-1.5">Jami qiymat:</span>
-              <span className="font-bold">{totalInventorySum.toLocaleString()} so'm</span>
+              <span className="font-bold font-mono">{totalInventorySum.toLocaleString()} USD</span>
             </div>
           </div>
         </div>
@@ -201,15 +204,31 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                     </div>
 
                     <div className="flex items-center gap-2 self-end sm:self-auto">
-                      <div className="text-right">
-                        <div className="text-sm font-bold text-neutral-900">
-                          {p.totalSum.toLocaleString()} {p.currency === 'UZS' ? "so'm" : '$'}
-                        </div>
-                        <div className="text-[11px] text-neutral-500">
+                      <div className="text-right mr-1">
+                        {p.price > 0 ? (
+                          <div className="text-sm font-bold font-mono text-neutral-900">
+                            {p.totalSum.toLocaleString()} USD
+                          </div>
+                        ) : (
+                          <div className="text-xs font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                            Narx belgilanmagan
+                          </div>
+                        )}
+                        <div className="text-[11px] text-neutral-500 mt-0.5">
                           {p.intakeQuantity} {p.intakeUnitType === 'package' ? p.packageUnitName : p.pieceUnitName}
                         </div>
                       </div>
                       <button
+                        type="button"
+                        onClick={() => onEditProduct(p)}
+                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl transition cursor-pointer"
+                        title="Mahsulotni tahrirlash"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Tahrirlash</span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => onDeleteProduct(p.id)}
                         className="p-2 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
                         title="O'chirish"
@@ -220,7 +239,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                   </div>
 
                   {/* Details grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-3 text-xs">
                     <div>
                       <span className="text-neutral-500 block text-[11px]">Birlamchi o'lcham:</span>
                       <span className="font-semibold text-neutral-800">
@@ -231,7 +250,9 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                     <div>
                       <span className="text-neutral-500 block text-[11px]">Katta o'lcham:</span>
                       <span className="font-semibold text-neutral-800">
-                        1 {p.packageUnitName} = {p.piecesPerPackage} dona
+                        {p.packageUnitName
+                          ? `1 ${p.packageUnitName} = ${p.piecesPerPackage} dona`
+                          : "Kiritilmagan (Donalab)"}
                       </span>
                     </div>
 
@@ -239,6 +260,18 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                       <span className="text-neutral-500 block text-[11px]">Ombordagi qoldiq:</span>
                       <span className="font-bold text-emerald-800">
                         {p.totalPieces.toLocaleString()} dona ({p.totalVolume.toLocaleString()} {p.baseUnit})
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-indigo-700 font-semibold block text-[11px]">
+                        Eng kam sotilish narxi:
+                      </span>
+                      <span className="font-bold font-mono text-indigo-900">
+                        {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD{' '}
+                        <span className="text-[10px] font-sans font-normal text-neutral-500">
+                          (1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'})
+                        </span>
                       </span>
                     </div>
 

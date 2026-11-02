@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { Client } from '../types';
 import { formatMoney, formatNumber, formatDate } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
@@ -19,6 +19,8 @@ import {
   X,
   Lock,
   Warehouse,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 interface Props {
@@ -48,16 +50,34 @@ export const ClientTable: React.FC<Props> = ({
   currentUsername,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [sortType, setSortType] = useState<SortType>('newest');
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
   const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
+  const [selectedCreator, setSelectedCreator] = useState<string>('all');
   const [isExporting, setIsExporting] = useState(false);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number | 'all'>(50);
 
   // Faqat adminc va adminc1 o'chirish va ombordagi qarzdorlik qo'shish huquqiga ega
   const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
   const canAddWarehouseDebt = currentUsername === 'adminc' || currentUsername === 'adminc1';
+
+  // Pre-compute global tab counts in a single O(N) pass
+  const globalTabCounts = useMemo(() => {
+    let debtors = 0;
+    let creditors = 0;
+    let settled = 0;
+    for (let i = 0; i < clients.length; i++) {
+      const c = clients[i];
+      if (c.currentDebt > 0) debtors++;
+      if (c.currentAdvance > 0) creditors++;
+      if (c.currentDebt === 0 && c.currentAdvance === 0) settled++;
+    }
+    return { debtors, creditors, settled };
+  }, [clients]);
 
   // Extract unique regions from clients
   const uniqueRegions = useMemo(() => {
@@ -84,6 +104,31 @@ export const ClientTable: React.FC<Props> = ({
     return Array.from(distSet).sort((a, b) => a.localeCompare(b, 'uz'));
   }, [clients, selectedRegion]);
 
+  // Extract unique creators
+  const uniqueCreators = useMemo(() => {
+    const set = new Set<string>();
+    clients.forEach((c) => {
+      set.add((c.createdBy || 'adminc').trim());
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'uz'));
+  }, [clients]);
+
+  const isAnyFilterActive =
+    searchQuery.trim() !== '' ||
+    filterType !== 'all' ||
+    selectedRegion !== 'all' ||
+    selectedDistrict !== 'all' ||
+    selectedCreator !== 'all';
+
+  const resetAllFilters = () => {
+    setSearchQuery('');
+    setFilterType('all');
+    setSelectedRegion('all');
+    setSelectedDistrict('all');
+    setSelectedCreator('all');
+    setSortType('newest');
+  };
+
   const handleExportExcel = async () => {
     try {
       setIsExporting(true);
@@ -95,13 +140,13 @@ export const ClientTable: React.FC<Props> = ({
     }
   };
 
-  // Filter and sort clients
+  // Filter and sort clients (using deferredSearchQuery for non-blocking typing)
   const filteredClients = useMemo(() => {
     let result = [...clients];
 
     // Search query
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
+    if (deferredSearchQuery.trim()) {
+      const q = deferredSearchQuery.toLowerCase().trim();
       result = result.filter((c) => {
         const matchesName = c.name.toLowerCase().includes(q);
         const matchesPhone = c.phone.toLowerCase().includes(q);
@@ -153,6 +198,14 @@ export const ClientTable: React.FC<Props> = ({
       });
     }
 
+    // Kiritgan xodim/agent bo'yicha filtr
+    if (selectedCreator !== 'all') {
+      const targetCr = selectedCreator.toLowerCase();
+      result = result.filter(
+        (c) => (c.createdBy || 'adminc').toLowerCase() === targetCr
+      );
+    }
+
     // Sorting
     result.sort((a, b) => {
       if (sortType === 'name') {
@@ -171,7 +224,83 @@ export const ClientTable: React.FC<Props> = ({
     });
 
     return result;
-  }, [clients, searchQuery, filterType, sortType, selectedRegion, selectedDistrict]);
+  }, [clients, deferredSearchQuery, filterType, sortType, selectedRegion, selectedDistrict, selectedCreator]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [deferredSearchQuery, filterType, sortType, selectedRegion, selectedDistrict, selectedCreator, pageSize]);
+
+  const totalPages = useMemo(() => {
+    if (pageSize === 'all') return 1;
+    return Math.max(1, Math.ceil(filteredClients.length / pageSize));
+  }, [filteredClients.length, pageSize]);
+
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+
+  // Paginated slice for fast DOM rendering
+  const visibleClients = useMemo(() => {
+    if (pageSize === 'all') return filteredClients;
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredClients.slice(start, start + pageSize);
+  }, [filteredClients, pageSize, safeCurrentPage]);
+
+  // Xulosaviy qiymatlar jadval (filtrlangan ro'yxat) bo'yicha
+  const filteredSummary = useMemo(() => {
+    let totalDebt = 0;
+    let totalAdvance = 0;
+    let totalProductsValue = 0;
+    let totalProductsCount = 0;
+    let debtorsCount = 0;
+    let creditorsCount = 0;
+    let settledCount = 0;
+    let maxDebtor: Client | null = null;
+
+    filteredClients.forEach((c) => {
+      const d = c.currentDebt || 0;
+      const a = c.currentAdvance || 0;
+      const prodSum = c.products.reduce(
+        (s, p) => s + (p.totalPrice || p.quantity * p.unitPrice),
+        0
+      );
+
+      totalDebt += d;
+      totalAdvance += a;
+      totalProductsValue += prodSum;
+      totalProductsCount += c.products.length;
+
+      if (d > 0) {
+        debtorsCount++;
+        if (!maxDebtor || d > (maxDebtor.currentDebt || 0)) {
+          maxDebtor = c;
+        }
+      }
+      if (a > 0) {
+        creditorsCount++;
+      }
+      if (d === 0 && a === 0) {
+        settledCount++;
+      }
+    });
+
+    const avgDebtPerDebtor = debtorsCount > 0 ? totalDebt / debtorsCount : 0;
+    const netBalance = totalDebt - totalAdvance;
+
+    return {
+      totalCount: filteredClients.length,
+      allClientsCount: clients.length,
+      totalDebt,
+      totalAdvance,
+      totalProductsValue,
+      totalProductsCount,
+      debtorsCount,
+      creditorsCount,
+      settledCount,
+      avgDebtPerDebtor,
+      netBalance,
+      maxDebtor: maxDebtor as Client | null,
+    };
+  }, [filteredClients, clients.length]);
 
   return (
     <div className="space-y-4">
@@ -245,6 +374,27 @@ export const ClientTable: React.FC<Props> = ({
               </div>
             </div>
 
+            {/* 3. Kiritgan xodim/agent bo'yicha filtr */}
+            {uniqueCreators.length > 1 && (
+              <div className="relative flex items-center">
+                <div className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
+                  <select
+                    value={selectedCreator}
+                    onChange={(e) => setSelectedCreator(e.target.value)}
+                    className="bg-transparent outline-none cursor-pointer text-neutral-900 font-semibold max-w-[120px] truncate"
+                    title="Kiritgan xodim bo'yicha filtr"
+                  >
+                    <option value="all">Barcha kirituvchilar</option>
+                    {uniqueCreators.map((cr) => (
+                      <option key={cr} value={cr}>
+                        Kiritgan: {cr}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
             {/* Sort selector */}
             <div className="relative flex items-center">
               <div className="flex items-center gap-1.5 px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
@@ -304,7 +454,7 @@ export const ClientTable: React.FC<Props> = ({
           <span className="text-[11px] font-bold text-neutral-500 uppercase mr-1">Filtr:</span>
           <button
             onClick={() => setFilterType('all')}
-            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] cursor-pointer ${
               filterType === 'all'
                 ? 'bg-rose-700 text-white shadow-xs'
                 : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
@@ -314,33 +464,33 @@ export const ClientTable: React.FC<Props> = ({
           </button>
           <button
             onClick={() => setFilterType('debtors')}
-            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] cursor-pointer ${
               filterType === 'debtors'
                 ? 'bg-rose-700 text-white shadow-xs'
                 : 'bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200'
             }`}
           >
-            Qarzdorlar ({clients.filter((c) => c.currentDebt > 0).length})
+            Qarzdorlar ({globalTabCounts.debtors})
           </button>
           <button
             onClick={() => setFilterType('creditors')}
-            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] cursor-pointer ${
               filterType === 'creditors'
                 ? 'bg-emerald-700 text-white shadow-xs'
                 : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200'
             }`}
           >
-            Haqdorlar ({clients.filter((c) => c.currentAdvance > 0).length})
+            Haqdorlar ({globalTabCounts.creditors})
           </button>
           <button
             onClick={() => setFilterType('settled')}
-            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] ${
+            className={`px-3 py-1.5 rounded-lg font-semibold transition min-h-[34px] cursor-pointer ${
               filterType === 'settled'
                 ? 'bg-neutral-800 text-white shadow-xs'
                 : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
             }`}
           >
-            Hisob yopilgan ({clients.filter((c) => c.currentDebt === 0 && c.currentAdvance === 0).length})
+            Hisob yopilgan ({globalTabCounts.settled})
           </button>
 
           {selectedRegion !== 'all' && (
@@ -352,7 +502,7 @@ export const ClientTable: React.FC<Props> = ({
                   setSelectedRegion('all');
                   setSelectedDistrict('all');
                 }}
-                className="p-0.5 hover:bg-rose-200 rounded text-rose-800 transition"
+                className="p-0.5 hover:bg-rose-200 rounded text-rose-800 transition cursor-pointer"
                 title="Viloyat filtrini tozalash"
               >
                 <X className="w-3.5 h-3.5" />
@@ -366,13 +516,145 @@ export const ClientTable: React.FC<Props> = ({
               <span>Tuman: {selectedDistrict}</span>
               <button
                 onClick={() => setSelectedDistrict('all')}
-                className="p-0.5 hover:bg-neutral-200 rounded text-neutral-800 transition"
+                className="p-0.5 hover:bg-neutral-200 rounded text-neutral-800 transition cursor-pointer"
                 title="Tuman filtrini tozalash"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             </span>
           )}
+
+          {isAnyFilterActive && (
+            <button
+              type="button"
+              onClick={resetAllFilters}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs ml-auto transition cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Filtrlarni tozalash</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ===================================================================== */}
+      {/* JADVAL (FILTRLAR) BO'YICHA XULOSAVIY QIYMATLAR                        */}
+      {/* ===================================================================== */}
+      <div
+        className={`rounded-2xl p-4 border shadow-xs transition ${
+          isAnyFilterActive
+            ? 'bg-gradient-to-r from-rose-50/90 via-white to-emerald-50/60 border-rose-300 ring-1 ring-rose-200/70'
+            : 'bg-white border-rose-100'
+        }`}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-neutral-200/80">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold uppercase tracking-wider ${
+                isAnyFilterActive
+                  ? 'bg-rose-700 text-white'
+                  : 'bg-neutral-800 text-white'
+              }`}
+            >
+              {isAnyFilterActive ? "Filtr natijasi bo'yicha xulosa" : "Jadval bo'yicha xulosaviy qiymatlar"}
+            </span>
+            <span className="text-xs font-semibold text-neutral-600">
+              Ko'rsatilmoqda:{' '}
+              <strong className="text-neutral-900">{filteredSummary.totalCount} ta</strong> mijoz
+              {isAnyFilterActive && (
+                <span>
+                  {' '}
+                  (jami {filteredSummary.allClientsCount} tadan{' '}
+                  {filteredSummary.allClientsCount > 0
+                    ? Math.round((filteredSummary.totalCount / filteredSummary.allClientsCount) * 100)
+                    : 0}
+                  %)
+                </span>
+              )}
+            </span>
+          </div>
+
+          {filteredSummary.maxDebtor && (
+            <div className="text-[11px] text-rose-900 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200 font-medium">
+              Eng katta qarzdor:{' '}
+              <strong className="font-bold">{filteredSummary.maxDebtor.name}</strong> (
+              <span className="font-mono font-bold text-rose-700">
+                {formatMoney(filteredSummary.maxDebtor.currentDebt)}
+              </span>
+              )
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+          {/* 1. Mijozlar soni va holati */}
+          <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200/90">
+            <div className="text-[10px] font-bold uppercase text-neutral-500">
+              Jadvaldagi mijozlar
+            </div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5">
+              {filteredSummary.totalCount} ta
+            </div>
+            <div className="text-[10px] text-neutral-500 mt-0.5">
+              Qarzdor: {filteredSummary.debtorsCount} • Haqdor: {filteredSummary.creditorsCount} • Yopilgan: {filteredSummary.settledCount}
+            </div>
+          </div>
+
+          {/* 2. Jami qarzdorlik */}
+          <div className="p-3 rounded-xl bg-rose-50/90 border border-rose-200">
+            <div className="text-[10px] font-bold uppercase text-rose-800">
+              Jami qarzdorlik (Jadval)
+            </div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-rose-700 mt-0.5">
+              {formatMoney(filteredSummary.totalDebt)}
+            </div>
+            <div className="text-[10px] text-rose-900/70 mt-0.5">
+              {filteredSummary.debtorsCount} ta qarzdor (o'rtacha {formatMoney(Math.round(filteredSummary.avgDebtPerDebtor))})
+            </div>
+          </div>
+
+          {/* 3. Jami haqdorlik */}
+          <div className="p-3 rounded-xl bg-emerald-50/90 border border-emerald-200">
+            <div className="text-[10px] font-bold uppercase text-emerald-800">
+              Jami haqdorlik / avans
+            </div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-emerald-700 mt-0.5">
+              {formatMoney(filteredSummary.totalAdvance)}
+            </div>
+            <div className="text-[10px] text-emerald-900/70 mt-0.5">
+              {filteredSummary.creditorsCount} ta haqdor mijozda
+            </div>
+          </div>
+
+          {/* 4. Topshirilgan mahsulotlar qiymati */}
+          <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200">
+            <div className="text-[10px] font-bold uppercase text-amber-900">
+              Mahsulotlar jami qiymati
+            </div>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5">
+              {formatMoney(filteredSummary.totalProductsValue)}
+            </div>
+            <div className="text-[10px] text-amber-900/80 mt-0.5">
+              Jami {filteredSummary.totalProductsCount} ta tovar yozuvi
+            </div>
+          </div>
+
+          {/* 5. Sof balans farqi */}
+          <div className="p-3 rounded-xl bg-neutral-900 text-white border border-neutral-800 col-span-2 sm:col-span-1">
+            <div className="text-[10px] font-bold uppercase text-neutral-400">
+              Sof balans (Qarz − Haq)
+            </div>
+            <div
+              className={`text-base sm:text-lg font-extrabold font-mono mt-0.5 ${
+                filteredSummary.netBalance >= 0 ? 'text-rose-300' : 'text-emerald-300'
+              }`}
+            >
+              {formatMoney(Math.abs(filteredSummary.netBalance))}
+            </div>
+            <div className="text-[10px] text-neutral-300 mt-0.5">
+              {filteredSummary.netBalance >= 0 ? 'Sof undiriladigan qarz' : 'Sof mijoz haqdorligi'}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -418,7 +700,7 @@ export const ClientTable: React.FC<Props> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-rose-100/60">
-                {filteredClients.map((client) => {
+                {visibleClients.map((client) => {
                   const totalProductsSum = client.products.reduce(
                     (s, p) => s + (p.totalPrice || p.quantity * p.unitPrice),
                     0
@@ -598,6 +880,40 @@ export const ClientTable: React.FC<Props> = ({
                   );
                 })}
               </tbody>
+              <tfoot className="bg-rose-50/90 border-t-2 border-rose-200 text-neutral-900 font-bold text-xs">
+                <tr>
+                  <td colSpan={2} className="py-3.5 px-4">
+                    <div className="font-extrabold text-neutral-900 uppercase tracking-wide">
+                      JAMI XULOSA ({filteredSummary.totalCount} ta mijoz)
+                    </div>
+                    <div className="text-[10px] font-semibold text-neutral-500 mt-0.5">
+                      Qarzdor: {filteredSummary.debtorsCount} ta • Haqdor: {filteredSummary.creditorsCount} ta • Yopilgan: {filteredSummary.settledCount} ta
+                    </div>
+                  </td>
+                  <td className="py-3.5 px-4 text-neutral-700 font-semibold">
+                    Jami {filteredSummary.totalProductsCount} ta tovar yozuvi
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono font-extrabold text-neutral-900 tabular-nums">
+                    {formatMoney(filteredSummary.totalProductsValue)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono font-extrabold text-rose-800 bg-rose-100/80 tabular-nums">
+                    {formatMoney(filteredSummary.totalDebt)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono font-extrabold text-emerald-800 bg-emerald-100/80 tabular-nums">
+                    {formatMoney(filteredSummary.totalAdvance)}
+                  </td>
+                  <td colSpan={2} className="py-3.5 px-4 text-right text-[11px] font-mono">
+                    <span className="text-neutral-500 mr-1">Sof balans:</span>
+                    <span
+                      className={`font-extrabold ${
+                        filteredSummary.netBalance >= 0 ? 'text-rose-700' : 'text-emerald-700'
+                      }`}
+                    >
+                      {formatMoney(Math.abs(filteredSummary.netBalance))}
+                    </span>
+                  </td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </div>
@@ -606,7 +922,7 @@ export const ClientTable: React.FC<Props> = ({
       {/* Mobile Card List (< 768px) with 44px touch targets */}
       {filteredClients.length > 0 && (
         <div className="md:hidden space-y-3">
-          {filteredClients.map((client) => {
+          {visibleClients.map((client) => {
             const totalProductsSum = client.products.reduce(
               (s, p) => s + (p.totalPrice || p.quantity * p.unitPrice),
               0
@@ -764,6 +1080,58 @@ export const ClientTable: React.FC<Props> = ({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Smart Pagination Bar */}
+      {filteredClients.length > 25 && (
+        <div className="bg-white rounded-2xl px-4 py-3 border border-rose-100 shadow-xs flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 text-neutral-600">
+            <span>
+              Sahifada ko'rsatish:
+            </span>
+            <select
+              value={pageSize}
+              onChange={(e) =>
+                setPageSize(e.target.value === 'all' ? 'all' : Number(e.target.value))
+              }
+              className="px-2.5 py-1.5 rounded-lg border border-neutral-300 bg-neutral-50 font-bold text-neutral-900 outline-none cursor-pointer"
+            >
+              <option value={50}>50 ta</option>
+              <option value={100}>100 ta</option>
+              <option value={250}>250 ta</option>
+              <option value="all">Barchasi ({filteredClients.length} ta)</option>
+            </select>
+            <span className="text-neutral-500 hidden sm:inline">
+              • Jami {filteredClients.length} tadan {visibleClients.length} tasi ekranda
+            </span>
+          </div>
+
+          {pageSize !== 'all' && totalPages > 1 && (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={safeCurrentPage <= 1}
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 hover:bg-neutral-100 disabled:opacity-40 font-semibold text-neutral-800 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>Oldingi</span>
+              </button>
+              <span className="px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 font-mono font-bold">
+                {safeCurrentPage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={safeCurrentPage >= totalPages}
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-neutral-200 bg-neutral-50 hover:bg-neutral-100 disabled:opacity-40 font-semibold text-neutral-800 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <span>Keyingi</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       )}
 

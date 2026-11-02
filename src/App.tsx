@@ -6,7 +6,13 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from './hooks/useAuth';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
-import { storageService, getDeletedClientIds, markClientAsDeleted } from './services/storage';
+import {
+  storageService,
+  getDeletedClientIds,
+  markClientAsDeleted,
+  getDeletedWarehouseIds,
+  markWarehouseProductAsDeleted,
+} from './services/storage';
 import {
   Client,
   SummaryStats,
@@ -53,13 +59,17 @@ import {
   subscribeToFirestoreData,
   bootstrapFirestoreData,
   syncClientToFirestore,
+  syncClientsBulkToFirestore,
   deleteClientFromFirestore,
   syncPlanToFirestore,
   deletePlanFromFirestore,
   syncWarehouseProductToFirestore,
+  syncWarehouseProductsBulkToFirestore,
   deleteWarehouseProductFromFirestore,
   syncMonthlyPlanToFirestore,
 } from './services/firebase';
+import { ImportedClientPayload } from './components/ExcelClientImporter';
+import { ImportedWarehouseProductPayload } from './components/ExcelWarehouseImporter';
 import {
   CheckCircle2,
   Plus,
@@ -71,6 +81,7 @@ import {
   Warehouse,
   Users,
   ShieldAlert,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 export default function App() {
@@ -97,11 +108,12 @@ export default function App() {
   const [isTableOpen, setIsTableOpen] = useState(false);
   const [isAgentWarehouseOpen, setIsAgentWarehouseOpen] = useState(false);
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
-  const [isAdminPlansOpen, setIsAdminPlansOpen] = useState(false);
+  const [isAdminPlansOpen, setIsAdminPlansOpen] = useState(true);
   const [isAdminLogsOpen, setIsAdminLogsOpen] = useState(true);
 
   // Modals state
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
+  const [clientFormInitialMode, setClientFormInitialMode] = useState<'single' | 'excel'>('single');
   const [editingClient, setEditingClient] = useState<Client | null>(null);
 
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
@@ -121,6 +133,9 @@ export default function App() {
     storageService.getWarehouseProducts()
   );
   const [isWarehouseModalOpen, setIsWarehouseModalOpen] = useState(false);
+  const [editingWarehouseProduct, setEditingWarehouseProduct] = useState<WarehouseProduct | null>(
+    null
+  );
   const [isWarehouseInventoryModalOpen, setIsWarehouseInventoryModalOpen] = useState(false);
 
   // Monthly Plans state (1 oylik qarz undirish rejalari)
@@ -172,7 +187,7 @@ export default function App() {
       clientId: client.id,
       author: currentUsername,
       timestamp: nowStr,
-      type: 'payment',
+      type: 'product_added',
       title: `Ombordagi qarzdorlik qo'shildi (${currency})`,
       details: logDetail,
       amountChanged: amount,
@@ -241,7 +256,6 @@ export default function App() {
   };
 
   // Save Warehouse Intake Product
-  // Save Warehouse Intake Product
   const handleSaveWarehouseProduct = (
     data: Omit<WarehouseProduct, 'id' | 'createdAt'>
   ) => {
@@ -254,28 +268,113 @@ export default function App() {
       userRole: user?.role || 'admin',
       actionType: 'ombor_kirimi',
       actionTitle: `Omborga yangi mahsulot kiritildi: ${saved.brand} - ${saved.name}`,
-      details: `${saved.intakeQuantity} ${saved.intakeUnitType === 'package' ? saved.packageUnitName : saved.pieceUnitName} (${saved.totalSum?.toLocaleString('uz-UZ') || 0} so'm). Marka: ${saved.mark1 || ''}`,
+      details: `${saved.intakeQuantity} ${saved.intakeUnitType === 'package' ? saved.packageUnitName : saved.pieceUnitName} (${saved.totalSum?.toLocaleString('uz-UZ') || 0} USD). Marka: ${saved.mark1 || ''}`,
     });
     showToast(
       `"${saved.brand} - ${saved.name}" omborga muvaffaqiyatli kiritildi! (${saved.intakeQuantity} ${saved.intakeUnitType === 'package' ? saved.packageUnitName : saved.pieceUnitName})`
     );
   };
 
+  // Bulk Import Warehouse Products from Excel (.xlsx)
+  const handleBulkImportWarehouseProducts = (
+    productsData: ImportedWarehouseProductPayload[]
+  ) => {
+    const currentUsername = user?.username || 'adminc';
+    if (user?.role !== 'admin' && currentUsername !== 'adminc' && currentUsername !== 'adminc1') {
+      showToast("Faqat adminlar omborga Excel (.xlsx) orqali mahsulot yuklash huquqiga ega!");
+      return;
+    }
+    if (!productsData || productsData.length === 0) return;
+
+    const createdProducts = storageService.addWarehouseProductsBulk(productsData);
+    setWarehouseProducts(storageService.getWarehouseProducts());
+    syncWarehouseProductsBulkToFirestore(createdProducts);
+
+    const totalPiecesImported = createdProducts.reduce((sum, p) => sum + (p.totalPieces || 0), 0);
+    const totalSumImported = createdProducts.reduce((sum, p) => sum + (p.totalSum || 0), 0);
+
+    addSystemLog({
+      userId: currentUsername,
+      userRole: 'admin',
+      actionType: 'ombor_kirimi',
+      actionTitle: `Excel (.xlsx) fayldan omborga ${createdProducts.length} xil mahsulot yuklandi`,
+      details: `Jami yuklangan: ${createdProducts.length} xil mahsulot (${totalPiecesImported.toLocaleString('uz-UZ')} dona, ${totalSumImported.toLocaleString('uz-UZ')} USD). Mahsulotlar: ${createdProducts
+        .slice(0, 8)
+        .map((p) => `${p.brand} - ${p.name}`)
+        .join(', ')}${createdProducts.length > 8 ? '...' : ''}`,
+    });
+
+    showToast(
+      `Excel (.xlsx) fayldan ${createdProducts.length} xil mahsulot (${totalPiecesImported.toLocaleString('uz-UZ')} dona) omborga muvaffaqiyatli yuklandi!`
+    );
+  };
+
+  // Update Existing Warehouse Product (Faqat adminlar uchun)
+  const handleUpdateWarehouseProduct = (
+    id: string,
+    data: Omit<WarehouseProduct, 'id' | 'createdAt'>
+  ) => {
+    const currentUsername = user?.username || 'adminc';
+    if (user?.role !== 'admin' && currentUsername !== 'adminc' && currentUsername !== 'adminc1') {
+      showToast("Faqat adminlar ombordagi mahsulotlarni tahrirlash huquqiga ega!");
+      return;
+    }
+
+    const updated = storageService.updateWarehouseProduct(id, data);
+    if (!updated) return;
+
+    setWarehouseProducts(storageService.getWarehouseProducts());
+    syncWarehouseProductToFirestore(updated);
+
+    addSystemLog({
+      userId: currentUsername,
+      userRole: 'admin',
+      actionType: 'ombor_kirimi',
+      actionTitle: `Ombor mahsuloti tahrirlandi: ${updated.brand} - ${updated.name}`,
+      details: `Qoldiq: ${updated.totalPieces} dona (${updated.totalVolume} ${updated.baseUnit}). Eng kam sotilish narxi: ${updated.minSellingPrice || updated.price || 0} USD. Marka: ${updated.mark1 || ''}`,
+      metadata: {
+        productId: updated.id,
+      },
+    });
+
+    showToast(
+      `"${updated.brand} - ${updated.name}" ma'lumotlari ombor zaxirasida muvaffaqiyatli yangilandi!`
+    );
+    setEditingWarehouseProduct(null);
+  };
+
   // Delete Warehouse Product
-  const handleDeleteWarehouseProduct = (id: string) => {
+  const handleDeleteWarehouseProduct = async (id: string) => {
     const currentUsername = user?.username || 'adminc';
     const target = warehouseProducts.find((w) => w.id === id);
+
+    // 1. Immediately blacklist warehouse product ID & remove from local storage
+    markWarehouseProductAsDeleted(id);
     storageService.deleteWarehouseProduct(id);
-    deleteWarehouseProductFromFirestore(id);
+
+    // 2. Update React state immediately across all views
     setWarehouseProducts(storageService.getWarehouseProducts());
+
+    // 3. Delete document from Firestore warehouseProducts collection
+    await deleteWarehouseProductFromFirestore(id);
+
+    // 4. Record audit log with deletedWarehouseId metadata so all sessions also purge immediately
     addSystemLog({
       userId: currentUsername,
       userRole: user?.role || 'admin',
       actionType: 'ombor_ochirish',
-      actionTitle: `Ombor mahsuloti o'chirildi`,
+      actionTitle: `Ombor mahsuloti butun bazadan o'chirildi: ${target ? `${target.brand} - ${target.name}` : id}`,
       details: target ? `${target.brand} - ${target.name} (ID: ${id})` : `ID: ${id}`,
+      metadata: {
+        productId: id,
+        deletedWarehouseId: id,
+      },
     });
-    showToast("Mahsulot ombor zaxirasidan o'chirildi.");
+    showToast(
+      target
+        ? `"${target.brand} - ${target.name}" ombor zaxirasidan va butun bazadan to'liq o'chirildi.`
+        : "Mahsulot ombor zaxirasidan va butun bazadan to'liq o'chirildi."
+    );
   };
 
   // Purge system audit logs after Excel transition (15 kunlik yoki oylik)
@@ -319,41 +418,206 @@ export default function App() {
       storageService.getWarehouseProducts()
     );
 
-    // 2. Realtime listener to Firestore (automatic offline-persistence sync)
+    // 2. Realtime listener to Firestore (automatic offline-persistence sync + local merge)
     const unsubFirestore = subscribeToFirestoreData({
       onClientsChange: (remoteClients) => {
         if (remoteClients) {
           const deletedIds = getDeletedClientIds();
-          const clean = remoteClients.filter((c) => !deletedIds.has(c.id));
-          storageService.saveClients(clean);
-          setClients(clean);
+          const cleanRemote = remoteClients.filter((c) => !deletedIds.has(c.id));
+          const localClients = storageService.getClients().filter((c) => !deletedIds.has(c.id));
+
+          // O(1) lookup map for localClients instead of O(N^2) .find()
+          const localClientsMap = new Map<string, Client>();
+          for (let i = 0; i < localClients.length; i++) {
+            localClientsMap.set(localClients[i].id, localClients[i]);
+          }
+
+          // Pending local creates not yet synced to Firestore
+          const pendingLocalCreateIds = new Set(
+            storageService
+              .getSyncQueue()
+              .filter((q) => q.action === 'create' && (q.client?.id || q.clientId))
+              .map((q) => (q.client?.id || q.clientId) as string)
+          );
+
+          const mergedMap = new Map<string, Client>();
+          // If remote has data, only keep local clients that exist in remote or are pending creation
+          if (cleanRemote.length > 0) {
+            localClients.forEach((lc) => {
+              if (pendingLocalCreateIds.has(lc.id)) {
+                mergedMap.set(lc.id, lc);
+              }
+            });
+          } else {
+            localClients.forEach((lc) => mergedMap.set(lc.id, lc));
+          }
+
+          const newerLocalToPush: Client[] = [];
+          cleanRemote.forEach((rc) => {
+            const existing = localClientsMap.get(rc.id);
+            if (!existing) {
+              mergedMap.set(rc.id, rc);
+            } else {
+              const rTime = new Date(rc.updatedAt || rc.createdAt || 0).getTime();
+              const lTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+              if (rTime >= lTime) {
+                mergedMap.set(rc.id, rc);
+              } else {
+                mergedMap.set(rc.id, existing);
+                newerLocalToPush.push(existing);
+              }
+            }
+          });
+
+          if (newerLocalToPush.length > 0) {
+            syncClientsBulkToFirestore(newerLocalToPush);
+          }
+
+          const mergedList = Array.from(mergedMap.values()).filter(
+            (c) => !deletedIds.has(c.id)
+          );
+          storageService.saveClients(mergedList);
+          setClients(mergedList);
+          // Re-evaluate dailyPlans so any plans belonging to removed clients disappear immediately
+          setDailyPlans(
+            storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
+          );
         }
       },
       onPlansChange: (remotePlans) => {
         if (remotePlans) {
           const deletedIds = getDeletedClientIds();
-          const clean = remotePlans.filter((p) => !deletedIds.has(p.clientId));
-          storageService.saveDailyPlans(clean);
+          const activeClientIds = new Set(storageService.getClients().map((c) => c.id));
+
+          // Purge any remote plans that belong to deleted or non-existent clients
+          remotePlans.forEach((rp) => {
+            if (deletedIds.has(rp.clientId) || !activeClientIds.has(rp.clientId)) {
+              deletePlanFromFirestore(rp.id);
+            }
+          });
+
+          const cleanRemote = remotePlans.filter(
+            (p) => !deletedIds.has(p.clientId) && activeClientIds.has(p.clientId)
+          );
+          const localPlans = storageService
+            .getDailyPlans()
+            .filter((p) => !deletedIds.has(p.clientId) && activeClientIds.has(p.clientId));
+
+          // Merge local & remote plans by id so agentp1 plans in localStorage are never wiped out
+          const mergedMap = new Map<string, DailyPlanItem>();
+          const remoteIds = new Set(cleanRemote.map((r) => r.id));
+
+          localPlans.forEach((lp) => {
+            mergedMap.set(lp.id, lp);
+            if (!remoteIds.has(lp.id)) {
+              // Ensure local plan created by agent is pushed to Firestore
+              syncPlanToFirestore(lp);
+            }
+          });
+
+          cleanRemote.forEach((rp) => {
+            const existing = mergedMap.get(rp.id);
+            if (!existing) {
+              mergedMap.set(rp.id, rp);
+            } else {
+              const rCount = rp.actionsCount || (rp.actionDone ? 1 : 0);
+              const lCount = existing.actionsCount || (existing.actionDone ? 1 : 0);
+              const rClosed = rp.isClosed || rp.status === 'yopildi';
+              const lClosed = existing.isClosed || existing.status === 'yopildi';
+
+              if (rClosed && !lClosed) {
+                mergedMap.set(rp.id, rp);
+              } else if (lClosed && !rClosed) {
+                syncPlanToFirestore(existing);
+              } else if (rCount > lCount) {
+                mergedMap.set(rp.id, rp);
+              } else if (lCount > rCount) {
+                syncPlanToFirestore(existing);
+              } else {
+                const rTime = new Date(rp.completedAt || rp.closedAt || rp.createdAt || 0).getTime();
+                const lTime = new Date(
+                  existing.completedAt || existing.closedAt || existing.createdAt || 0
+                ).getTime();
+                if (rTime >= lTime) {
+                  mergedMap.set(rp.id, rp);
+                } else {
+                  syncPlanToFirestore(existing);
+                }
+              }
+            }
+          });
+
+          const mergedPlans = Array.from(mergedMap.values()).sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+
+          // Deduplicate by clientId so each client appears only once, and remove duplicate docs from Firestore
+          const { uniquePlans, duplicateIds } =
+            storageService.deduplicatePlansByClient(mergedPlans);
+          if (duplicateIds.length > 0) {
+            duplicateIds.forEach((dupId) => {
+              deletePlanFromFirestore(dupId);
+            });
+          }
+
+          storageService.saveDailyPlans(uniquePlans);
           setDailyPlans(
-            clean.filter((item) => {
-              const createdTime = new Date(item.createdAt).getTime();
-              const isWithin24h = createdTime >= Date.now() - 24 * 60 * 60 * 1000;
-              if (!isWithin24h) return false;
-              if (user?.role === 'agent') return item.agentUsername === user.username;
-              return true;
-            })
+            storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
           );
         }
       },
       onWarehouseChange: (remoteProducts) => {
-        if (remoteProducts && remoteProducts.length > 0) {
-          storageService.saveWarehouseProducts(remoteProducts);
-          setWarehouseProducts(remoteProducts);
+        if (remoteProducts) {
+          const deletedWhIds = getDeletedWarehouseIds();
+          const cleanRemote = remoteProducts.filter((w) => !deletedWhIds.has(w.id));
+          storageService.saveWarehouseProducts(cleanRemote);
+          setWarehouseProducts(cleanRemote);
         }
       },
       onLogsChange: (remoteLogs) => {
         if (remoteLogs && remoteLogs.length > 0) {
+          // Only purge clients/warehouse items that are still present in active local storage
+          const activeClientIds = new Set(storageService.getClients().map((c) => c.id));
+          const activeWhIds = new Set(storageService.getWarehouseProducts().map((w) => w.id));
+          let anyDeletedFound = false;
+          let anyWarehouseDeletedFound = false;
+          remoteLogs.forEach((logItem) => {
+            if (logItem.actionType === 'mijoz_ochirish') {
+              const delId =
+                logItem.metadata?.deletedClientId || logItem.metadata?.clientId;
+              if (delId && typeof delId === 'string' && activeClientIds.has(delId)) {
+                storageService.deleteClient(delId);
+                activeClientIds.delete(delId);
+                anyDeletedFound = true;
+              }
+            }
+            if (logItem.actionType === 'ombor_ochirish') {
+              const delWhId =
+                logItem.metadata?.deletedWarehouseId || logItem.metadata?.productId;
+              if (delWhId && typeof delWhId === 'string' && activeWhIds.has(delWhId)) {
+                storageService.deleteWarehouseProduct(delWhId);
+                activeWhIds.delete(delWhId);
+                anyWarehouseDeletedFound = true;
+              }
+            }
+          });
+          if (anyDeletedFound) {
+            setClients(storageService.getClients());
+            setDailyPlans(
+              storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
+            );
+            setMonthlyPlans(storageService.getMonthlyPlans());
+          }
+          if (anyWarehouseDeletedFound) {
+            setWarehouseProducts(storageService.getWarehouseProducts());
+          }
           setSystemLogs(remoteLogs);
+        }
+      },
+      onMonthlyPlansChange: (remoteMonthlyPlans) => {
+        if (remoteMonthlyPlans && remoteMonthlyPlans.length > 0) {
+          storageService.saveMonthlyPlans(remoteMonthlyPlans);
+          setMonthlyPlans(remoteMonthlyPlans);
         }
       },
     });
@@ -363,6 +627,8 @@ export default function App() {
       setDailyPlans(
         storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
       );
+      setMonthlyPlans(storageService.getMonthlyPlans());
+      setWarehouseProducts(storageService.getWarehouseProducts());
       setPendingSyncCount(storageService.getSyncQueue().length);
       setSystemLogs(getLocalSystemLogs());
     };
@@ -426,7 +692,7 @@ export default function App() {
         userRole: user?.role || 'admin',
         actionType: 'mijoz_tahrirlash',
         actionTitle: `Mijoz ma'lumotlari tahrirlandi: ${data.name}`,
-        details: `Telefon: ${data.phone}, Manzil: ${data.address || ''}, Qarz: ${data.currentDebt || 0} so'm`,
+        details: `Telefon: ${data.phone}, Manzil: ${data.address || ''}, Qarz: ${data.currentDebt || 0} USD`,
       });
       showToast(`"${data.name}" ma'lumotlari yangilandi.`);
     } else {
@@ -437,11 +703,49 @@ export default function App() {
         userRole: user?.role || 'admin',
         actionType: 'mijoz_yaratish',
         actionTitle: `Yangi mijoz qo'shildi: ${data.name}`,
-        details: `Telefon: ${data.phone}, Manzil: ${data.address || ''}, Boshlang'ich qarz: ${data.currentDebt || 0} so'm`,
+        details: `Telefon: ${data.phone}, Manzil: ${data.address || ''}, Boshlang'ich qarz: ${data.currentDebt || 0} USD`,
       });
       showToast(`Yangi mijoz "${data.name}" muvaffaqiyatli saqlandi! (${currentUsername})`);
     }
     setEditingClient(null);
+    setClientFormInitialMode('single');
+    setIsFormModalOpen(false);
+  };
+
+  // Handle Bulk Import Clients from Excel (.xlsx) — Faqat Adminlar (adminc va adminc1) uchun
+  const handleBulkImportClients = (clientsData: ImportedClientPayload[]) => {
+    const currentUsername = user?.username || 'adminc';
+    if (user?.role !== 'admin' && currentUsername !== 'adminc' && currentUsername !== 'adminc1') {
+      showToast("Faqat adminlar Excel (.xlsx) fayldan mijozlarni yuklash huquqiga ega!");
+      return;
+    }
+
+    if (!clientsData || clientsData.length === 0) return;
+
+    const createdClients = storageService.addClientsBulk(clientsData, currentUsername);
+    setClients(storageService.getClients());
+
+    // Sync imported clients to Firestore using batched writeBatch (O(N/400) network commits)
+    syncClientsBulkToFirestore(createdClients);
+
+    const totalDebtImported = createdClients.reduce((sum, c) => sum + (c.currentDebt || 0), 0);
+
+    addSystemLog({
+      userId: currentUsername,
+      userRole: 'admin',
+      actionType: 'mijoz_yaratish',
+      actionTitle: `Excel (.xlsx) fayldan ${createdClients.length} ta yangi mijoz yuklandi`,
+      details: `Jami yuklangan mijozlar: ${createdClients.length} ta. Umumiy boshlang'ich qarz: ${totalDebtImported.toLocaleString('uz-UZ')} USD. Ismlar: ${createdClients
+        .slice(0, 8)
+        .map((c) => c.name)
+        .join(', ')}${createdClients.length > 8 ? '...' : ''}`,
+    });
+
+    showToast(
+      `Excel (.xlsx) fayldan ${createdClients.length} ta yangi mijoz bazaga muvaffaqiyatli yuklandi!`
+    );
+    setEditingClient(null);
+    setClientFormInitialMode('single');
     setIsFormModalOpen(false);
   };
 
@@ -455,17 +759,29 @@ export default function App() {
     const currentUsername = user?.username || 'adminc';
     const client = clients.find((c) => c.id === clientId);
 
-    // 1. Immediately blacklist client ID so it can never reappear
-    markClientAsDeleted(clientId);
+    // Collect any plan IDs associated with this client BEFORE deleting locally
+    const planIdsToDelete = Array.from(
+      new Set([
+        ...dailyPlans.filter((p) => p.clientId === clientId).map((p) => p.id),
+        ...storageService
+          .getDailyPlans()
+          .filter((p) => p.clientId === clientId)
+          .map((p) => p.id),
+      ])
+    );
 
-    // 2. Delete client & cascade delete associated daily plans in local storage
+    // 1. Immediately blacklist client ID & delete client + cascade plans + monthly plan debts in local storage
+    markClientAsDeleted(clientId);
     storageService.deleteClient(clientId);
 
-    // 3. Update React states immediately for instant UI feedback
-    setClients((prev) => prev.filter((c) => c.id !== clientId));
-    setDailyPlans((prev) => prev.filter((p) => p.clientId !== clientId));
+    // 2. Update React states immediately for instant UI feedback across all sections
+    setClients(storageService.getClients());
+    setDailyPlans(
+      storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
+    );
+    setMonthlyPlans(storageService.getMonthlyPlans());
 
-    // 4. Close any open detail or payment modal if this client was selected
+    // 3. Close any open modal if this client or its plan was selected
     if (selectedClient?.id === clientId) {
       setSelectedClient(null);
       setIsDetailModalOpen(false);
@@ -478,25 +794,37 @@ export default function App() {
       setEditingClient(null);
       setIsFormModalOpen(false);
     }
+    if (warehouseDebtClient?.id === clientId) {
+      setWarehouseDebtClient(null);
+      setIsAddWarehouseDebtOpen(false);
+    }
+    if (executingPlanItem?.clientId === clientId) {
+      setExecutingPlanItem(null);
+    }
 
-    // 5. Delete client document and cascade plans from Firestore (await confirmation)
-    await deleteClientFromFirestore(clientId);
+    // 4. Delete client document, cascade plans, and update monthlyPlans in Firestore
+    await deleteClientFromFirestore(clientId, planIdsToDelete);
 
-    // 6. Record audit log
+    // 5. Record audit log with deletedClientId metadata so all agent sessions also purge immediately
     addSystemLog({
       userId: currentUsername,
       userRole: user?.role || 'admin',
       actionType: 'mijoz_ochirish',
       actionTitle: `Mijoz va unga oid barcha ma'lumotlar to'liq o'chirildi: ${client?.name || clientId}`,
       details: client
-        ? `Nomi: ${client.name}, Telefon: ${client.phone}, Manzil: ${client.address || ''}, Qarz: ${client.currentDebt || 0} so'm`
+        ? `Nomi: ${client.name}, Telefon: ${client.phone}, Manzil: ${client.address || ''}, Qarz: ${client.currentDebt || 0} USD`
         : `ID: ${clientId}`,
+      metadata: {
+        clientId,
+        deletedClientId: clientId,
+        deletedPlanIds: planIdsToDelete,
+      },
     });
 
     showToast(
       client
-        ? `"${client.name}" va unga oid barcha ma'lumotlar bazadan to'liq o'chirildi.`
-        : "Mijoz va ma'lumotlari bazadan to'liq o'chirildi."
+        ? `"${client.name}" va unga oid barcha rejalar hamda ma'lumotlar butun bazadan to'liq o'chirildi.`
+        : "Mijoz va unga oid barcha ma'lumotlar butun bazadan to'liq o'chirildi."
     );
   };
 
@@ -522,7 +850,7 @@ export default function App() {
         userRole: user?.role || 'admin',
         actionType: 'tushum_qabul',
         actionTitle: `To'lov / Qarzdorlik o'zgartirildi: ${updated.name}`,
-        details: `Yangi qarz: ${newDebt.toLocaleString('uz-UZ')} so'm, Yangi haqdorlik: ${newAdvance.toLocaleString('uz-UZ')} so'm. Izoh: ${noteAddition}`,
+        details: `Yangi qarz: ${newDebt.toLocaleString('uz-UZ')} USD, Yangi haqdorlik: ${newAdvance.toLocaleString('uz-UZ')} USD. Izoh: ${noteAddition}`,
       });
       showToast(`Hisob-kitob yangilandi (${currentUsername}): ${noteAddition}`);
       if (selectedClient && selectedClient.id === clientId) {
@@ -597,7 +925,7 @@ export default function App() {
       // Add audit log
       let detailsText = `Mijoz: ${targetPlan?.clientName || ''}. Amal: ${report.actionDone}.`;
       if (report.financialAction && report.financialAction.amount > 0) {
-        detailsText += ` Tushum: ${report.financialAction.amount.toLocaleString('uz-UZ')} ${report.financialAction.currency || "so'm"} (${report.financialAction.methodLabel}).`;
+        detailsText += ` Tushum: ${report.financialAction.amount.toLocaleString('uz-UZ')} USD (${report.financialAction.methodLabel}).`;
       }
       if (report.productsDelivered && report.productsDelivered.length > 0) {
         detailsText += ` Berilgan mahsulotlar: ${report.productsDelivered.map((p) => `${p.name} (${p.quantity} ${p.unit})`).join(', ')}.`;
@@ -706,7 +1034,10 @@ export default function App() {
         onTriggerSync={handleTriggerSync}
         isSyncing={isSyncing}
         pendingSyncCount={pendingSyncCount}
-        onOpenWarehouseModal={() => setIsWarehouseModalOpen(true)}
+        onOpenWarehouseModal={() => {
+          setEditingWarehouseProduct(null);
+          setIsWarehouseModalOpen(true);
+        }}
         onOpenWarehouseInventoryModal={() => setIsWarehouseInventoryModalOpen(true)}
         warehouseCount={warehouseProducts.length}
       />
@@ -781,13 +1112,26 @@ export default function App() {
               </button>
             </div>
 
-            {/* Tab 1: Bugungi kunlik reja */}
+            {/* Tab 1: Bugungi kunlik reja + Yuqorida 1 oylik reja ko'rsatkichi va tugmasi */}
             {agentActiveTab === 'reja' && (
-              <div className="animate-in fade-in duration-150">
+              <div className="space-y-4 animate-in fade-in duration-150">
+                <MonthlyPlanProgressCard
+                  plan={activeMonthlyPlan}
+                  userRole={user.role}
+                  currentUsername={user.username}
+                  onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
+                />
+
                 <AgentDailyPlanTable
                   plans={dailyPlans}
                   onOpenCreatePlan={() => setIsCreatePlanOpen(true)}
+                  onOpenMonthlyPlan={() => setIsCreateMonthlyPlanOpen(true)}
                   onOpenExecuteModal={(item) => setExecutingPlanItem(item)}
+                  onMarkPlannedActionDone={(item) =>
+                    handleSavePlanReport(item.id, {
+                      actionDone: item.plannedAction || 'joyiga borildi',
+                    })
+                  }
                   onUpdatePlanNote={handleUpdatePlanNote}
                   onClosePlanItem={handleClosePlanItem}
                 />
@@ -869,6 +1213,18 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
+        {/* ADMIN VIEW: BIRINCHI BO'LIB 1 OYLIK QARZ UNDIRISH FOIZI    */}
+        {/* ========================================================= */}
+        {isAdmin && (
+          <MonthlyPlanProgressCard
+            plan={activeMonthlyPlan}
+            userRole={user.role}
+            currentUsername={user.username}
+            onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
+          />
+        )}
+
+        {/* ========================================================= */}
         {/* ADMIN VIEW: ACCORDION SECTIONS (1. JADVAL, 2. TAHLIL, 3. REJALAR) */}
         {/* ========================================================= */}
         {isAdmin && (
@@ -937,8 +1293,25 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-2.5 flex-wrap">
+                      {(user.username === 'adminc' || user.username === 'adminc1') && (
+                        <button
+                          onClick={() => {
+                            setWarehouseDebtClient(null);
+                            setIsAddWarehouseDebtOpen(true);
+                          }}
+                          className="self-start sm:self-auto flex items-center gap-2 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
+                          title="Ombordagi mahsulotlar valyutasida mijozga qarzdorlik qo'shish"
+                        >
+                          <Warehouse className="w-4 h-4 stroke-[2.2]" />
+                          <span>Ombordagi qarzdorlikni qo'shish</span>
+                        </button>
+                      )}
+
                       <button
-                        onClick={() => setIsWarehouseModalOpen(true)}
+                        onClick={() => {
+                          setEditingWarehouseProduct(null);
+                          setIsWarehouseModalOpen(true);
+                        }}
                         className="self-start sm:self-auto flex items-center gap-2 bg-neutral-900 hover:bg-neutral-800 active:bg-black text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
                         title="Omborga mahsulotlar kiritish"
                       >
@@ -946,9 +1319,25 @@ export default function App() {
                         <span>Omborga mahsulotlar kiritish</span>
                       </button>
 
+                      {(user.username === 'adminc' || user.username === 'adminc1') && (
+                        <button
+                          onClick={() => {
+                            setEditingClient(null);
+                            setClientFormInitialMode('excel');
+                            setIsFormModalOpen(true);
+                          }}
+                          className="self-start sm:self-auto flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
+                          title="Excel (.xlsx) fayldan qator va ustunlarni tanlab mijozlarni ommaviy yuklash"
+                        >
+                          <FileSpreadsheet className="w-4 h-4 stroke-[2.2]" />
+                          <span>Excel (.xlsx) dan yuklash</span>
+                        </button>
+                      )}
+
                       <button
                         onClick={() => {
                           setEditingClient(null);
+                          setClientFormInitialMode('single');
                           setIsFormModalOpen(true);
                         }}
                         className="self-start sm:self-auto flex items-center gap-2 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
@@ -970,13 +1359,18 @@ export default function App() {
                       setSelectedClient(client);
                       setIsDetailModalOpen(true);
                     }}
-                    onEditClient={() => {
-                      showToast("Agentlar mijoz ma'lumotlarini tahrirlash huquqiga ega emas!");
+                    onEditClient={(client) => {
+                      setEditingClient(client);
+                      setIsFormModalOpen(true);
                     }}
                     onDeleteClient={handleDeleteClient}
                     onQuickPayment={(client) => {
                       setPaymentClient(client);
                       setIsPaymentModalOpen(true);
+                    }}
+                    onOpenWarehouseDebtModal={(client) => {
+                      setWarehouseDebtClient(client || null);
+                      setIsAddWarehouseDebtOpen(true);
                     }}
                     userRole={user.role}
                     currentUsername={user.username}
@@ -1049,6 +1443,11 @@ export default function App() {
                     warehouseProducts={warehouseProducts}
                     clients={clients}
                     dailyPlans={dailyPlans}
+                    onEditWarehouseProduct={(prod) => {
+                      setEditingWarehouseProduct(prod);
+                      setIsWarehouseModalOpen(true);
+                    }}
+                    onDeleteWarehouseProduct={handleDeleteWarehouseProduct}
                   />
                 </div>
               </div>
@@ -1071,10 +1470,13 @@ export default function App() {
                   3
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
                       3. Agentlar rejasi va hisobotlari
                     </h2>
+                    <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
+                      {dailyPlans.length} ta reja
+                    </span>
                     <span className="text-[11px] font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
                       Sinxron
                     </span>
@@ -1218,10 +1620,14 @@ export default function App() {
         onClose={() => {
           setIsFormModalOpen(false);
           setEditingClient(null);
+          setClientFormInitialMode('single');
         }}
         onSave={handleSaveClient}
+        onBulkImport={handleBulkImportClients}
         editingClient={editingClient}
         currentUserUsername={user.username}
+        userRole={user.role}
+        initialMode={clientFormInitialMode}
       />
 
       {/* Client Detail View & Printable Invoice Modal (With Logs) */}
@@ -1250,6 +1656,10 @@ export default function App() {
           setPaymentClient(client);
           setIsPaymentModalOpen(true);
         }}
+        onOpenWarehouseDebtModal={(client) => {
+          setWarehouseDebtClient(client);
+          setIsAddWarehouseDebtOpen(true);
+        }}
         userRole={user.role}
         currentUsername={user.username}
       />
@@ -1265,11 +1675,36 @@ export default function App() {
         onSavePayment={handleSavePayment}
       />
 
+      {/* Admin (adminc / adminc1): Add Warehouse Debt to Client Modal */}
+      <AddWarehouseDebtModal
+        isOpen={isAddWarehouseDebtOpen}
+        onClose={() => {
+          setIsAddWarehouseDebtOpen(false);
+          setWarehouseDebtClient(null);
+        }}
+        clients={clients}
+        initialClient={warehouseDebtClient}
+        warehouseProducts={warehouseProducts}
+        currentUsername={user.username}
+        onSaveWarehouseDebt={handleSaveWarehouseDebt}
+      />
+
+      {/* Agent & Admin: Create 1-Month Debt Recovery Plan Modal */}
+      <CreateMonthlyPlanModal
+        isOpen={isCreateMonthlyPlanOpen}
+        onClose={() => setIsCreateMonthlyPlanOpen(false)}
+        warehouseProducts={warehouseProducts}
+        currentUsername={user.username}
+        existingPlan={activeMonthlyPlan}
+        onSavePlan={handleSaveMonthlyPlan}
+      />
+
       {/* Agent: Create Daily Plan Modal */}
       <CreateDailyPlanModal
         isOpen={isCreatePlanOpen}
         onClose={() => setIsCreatePlanOpen(false)}
         clients={clients}
+        existingPlans={dailyPlans}
         onConfirmPlan={handleConfirmPlan}
       />
 
@@ -1296,11 +1731,17 @@ export default function App() {
         }}
       />
 
-      {/* Admin: Warehouse Intake Modal (Omborga mahsulotlar kiritish) */}
+      {/* Admin: Warehouse Intake / Edit Modal (Omborga mahsulotlar kiritish va tahrirlash) */}
       <WarehouseIntakeModal
         isOpen={isWarehouseModalOpen}
-        onClose={() => setIsWarehouseModalOpen(false)}
+        onClose={() => {
+          setIsWarehouseModalOpen(false);
+          setEditingWarehouseProduct(null);
+        }}
         onSave={handleSaveWarehouseProduct}
+        onBulkImport={handleBulkImportWarehouseProducts}
+        onUpdate={handleUpdateWarehouseProduct}
+        editingProduct={editingWarehouseProduct}
         currentUsername={user.username}
       />
 
@@ -1309,8 +1750,16 @@ export default function App() {
         isOpen={isWarehouseInventoryModalOpen}
         onClose={() => setIsWarehouseInventoryModalOpen(false)}
         products={warehouseProducts}
+        onEditProduct={(prod) => {
+          setIsWarehouseInventoryModalOpen(false);
+          setEditingWarehouseProduct(prod);
+          setIsWarehouseModalOpen(true);
+        }}
         onDeleteProduct={handleDeleteWarehouseProduct}
-        onOpenIntakeModal={() => setIsWarehouseModalOpen(true)}
+        onOpenIntakeModal={() => {
+          setEditingWarehouseProduct(null);
+          setIsWarehouseModalOpen(true);
+        }}
       />
     </div>
   );

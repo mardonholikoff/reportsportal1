@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { WarehouseProduct, Client, DailyPlanItem } from '../types';
 import { storageService } from '../services/storage';
 import { formatNumber, formatMoney, formatDate } from '../utils/format';
@@ -42,12 +42,18 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  Trash2,
+  Edit3,
 } from 'lucide-react';
 
 interface Props {
   clients?: Client[];
   dailyPlans?: DailyPlanItem[];
   warehouseProducts?: WarehouseProduct[];
+  onEditWarehouseProduct?: (product: WarehouseProduct) => void;
+  onDeleteWarehouseProduct?: (id: string) => void;
 }
 
 type StockSortMode = 'none' | 'desc' | 'asc';
@@ -86,6 +92,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   clients: propClients,
   dailyPlans: propPlans,
   warehouseProducts: propProducts,
+  onEditWarehouseProduct,
+  onDeleteWarehouseProduct,
 }) => {
   // Navigation between blocks: 'all' | 'block1' | 'block2' | 'block3' | 'block4'
   const [activeBlockView, setActiveBlockView] = useState<'all' | 'block1' | 'block2' | 'block3' | 'block4'>('all');
@@ -94,11 +102,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   // 1-BLOK DATA & STATES (Ombordagi mahsulotlar soni tahliliy jadvali)
   // =========================================================================
   const [internalProducts, setInternalProducts] = useState<WarehouseProduct[]>(() =>
-    propProducts && propProducts.length > 0 ? propProducts : storageService.getWarehouseProducts()
+    propProducts !== undefined ? propProducts : storageService.getWarehouseProducts()
   );
 
   React.useEffect(() => {
-    if (propProducts && propProducts.length > 0) {
+    if (propProducts !== undefined) {
       setInternalProducts(propProducts);
     } else {
       setInternalProducts(storageService.getWarehouseProducts());
@@ -106,11 +114,14 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   }, [propProducts]);
 
   const [stockSearch, setStockSearch] = useState('');
+  const deferredStockSearch = useDeferredValue(stockSearch);
   const [selectedBrand, setSelectedBrand] = useState<string>('all');
   const [selectedType, setSelectedType] = useState<string>('all');
   const [stockSortMode, setStockSortMode] = useState<StockSortMode>('desc');
   const [stockStatusFilter, setStockStatusFilter] = useState<StockStatusFilter>('all');
   const [isExportingStock, setIsExportingStock] = useState(false);
+  const [block1Page, setBlock1Page] = useState<number>(1);
+  const [block1PageSize, setBlock1PageSize] = useState<number | 'all'>(50);
 
   const uniqueBrands = useMemo(() => {
     const set = new Set<string>();
@@ -131,8 +142,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
   const filteredProducts = useMemo(() => {
     let list = internalProducts.filter((p) => {
-      if (stockSearch.trim()) {
-        const q = stockSearch.toLowerCase().trim();
+      if (deferredStockSearch.trim()) {
+        const q = deferredStockSearch.toLowerCase().trim();
         const matchesName = (p.name || '').toLowerCase().includes(q);
         const matchesBrand = (p.brand || '').toLowerCase().includes(q);
         const matchesMarks = [p.mark1, p.mark2, ...(p.extraMarks || [])]
@@ -175,7 +186,19 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     }
 
     return list;
-  }, [internalProducts, stockSearch, selectedBrand, selectedType, stockStatusFilter, stockSortMode]);
+  }, [internalProducts, deferredStockSearch, selectedBrand, selectedType, stockStatusFilter, stockSortMode]);
+
+  useEffect(() => {
+    setBlock1Page(1);
+  }, [deferredStockSearch, selectedBrand, selectedType, stockStatusFilter, stockSortMode, block1PageSize]);
+
+  const block1TotalPages = block1PageSize === 'all' ? 1 : Math.max(1, Math.ceil(filteredProducts.length / block1PageSize));
+  const safeBlock1Page = Math.min(block1Page, block1TotalPages);
+  const visibleBlock1Products = useMemo(() => {
+    if (block1PageSize === 'all') return filteredProducts;
+    const start = (safeBlock1Page - 1) * block1PageSize;
+    return filteredProducts.slice(start, start + block1PageSize);
+  }, [filteredProducts, block1PageSize, safeBlock1Page]);
 
   const stockStats = useMemo(() => {
     let totalPieces = 0;
@@ -222,11 +245,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   // 2-BLOK DATA & STATES (Mijozlar 1 yillik oylik qarzdorlik va haqdorlik)
   // =========================================================================
   const [internalClients, setInternalClients] = useState<Client[]>(() =>
-    propClients && propClients.length > 0 ? propClients : storageService.getClients()
+    propClients !== undefined ? propClients : storageService.getClients()
   );
 
   React.useEffect(() => {
-    if (propClients && propClients.length > 0) {
+    if (propClients !== undefined) {
       setInternalClients(propClients);
     } else {
       setInternalClients(storageService.getClients());
@@ -234,12 +257,44 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   }, [propClients]);
 
   const [clientSearch, setClientSearch] = useState('');
+  const deferredClientSearch = useDeferredValue(clientSearch);
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
   const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
+  const [selectedClientCreator, setSelectedClientCreator] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState<number>(2026);
+  const [selectedClientMonth, setSelectedClientMonth] = useState<number | 'all'>('all');
+  const [minDebtFilter, setMinDebtFilter] = useState<string>('');
+  const [maxDebtFilter, setMaxDebtFilter] = useState<string>('');
   const [clientSortMode, setClientSortMode] = useState<ClientSortMode>('debt_desc');
   const [clientBalanceFilter, setClientBalanceFilter] = useState<ClientBalanceFilter>('all');
   const [isExportingClients, setIsExportingClients] = useState(false);
+  const [block2Page, setBlock2Page] = useState<number>(1);
+  const [block2PageSize, setBlock2PageSize] = useState<number | 'all'>(50);
+
+  // Pre-compute global balance counts for Block 2 filter buttons in a single O(N) pass
+  const globalClientBalanceCounts = useMemo(() => {
+    let debtors = 0;
+    let creditors = 0;
+    let zero = 0;
+    for (let i = 0; i < internalClients.length; i++) {
+      const c = internalClients[i];
+      const d = c.currentDebt || 0;
+      const a = c.currentAdvance || 0;
+      if (d > 0) debtors++;
+      if (a > 0) creditors++;
+      if (d === 0 && a === 0) zero++;
+    }
+    return { debtors, creditors, zero };
+  }, [internalClients]);
+
+  // O(1) lookup map of internalClients by ID
+  const internalClientsMap = useMemo(() => {
+    const map = new Map<string, Client>();
+    for (let i = 0; i < internalClients.length; i++) {
+      map.set(internalClients[i].id, internalClients[i]);
+    }
+    return map;
+  }, [internalClients]);
 
   const uniqueRegions = useMemo(() => {
     const set = new Set<string>();
@@ -263,6 +318,36 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     });
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'uz'));
   }, [internalClients, selectedRegion]);
+
+  const uniqueClientCreators = useMemo(() => {
+    const set = new Set<string>();
+    internalClients.forEach((c) => {
+      set.add((c.createdBy || 'adminc').trim());
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'uz'));
+  }, [internalClients]);
+
+  const isBlock2FilterActive =
+    clientSearch.trim() !== '' ||
+    selectedRegion !== 'all' ||
+    selectedDistrict !== 'all' ||
+    selectedClientCreator !== 'all' ||
+    clientBalanceFilter !== 'all' ||
+    selectedClientMonth !== 'all' ||
+    minDebtFilter.trim() !== '' ||
+    maxDebtFilter.trim() !== '';
+
+  const resetBlock2Filters = () => {
+    setClientSearch('');
+    setSelectedRegion('all');
+    setSelectedDistrict('all');
+    setSelectedClientCreator('all');
+    setClientBalanceFilter('all');
+    setSelectedClientMonth('all');
+    setMinDebtFilter('');
+    setMaxDebtFilter('');
+    setClientSortMode('debt_desc');
+  };
 
   const computeClientMonthlyBalances = (client: Client, year: number): ClientMonthlyBalance[] => {
     const now = new Date();
@@ -308,15 +393,16 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       months: computeClientMonthlyBalances(c, selectedYear),
     }));
 
-    if (clientSearch.trim()) {
-      const q = clientSearch.toLowerCase().trim();
+    if (deferredClientSearch.trim()) {
+      const q = deferredClientSearch.toLowerCase().trim();
       list = list.filter(({ client: c }) => {
         const nameMatch = c.name.toLowerCase().includes(q);
         const phoneMatch = c.phone.toLowerCase().includes(q);
         const addrMatch = (c.address || '').toLowerCase().includes(q);
         const regMatch = (c.region || '').toLowerCase().includes(q);
         const distMatch = (c.district || '').toLowerCase().includes(q);
-        return nameMatch || phoneMatch || addrMatch || regMatch || distMatch;
+        const landmarkMatch = (c.landmark || '').toLowerCase().includes(q);
+        return nameMatch || phoneMatch || addrMatch || regMatch || distMatch || landmarkMatch;
       });
     }
 
@@ -336,12 +422,42 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       });
     }
 
+    if (selectedClientCreator !== 'all') {
+      const targetCreator = selectedClientCreator.toLowerCase();
+      list = list.filter(
+        ({ client: c }) => (c.createdBy || 'adminc').toLowerCase() === targetCreator
+      );
+    }
+
     if (clientBalanceFilter === 'debtors') {
       list = list.filter((item) => item.currentDebt > 0);
     } else if (clientBalanceFilter === 'creditors') {
       list = list.filter((item) => item.currentAdvance > 0);
     } else if (clientBalanceFilter === 'zero') {
       list = list.filter((item) => item.currentDebt === 0 && item.currentAdvance === 0);
+    }
+
+    const parsedMinDebt = parseFloat(minDebtFilter);
+    if (!isNaN(parsedMinDebt) && parsedMinDebt > 0) {
+      list = list.filter((item) => item.currentDebt >= parsedMinDebt);
+    }
+
+    const parsedMaxDebt = parseFloat(maxDebtFilter);
+    if (!isNaN(parsedMaxDebt) && parsedMaxDebt >= 0 && maxDebtFilter.trim() !== '') {
+      list = list.filter((item) => item.currentDebt <= parsedMaxDebt);
+    }
+
+    if (selectedClientMonth !== 'all') {
+      const mIdx = selectedClientMonth - 1;
+      list = list.filter((item) => {
+        const mData = item.months[mIdx];
+        if (!mData) return true;
+        const createdDate = new Date(item.client.createdAt || '2026-01-01');
+        return (
+          createdDate.getFullYear() < selectedYear ||
+          (createdDate.getFullYear() === selectedYear && createdDate.getMonth() <= mIdx)
+        );
+      });
     }
 
     list.sort((a, b) => {
@@ -356,37 +472,124 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     return list;
   }, [
     internalClients,
-    clientSearch,
+    deferredClientSearch,
     selectedRegion,
     selectedDistrict,
+    selectedClientCreator,
     selectedYear,
+    selectedClientMonth,
+    minDebtFilter,
+    maxDebtFilter,
     clientSortMode,
     clientBalanceFilter,
   ]);
 
+  useEffect(() => {
+    setBlock2Page(1);
+  }, [
+    deferredClientSearch,
+    selectedRegion,
+    selectedDistrict,
+    selectedClientCreator,
+    selectedYear,
+    selectedClientMonth,
+    minDebtFilter,
+    maxDebtFilter,
+    clientSortMode,
+    clientBalanceFilter,
+    block2PageSize,
+  ]);
+
+  const block2TotalPages = block2PageSize === 'all' ? 1 : Math.max(1, Math.ceil(filteredAnnualClients.length / block2PageSize));
+  const safeBlock2Page = Math.min(block2Page, block2TotalPages);
+  const visibleBlock2Clients = useMemo(() => {
+    if (block2PageSize === 'all') return filteredAnnualClients;
+    const start = (safeBlock2Page - 1) * block2PageSize;
+    return filteredAnnualClients.slice(start, start + block2PageSize);
+  }, [filteredAnnualClients, block2PageSize, safeBlock2Page]);
+
+  // 2-Blok Xulosaviy Tahlillari (Filtrlangan ma'lumotlar asosida)
   const clientStats = useMemo(() => {
     let totalDebt = 0;
     let totalAdvance = 0;
     let debtorsCount = 0;
     let creditorsCount = 0;
+    let zeroCount = 0;
+    let maxDebtor: ClientAnnualData | null = null;
+    let maxCreditor: ClientAnnualData | null = null;
 
-    internalClients.forEach((c) => {
-      const d = c.currentDebt || 0;
-      const a = c.currentAdvance || 0;
+    const regionDebtMap = new Map<string, { debt: number; count: number }>();
+    const monthlyTotals = MONTH_NAMES.map((monthName, idx) => ({
+      month: idx + 1,
+      monthName,
+      debt: 0,
+      advance: 0,
+    }));
+
+    filteredAnnualClients.forEach((item) => {
+      const d = item.currentDebt || 0;
+      const a = item.currentAdvance || 0;
       totalDebt += d;
       totalAdvance += a;
-      if (d > 0) debtorsCount++;
-      if (a > 0) creditorsCount++;
+
+      if (d > 0) {
+        debtorsCount++;
+        if (!maxDebtor || d > maxDebtor.currentDebt) {
+          maxDebtor = item;
+        }
+        const reg =
+          item.client.region?.trim() ||
+          parseLegacyAddress(item.client.address).region ||
+          "Noma'lum hudud";
+        const prev = regionDebtMap.get(reg) || { debt: 0, count: 0 };
+        regionDebtMap.set(reg, { debt: prev.debt + d, count: prev.count + 1 });
+      }
+      if (a > 0) {
+        creditorsCount++;
+        if (!maxCreditor || a > maxCreditor.currentAdvance) {
+          maxCreditor = item;
+        }
+      }
+      if (d === 0 && a === 0) {
+        zeroCount++;
+      }
+
+      item.months.forEach((m, idx) => {
+        if (monthlyTotals[idx]) {
+          monthlyTotals[idx].debt += m.debt || 0;
+          monthlyTotals[idx].advance += m.advance || 0;
+        }
+      });
     });
+
+    let topRegion: { region: string; debt: number; count: number } | null = null;
+    regionDebtMap.forEach((val, key) => {
+      if (!topRegion || val.debt > topRegion.debt) {
+        topRegion = { region: key, debt: val.debt, count: val.count };
+      }
+    });
+
+    const avgDebtPerDebtor = debtorsCount > 0 ? totalDebt / debtorsCount : 0;
+    const avgAdvancePerCreditor = creditorsCount > 0 ? totalAdvance / creditorsCount : 0;
+    const netBalance = totalDebt - totalAdvance;
 
     return {
       totalClients: internalClients.length,
+      filteredClientsCount: filteredAnnualClients.length,
       totalDebt,
       totalAdvance,
       debtorsCount,
       creditorsCount,
+      zeroCount,
+      avgDebtPerDebtor,
+      avgAdvancePerCreditor,
+      netBalance,
+      maxDebtor: maxDebtor as ClientAnnualData | null,
+      maxCreditor: maxCreditor as ClientAnnualData | null,
+      topRegion: topRegion as { region: string; debt: number; count: number } | null,
+      monthlyTotals,
     };
-  }, [internalClients]);
+  }, [filteredAnnualClients, internalClients.length]);
 
   const handleExportClientsExcel = async () => {
     try {
@@ -394,6 +597,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       const filterLabel = [
         selectedRegion !== 'all' ? `Viloyat: ${selectedRegion}` : null,
         selectedDistrict !== 'all' ? `Tuman: ${selectedDistrict}` : null,
+        selectedClientCreator !== 'all' ? `Kiritgan: ${selectedClientCreator}` : null,
+        clientBalanceFilter !== 'all' ? `Holat: ${clientBalanceFilter}` : null,
       ]
         .filter(Boolean)
         .join(', ') || "Barcha mijozlar";
@@ -410,10 +615,26 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   // 3-BLOK DATA & STATES (Mijozlarga berilgan mahsulotlar 1 yillik tahlili)
   // =========================================================================
   const internalPlans = useMemo(() => {
-    return propPlans && propPlans.length > 0 ? propPlans : storageService.getDailyPlans();
+    return propPlans !== undefined ? propPlans : storageService.getDailyPlans();
   }, [propPlans]);
 
+  // Index internalPlans by clientId in O(M) so Block 3 runs in O(N + M) instead of O(N * M)
+  const internalPlansByClientMap = useMemo(() => {
+    const map = new Map<string, DailyPlanItem[]>();
+    for (let i = 0; i < internalPlans.length; i++) {
+      const p = internalPlans[i];
+      const existing = map.get(p.clientId);
+      if (existing) {
+        existing.push(p);
+      } else {
+        map.set(p.clientId, [p]);
+      }
+    }
+    return map;
+  }, [internalPlans]);
+
   const [delivSearch, setDelivSearch] = useState('');
+  const deferredDelivSearch = useDeferredValue(delivSearch);
   const [delivRegion, setDelivRegion] = useState<string>('all');
   const [delivDistrict, setDelivDistrict] = useState<string>('all');
   const [delivYear, setDelivYear] = useState<number>(2026);
@@ -421,6 +642,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [delivStartDate, setDelivStartDate] = useState<string>('');
   const [delivEndDate, setDelivEndDate] = useState<string>('');
   const [isExportingDelivery, setIsExportingDelivery] = useState(false);
+  const [block3Page, setBlock3Page] = useState<number>(1);
+  const [block3PageSize, setBlock3PageSize] = useState<number | 'all'>(50);
 
   const computeClientProductDeliveries = (
     client: Client,
@@ -446,7 +669,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       return true;
     };
 
-    const clientPlans = internalPlans.filter((p) => p.clientId === client.id);
+    const clientPlans = internalPlansByClientMap.get(client.id) || [];
     clientPlans.forEach((plan) => {
       const timeStr = plan.completedAt || plan.createdAt;
       if (!timeStr || !timeStr.startsWith(String(year)) || !isWithinFilterRange(timeStr)) return;
@@ -541,8 +764,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       };
     });
 
-    if (delivSearch.trim()) {
-      const q = delivSearch.toLowerCase().trim();
+    if (deferredDelivSearch.trim()) {
+      const q = deferredDelivSearch.toLowerCase().trim();
       list = list.filter(({ client: c, months }) => {
         const nameMatch = c.name.toLowerCase().includes(q);
         const phoneMatch = c.phone.toLowerCase().includes(q);
@@ -598,8 +821,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     return list;
   }, [
     internalClients,
-    internalPlans,
-    delivSearch,
+    internalPlansByClientMap,
+    deferredDelivSearch,
     delivRegion,
     delivDistrict,
     delivYear,
@@ -607,6 +830,18 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     delivEndDate,
     delivSortMode,
   ]);
+
+  useEffect(() => {
+    setBlock3Page(1);
+  }, [deferredDelivSearch, delivRegion, delivDistrict, delivYear, delivStartDate, delivEndDate, delivSortMode, block3PageSize]);
+
+  const block3TotalPages = block3PageSize === 'all' ? 1 : Math.max(1, Math.ceil(filteredDeliveryClients.length / block3PageSize));
+  const safeBlock3Page = Math.min(block3Page, block3TotalPages);
+  const visibleBlock3Clients = useMemo(() => {
+    if (block3PageSize === 'all') return filteredDeliveryClients;
+    const start = (safeBlock3Page - 1) * block3PageSize;
+    return filteredDeliveryClients.slice(start, start + block3PageSize);
+  }, [filteredDeliveryClients, block3PageSize, safeBlock3Page]);
 
   const delivStats = useMemo(() => {
     let grandPieces = 0;
@@ -667,6 +902,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [actionDistrict, setActionDistrict] = useState<string>('all');
   const [actionAgent, setActionAgent] = useState<string>('all');
   const [actionSearch, setActionSearch] = useState<string>('');
+  const deferredActionSearch = useDeferredValue(actionSearch);
   const [isExportingActions, setIsExportingActions] = useState(false);
   const [actionViewMode, setActionViewMode] = useState<'consolidated' | 'detailed'>('consolidated');
   const [expandedClientKeys, setExpandedClientKeys] = useState<Set<string>>(new Set());
@@ -683,12 +919,12 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     });
   };
 
-  // Extract all single operations/actions across plans
+  // Extract all single operations/actions across plans using O(1) internalClientsMap lookup
   const allActionItems = useMemo(() => {
     const records: ActionExportItem[] = [];
 
     internalPlans.forEach((plan) => {
-      const client = internalClients.find((c) => c.id === plan.clientId);
+      const client = internalClientsMap.get(plan.clientId);
       const reg = plan.clientRegion || client?.region || parseLegacyAddress(plan.clientAddress || client?.address || '').region;
       const dist = plan.clientDistrict || client?.district || parseLegacyAddress(plan.clientAddress || client?.address || '').district;
       const locationStr = [reg, dist].filter(Boolean).join(', ') || plan.clientAddress || client?.address || '-';
@@ -804,8 +1040,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       });
     });
 
-    return records;
-  }, [internalPlans, internalClients]);
+      return records;
+  }, [internalPlans, internalClientsMap]);
 
   // Unique agents in 4-blok
   const uniqueActionAgents = useMemo(() => {
@@ -816,7 +1052,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     return Array.from(set).sort();
   }, [allActionItems]);
 
-  // Filter 4-Blok by: 1. Date Range -> 2. Action Type -> 3. Region/District -> 4. Search
+  // Filter 4-Blok by: 1. Date Range -> 2. Action Type -> 3. Region/District -> 4. Search (deferred)
   const filteredActionItems = useMemo(() => {
     return allActionItems.filter((item) => {
       // 1. Date range filter
@@ -850,8 +1086,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       }
 
       // Search
-      if (actionSearch.trim()) {
-        const q = actionSearch.toLowerCase().trim();
+      if (deferredActionSearch.trim()) {
+        const q = deferredActionSearch.toLowerCase().trim();
         const mName = item.clientName.toLowerCase().includes(q);
         const mPhone = item.clientPhone.toLowerCase().includes(q);
         const mLoc = item.clientLocation.toLowerCase().includes(q);
@@ -870,7 +1106,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     actionRegion,
     actionDistrict,
     actionAgent,
-    actionSearch,
+    deferredActionSearch,
   ]);
 
   // 4-Blok Aggregates & KPI
@@ -1373,10 +1609,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     <th className="py-3 px-3.5 text-right">Qadoqlar soni</th>
                     <th className="py-3 px-3.5 text-center">Zaxira holati</th>
                     <th className="py-3 px-3.5 text-right">Kiritilgan sana</th>
+                    {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
+                      <th className="py-3 px-3.5 text-center w-24">Amal</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-150">
-                  {filteredProducts.map((p, index) => {
+                  {visibleBlock1Products.map((p, index) => {
+                    const globalIndex =
+                      block1PageSize === 'all' ? index : (safeBlock1Page - 1) * block1PageSize + index;
                     const pieces = p.totalPieces || 0;
                     const piecesPerPkg = p.piecesPerPackage || 1;
                     const packages = Math.floor(pieces / piecesPerPkg);
@@ -1386,7 +1627,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
                     return (
                       <tr key={p.id} className={index % 2 === 1 ? 'bg-neutral-50/50' : 'bg-white'}>
-                        <td className="py-3 px-3.5 text-center font-mono text-neutral-400">{index + 1}</td>
+                        <td className="py-3 px-3.5 text-center font-mono text-neutral-400">{globalIndex + 1}</td>
                         <td className="py-3 px-3.5 font-bold text-neutral-900">{p.name}</td>
                         <td className="py-3 px-3.5 font-semibold text-neutral-700">{p.brand}</td>
                         <td className="py-3 px-3.5 text-neutral-700">{p.packageUnitName || p.baseUnit || 'Dona'}</td>
@@ -1408,11 +1649,77 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                           )}
                         </td>
                         <td className="py-3 px-3.5 text-right font-mono text-neutral-500 text-[11px]">{p.intakeDate || '-'}</td>
+                        {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
+                          <td className="py-3 px-3.5 text-center">
+                            <div className="inline-flex items-center justify-center gap-1">
+                              {onEditWarehouseProduct && (
+                                <button
+                                  type="button"
+                                  onClick={() => onEditWarehouseProduct(p)}
+                                  className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition cursor-pointer"
+                                  title="Mahsulotni tahrirlash"
+                                >
+                                  <Edit3 className="w-4 h-4" />
+                                </button>
+                              )}
+                              {onDeleteWarehouseProduct && (
+                                <button
+                                  type="button"
+                                  onClick={() => onDeleteWarehouseProduct(p.id)}
+                                  className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                  title="Ombordan va butun bazadan o'chirish"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+              {filteredProducts.length > 25 && (
+                <div className="px-4 py-3 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 text-neutral-600">
+                    <span>Sahifada:</span>
+                    <select
+                      value={block1PageSize}
+                      onChange={(e) => setBlock1PageSize(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                      className="px-2 py-1 rounded-lg border border-neutral-300 bg-white font-bold text-neutral-900 outline-none cursor-pointer"
+                    >
+                      <option value={50}>50 ta</option>
+                      <option value={100}>100 ta</option>
+                      <option value={250}>250 ta</option>
+                      <option value="all">Barchasi ({filteredProducts.length} ta)</option>
+                    </select>
+                  </div>
+                  {block1PageSize !== 'all' && block1TotalPages > 1 && (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={safeBlock1Page <= 1}
+                        onClick={() => setBlock1Page((p) => Math.max(1, p - 1))}
+                        className="px-2.5 py-1 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 disabled:opacity-40 font-semibold cursor-pointer"
+                      >
+                        Oldingi
+                      </button>
+                      <span className="px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 font-mono font-bold">
+                        {safeBlock1Page} / {block1TotalPages}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={safeBlock1Page >= block1TotalPages}
+                        onClick={() => setBlock1Page((p) => Math.min(block1TotalPages, p + 1))}
+                        className="px-2.5 py-1 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 disabled:opacity-40 font-semibold cursor-pointer"
+                      >
+                        Keyingi
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1433,19 +1740,28 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   2-Blok: Mijozlarning 1 yillik oylik qarzdorlik va haqdorlik tahlili
                 </h2>
               </div>
+              <p className="text-xs text-rose-200/80">
+                Hudud, balans holati, kiritgan xodim va qarz miqdori bo'yicha filtrlash hamda xulosaviy tahlillar
+              </p>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
               <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
+                <div className="text-[10px] text-rose-200 uppercase font-semibold">Mijozlar</div>
+                <div className="text-sm sm:text-base font-bold font-mono text-white">
+                  {clientStats.filteredClientsCount} / {clientStats.totalClients} ta
+                </div>
+              </div>
+              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
                 <div className="text-[10px] text-rose-200 uppercase font-semibold">Jami qarz</div>
                 <div className="text-sm sm:text-base font-bold font-mono text-rose-300">
-                  {formatMoney(clientStats.totalDebt)} so'm
+                  {formatMoney(clientStats.totalDebt)}
                 </div>
               </div>
               <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
                 <div className="text-[10px] text-rose-200 uppercase font-semibold">Jami haqdorlik</div>
                 <div className="text-sm sm:text-base font-bold font-mono text-emerald-300">
-                  {formatMoney(clientStats.totalAdvance)} so'm
+                  {formatMoney(clientStats.totalAdvance)}
                 </div>
               </div>
 
@@ -1461,75 +1777,505 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs whitespace-nowrap">
-              <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">
-                <tr>
-                  <th rowSpan={2} className="py-3 px-3 w-10 text-center border-b border-rose-200">#</th>
-                  <th rowSpan={2} className="py-3 px-3.5 min-w-[180px] border-b border-rose-200">Mijoz nomi</th>
-                  <th rowSpan={2} className="py-3 px-3 min-w-[120px] border-b border-rose-200">Telefon</th>
-                  <th rowSpan={2} className="py-3 px-3 min-w-[140px] border-b border-rose-200">Hudud</th>
-                  <th rowSpan={2} className="py-3 px-3.5 text-right bg-rose-100/90 text-rose-950 min-w-[125px] border-b border-rose-200">
-                    Hozirgi qarz
-                  </th>
-                  <th rowSpan={2} className="py-3 px-3.5 text-right bg-emerald-100/90 text-emerald-950 min-w-[125px] border-b border-rose-200">
-                    Hozirgi haqdorlik
-                  </th>
-                  {MONTH_NAMES.map((name) => (
-                    <th
-                      key={name}
-                      colSpan={2}
-                      className="py-2 px-2.5 text-center border-l-2 border-b border-rose-200/90 bg-rose-100/60 text-neutral-900 font-bold"
-                    >
-                      {name} ({selectedYear})
-                    </th>
+          {/* 2-BLOK FILTRLAR PANELI */}
+          <div className="p-4 bg-neutral-50/80 border-b border-neutral-200/80 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5">
+              {/* 1. Qidiruv */}
+              <div className="relative lg:col-span-2">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="text"
+                  placeholder="Mijoz ismi, telefon, manzil bo'yicha qidirish..."
+                  value={clientSearch}
+                  onChange={(e) => setClientSearch(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none transition"
+                />
+              </div>
+
+              {/* 2. Viloyat filtri */}
+              <div>
+                <select
+                  value={selectedRegion}
+                  onChange={(e) => {
+                    setSelectedRegion(e.target.value);
+                    setSelectedDistrict('all');
+                  }}
+                  className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none cursor-pointer"
+                >
+                  <option value="all">Barcha viloyatlar ({uniqueRegions.length})</option>
+                  {uniqueRegions.map((reg) => (
+                    <option key={reg} value={reg}>
+                      Viloyat: {reg}
+                    </option>
                   ))}
-                </tr>
-                <tr className="bg-rose-50/70 text-[10px] text-neutral-600 font-bold">
-                  {MONTH_NAMES.map((name) => (
-                    <React.Fragment key={name}>
-                      <th className="py-1 px-2 text-right border-l-2 border-rose-200/90 text-rose-800 bg-rose-50/90 min-w-[90px]">Qarz</th>
-                      <th className="py-1 px-2 text-right border-l border-rose-100 text-emerald-800 bg-emerald-50/60 min-w-[90px]">Haq</th>
-                    </React.Fragment>
+                </select>
+              </div>
+
+              {/* 3. Tuman filtri */}
+              <div>
+                <select
+                  value={selectedDistrict}
+                  onChange={(e) => setSelectedDistrict(e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none cursor-pointer"
+                >
+                  <option value="all">Barcha tumanlar ({uniqueDistricts.length})</option>
+                  {uniqueDistricts.map((dist) => (
+                    <option key={dist} value={dist}>
+                      Tuman: {dist}
+                    </option>
                   ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-150">
-                {filteredAnnualClients.map((item, index) => {
-                  const c = item.client;
-                  const location = [c.region, c.district].filter(Boolean).join(', ') || c.address || '-';
-                  return (
-                    <tr key={c.id} className={index % 2 === 1 ? 'bg-neutral-50/40' : 'bg-white'}>
-                      <td className="py-2.5 px-3 text-center font-mono text-neutral-400">{index + 1}</td>
-                      <td className="py-2.5 px-3.5 font-bold text-neutral-900">{c.name}</td>
-                      <td className="py-2.5 px-3 font-mono text-neutral-600">{c.phone}</td>
-                      <td className="py-2.5 px-3 text-neutral-700 truncate max-w-[140px]">{location}</td>
-                      <td className="py-2.5 px-3.5 text-right font-mono font-bold bg-rose-50/40">
-                        {item.currentDebt > 0 ? (
-                          <span className="text-rose-700 font-extrabold">{formatMoney(item.currentDebt)}</span>
-                        ) : '-'}
-                      </td>
-                      <td className="py-2.5 px-3.5 text-right font-mono font-bold bg-emerald-50/40">
-                        {item.currentAdvance > 0 ? (
-                          <span className="text-emerald-700 font-extrabold">{formatMoney(item.currentAdvance)}</span>
-                        ) : '-'}
-                      </td>
-                      {item.months.map((m) => (
-                        <React.Fragment key={m.month}>
-                          <td className="py-2.5 px-2 text-right font-mono text-[11px] border-l-2 border-neutral-200">
-                            {m.debt > 0 ? <span className="text-rose-700 font-bold">{formatMoney(m.debt)}</span> : '-'}
-                          </td>
-                          <td className="py-2.5 px-2 text-right font-mono text-[11px] border-l border-neutral-150">
-                            {m.advance > 0 ? <span className="text-emerald-700 font-bold">{formatMoney(m.advance)}</span> : '-'}
-                          </td>
-                        </React.Fragment>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                </select>
+              </div>
+
+              {/* 4. Yil va Oy filtri */}
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(Number(e.target.value))}
+                  className="w-24 px-2.5 py-2 text-xs font-bold bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none cursor-pointer"
+                  title="Tahlil yili"
+                >
+                  <option value={2025}>2025-yil</option>
+                  <option value={2026}>2026-yil</option>
+                  <option value={2027}>2027-yil</option>
+                </select>
+
+                <select
+                  value={selectedClientMonth}
+                  onChange={(e) =>
+                    setSelectedClientMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))
+                  }
+                  className="flex-1 px-2.5 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none cursor-pointer"
+                  title="Oy bo'yicha filtr"
+                >
+                  <option value="all">Barcha 12 oy</option>
+                  {MONTH_NAMES.map((mName, idx) => (
+                    <option key={mName} value={idx + 1}>
+                      {idx + 1}-oy: {mName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 5. Saralash */}
+              <div>
+                <select
+                  value={clientSortMode}
+                  onChange={(e) => setClientSortMode(e.target.value as ClientSortMode)}
+                  className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none cursor-pointer text-neutral-900"
+                >
+                  <option value="debt_desc">Qarz: Ko'pdan kamga</option>
+                  <option value="debt_asc">Qarz: Kamdan ko'pga</option>
+                  <option value="adv_desc">Haqdorlik: Ko'pdan kamga</option>
+                  <option value="adv_asc">Haqdorlik: Kamdan ko'pga</option>
+                  <option value="name_asc">Mijoz ismi (A-Z)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Ikkinchi qator filtrlar: Balans holati, Kiritgan xodim, Min/Max qarz summasi, Tozalash */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-neutral-200/70 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-bold text-neutral-500 uppercase mr-1">
+                  Balans holati:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setClientBalanceFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                    clientBalanceFilter === 'all'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-white text-neutral-700 hover:bg-neutral-100 border border-neutral-200'
+                  }`}
+                >
+                  Barchasi ({internalClients.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClientBalanceFilter('debtors')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                    clientBalanceFilter === 'debtors'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200'
+                  }`}
+                >
+                  Faqat qarzdorlar ({globalClientBalanceCounts.debtors})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClientBalanceFilter('creditors')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                    clientBalanceFilter === 'creditors'
+                      ? 'bg-emerald-700 text-white shadow-2xs'
+                      : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200'
+                  }`}
+                >
+                  Faqat haqdorlar ({globalClientBalanceCounts.creditors})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClientBalanceFilter('zero')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition cursor-pointer ${
+                    clientBalanceFilter === 'zero'
+                      ? 'bg-neutral-800 text-white shadow-2xs'
+                      : 'bg-white text-neutral-700 hover:bg-neutral-100 border border-neutral-200'
+                  }`}
+                >
+                  Hisobi yopilgan ({globalClientBalanceCounts.zero})
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Kiritgan xodim filtri */}
+                <select
+                  value={selectedClientCreator}
+                  onChange={(e) => setSelectedClientCreator(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs font-semibold bg-white rounded-lg border border-neutral-300 focus:border-rose-500 outline-none cursor-pointer"
+                >
+                  <option value="all">Barcha kirituvchilar</option>
+                  {uniqueClientCreators.map((cr) => (
+                    <option key={cr} value={cr}>
+                      Kiritgan: {cr}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Qarz summasi oralig'i (Min / Max USD) */}
+                <div className="flex items-center gap-1 bg-white px-2.5 py-1 rounded-lg border border-neutral-300">
+                  <span className="text-[10px] font-bold text-neutral-500 uppercase">Qarz ($):</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="Min"
+                    value={minDebtFilter}
+                    onChange={(e) => setMinDebtFilter(e.target.value)}
+                    className="w-16 text-xs font-mono outline-none bg-transparent text-neutral-900"
+                  />
+                  <span className="text-neutral-300">-</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="Max"
+                    value={maxDebtFilter}
+                    onChange={(e) => setMaxDebtFilter(e.target.value)}
+                    className="w-16 text-xs font-mono outline-none bg-transparent text-neutral-900"
+                  />
+                </div>
+
+                {isBlock2FilterActive && (
+                  <button
+                    type="button"
+                    onClick={resetBlock2Filters}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white font-bold text-xs transition cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Filtrlarni tozalash</span>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
+
+          {/* 2-BLOK XULOSAVIY TAHLILLAR PANELI */}
+          <div
+            className={`p-4 border-b transition ${
+              isBlock2FilterActive
+                ? 'bg-gradient-to-r from-rose-50/80 via-white to-emerald-50/50 border-rose-200'
+                : 'bg-white border-neutral-200/80'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold uppercase tracking-wider ${
+                    isBlock2FilterActive ? 'bg-rose-700 text-white' : 'bg-neutral-800 text-white'
+                  }`}
+                >
+                  {isBlock2FilterActive
+                    ? "2-Blok: Filtr bo'yicha xulosaviy tahlil"
+                    : "2-Blok: Umumiy xulosaviy tahlil"}
+                </span>
+                <span className="text-xs font-semibold text-neutral-600">
+                  Tanlangan mijozlar:{' '}
+                  <strong className="text-neutral-900">{clientStats.filteredClientsCount} ta</strong>{' '}
+                  (umumiy bazadan{' '}
+                  {clientStats.totalClients > 0
+                    ? Math.round((clientStats.filteredClientsCount / clientStats.totalClients) * 100)
+                    : 0}
+                  %)
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                {clientStats.maxDebtor && (
+                  <span className="px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 font-medium">
+                    Eng yuqori qarz:{' '}
+                    <strong>{clientStats.maxDebtor.client.name}</strong> (
+                    <span className="font-mono font-bold text-rose-700">
+                      {formatMoney(clientStats.maxDebtor.currentDebt)}
+                    </span>
+                    )
+                  </span>
+                )}
+                {clientStats.topRegion && (
+                  <span className="px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-950 font-medium">
+                    Top qarzdor hudud:{' '}
+                    <strong>{clientStats.topRegion.region}</strong> (
+                    <span className="font-mono font-bold text-amber-900">
+                      {formatMoney(clientStats.topRegion.debt)}
+                    </span>{' '}
+                    • {clientStats.topRegion.count} ta mijoz)
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+              {/* 1. Mijozlar tarkibi */}
+              <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200/90">
+                <div className="text-[10px] font-bold uppercase text-neutral-500">
+                  Mijozlar tarkibi
+                </div>
+                <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5">
+                  {clientStats.filteredClientsCount} ta mijoz
+                </div>
+                <div className="text-[10px] text-neutral-600 mt-0.5">
+                  Qarzdor: {clientStats.debtorsCount} • Haqdor: {clientStats.creditorsCount} • Nol: {clientStats.zeroCount}
+                </div>
+              </div>
+
+              {/* 2. Jami qarzdorlik tahlili */}
+              <div className="p-3 rounded-xl bg-rose-50/90 border border-rose-200">
+                <div className="text-[10px] font-bold uppercase text-rose-800">
+                  Xulosaviy jami qarz
+                </div>
+                <div className="text-base sm:text-lg font-extrabold font-mono text-rose-700 mt-0.5">
+                  {formatMoney(clientStats.totalDebt)}
+                </div>
+                <div className="text-[10px] text-rose-900/80 mt-0.5">
+                  {clientStats.debtorsCount} ta qarzdor ({clientStats.filteredClientsCount > 0 ? Math.round((clientStats.debtorsCount / clientStats.filteredClientsCount) * 100) : 0}%)
+                </div>
+              </div>
+
+              {/* 3. O'rtacha qarzdorlik */}
+              <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200">
+                <div className="text-[10px] font-bold uppercase text-amber-900">
+                  O'rtacha qarzdorlik
+                </div>
+                <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5">
+                  {formatMoney(Math.round(clientStats.avgDebtPerDebtor))}
+                </div>
+                <div className="text-[10px] text-amber-900/80 mt-0.5">
+                  Har bir qarzdor mijoz hisobiga
+                </div>
+              </div>
+
+              {/* 4. Jami haqdorlik tahlili */}
+              <div className="p-3 rounded-xl bg-emerald-50/90 border border-emerald-200">
+                <div className="text-[10px] font-bold uppercase text-emerald-800">
+                  Xulosaviy jami haqdorlik
+                </div>
+                <div className="text-base sm:text-lg font-extrabold font-mono text-emerald-700 mt-0.5">
+                  {formatMoney(clientStats.totalAdvance)}
+                </div>
+                <div className="text-[10px] text-emerald-900/80 mt-0.5">
+                  {clientStats.creditorsCount} ta haqdor (o'rtacha {formatMoney(Math.round(clientStats.avgAdvancePerCreditor))})
+                </div>
+              </div>
+
+              {/* 5. Sof balans (Qarz - Haqdorlik) */}
+              <div className="p-3 rounded-xl bg-neutral-900 text-white border border-neutral-800 col-span-2 sm:col-span-1">
+                <div className="text-[10px] font-bold uppercase text-neutral-400">
+                  Sof balans (Qarz − Haq)
+                </div>
+                <div
+                  className={`text-base sm:text-lg font-extrabold font-mono mt-0.5 ${
+                    clientStats.netBalance >= 0 ? 'text-rose-300' : 'text-emerald-300'
+                  }`}
+                >
+                  {formatMoney(Math.abs(clientStats.netBalance))}
+                </div>
+                <div className="text-[10px] text-neutral-300 mt-0.5">
+                  {clientStats.netBalance >= 0 ? 'Sof undiriladigan qarz' : 'Sof mijoz haqdorligi'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {filteredAnnualClients.length === 0 ? (
+            <div className="p-10 text-center space-y-2">
+              <div className="text-sm font-bold text-neutral-800">
+                Tanlangan filtrlar bo'yicha mijozlar topilmadi
+              </div>
+              <p className="text-xs text-neutral-500">
+                Qidiruv so'zini yoki filtr shartlarini o'zgartirib ko'ring.
+              </p>
+              {isBlock2FilterActive && (
+                <button
+                  type="button"
+                  onClick={resetBlock2Filters}
+                  className="mt-2 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Filtrlarni tozalash</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs whitespace-nowrap">
+                <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">
+                  <tr>
+                    <th rowSpan={2} className="py-3 px-3 w-10 text-center border-b border-rose-200">#</th>
+                    <th rowSpan={2} className="py-3 px-3.5 min-w-[180px] border-b border-rose-200">Mijoz nomi</th>
+                    <th rowSpan={2} className="py-3 px-3 min-w-[120px] border-b border-rose-200">Telefon</th>
+                    <th rowSpan={2} className="py-3 px-3 min-w-[140px] border-b border-rose-200">Hudud</th>
+                    <th rowSpan={2} className="py-3 px-3.5 text-right bg-rose-100/90 text-rose-950 min-w-[125px] border-b border-rose-200">
+                      Hozirgi qarz
+                    </th>
+                    <th rowSpan={2} className="py-3 px-3.5 text-right bg-emerald-100/90 text-emerald-950 min-w-[125px] border-b border-rose-200">
+                      Hozirgi haqdorlik
+                    </th>
+                    {MONTH_NAMES.map((name, idx) => (
+                      <th
+                        key={name}
+                        colSpan={2}
+                        className={`py-2 px-2.5 text-center border-l-2 border-b border-rose-200/90 font-bold ${
+                          selectedClientMonth === idx + 1
+                            ? 'bg-rose-700 text-white'
+                            : 'bg-rose-100/60 text-neutral-900'
+                        }`}
+                      >
+                        {name} ({selectedYear})
+                      </th>
+                    ))}
+                  </tr>
+                  <tr className="bg-rose-50/70 text-[10px] text-neutral-600 font-bold">
+                    {MONTH_NAMES.map((name) => (
+                      <React.Fragment key={name}>
+                        <th className="py-1 px-2 text-right border-l-2 border-rose-200/90 text-rose-800 bg-rose-50/90 min-w-[90px]">Qarz</th>
+                        <th className="py-1 px-2 text-right border-l border-rose-100 text-emerald-800 bg-emerald-50/60 min-w-[90px]">Haq</th>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-150">
+                  {visibleBlock2Clients.map((item, index) => {
+                    const globalIndex =
+                      block2PageSize === 'all' ? index : (safeBlock2Page - 1) * block2PageSize + index;
+                    const c = item.client;
+                    const location = [c.region, c.district].filter(Boolean).join(', ') || c.address || '-';
+                    return (
+                      <tr key={c.id} className={index % 2 === 1 ? 'bg-neutral-50/40' : 'bg-white'}>
+                        <td className="py-2.5 px-3 text-center font-mono text-neutral-400">{globalIndex + 1}</td>
+                        <td className="py-2.5 px-3.5 font-bold text-neutral-900">
+                          <div>{c.name}</div>
+                          <div className="text-[10px] font-mono text-neutral-400 font-normal">
+                            Kiritgan: {c.createdBy || 'adminc'}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-neutral-600">{c.phone}</td>
+                        <td className="py-2.5 px-3 text-neutral-700 truncate max-w-[140px]">{location}</td>
+                        <td className="py-2.5 px-3.5 text-right font-mono font-bold bg-rose-50/40">
+                          {item.currentDebt > 0 ? (
+                            <span className="text-rose-700 font-extrabold">{formatMoney(item.currentDebt)}</span>
+                          ) : '-'}
+                        </td>
+                        <td className="py-2.5 px-3.5 text-right font-mono font-bold bg-emerald-50/40">
+                          {item.currentAdvance > 0 ? (
+                            <span className="text-emerald-700 font-extrabold">{formatMoney(item.currentAdvance)}</span>
+                          ) : '-'}
+                        </td>
+                        {item.months.map((m) => (
+                          <React.Fragment key={m.month}>
+                            <td
+                              className={`py-2.5 px-2 text-right font-mono text-[11px] border-l-2 border-neutral-200 ${
+                                selectedClientMonth === m.month ? 'bg-rose-50/70' : ''
+                              }`}
+                            >
+                              {m.debt > 0 ? <span className="text-rose-700 font-bold">{formatMoney(m.debt)}</span> : '-'}
+                            </td>
+                            <td
+                              className={`py-2.5 px-2 text-right font-mono text-[11px] border-l border-neutral-150 ${
+                                selectedClientMonth === m.month ? 'bg-emerald-50/70' : ''
+                              }`}
+                            >
+                              {m.advance > 0 ? <span className="text-emerald-700 font-bold">{formatMoney(m.advance)}</span> : '-'}
+                            </td>
+                          </React.Fragment>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot className="bg-rose-100/80 border-t-2 border-rose-300 text-neutral-900 font-extrabold text-xs">
+                  <tr>
+                    <td colSpan={4} className="py-3 px-3.5 uppercase tracking-wide text-rose-950">
+                      JAMI XULOSAVIY QIYMAT ({clientStats.filteredClientsCount} ta mijoz • Qarzdor: {clientStats.debtorsCount} • Haqdor: {clientStats.creditorsCount})
+                    </td>
+                    <td className="py-3 px-3.5 text-right font-mono text-rose-800 bg-rose-200/70">
+                      {formatMoney(clientStats.totalDebt)}
+                    </td>
+                    <td className="py-3 px-3.5 text-right font-mono text-emerald-800 bg-emerald-200/70">
+                      {formatMoney(clientStats.totalAdvance)}
+                    </td>
+                    {clientStats.monthlyTotals.map((mt) => (
+                      <React.Fragment key={mt.month}>
+                        <td className="py-3 px-2 text-right font-mono text-[11px] border-l-2 border-rose-300 text-rose-800 bg-rose-100/60">
+                          {mt.debt > 0 ? formatMoney(mt.debt) : '-'}
+                        </td>
+                        <td className="py-3 px-2 text-right font-mono text-[11px] border-l border-rose-200 text-emerald-800 bg-emerald-100/60">
+                          {mt.advance > 0 ? formatMoney(mt.advance) : '-'}
+                        </td>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                </tfoot>
+              </table>
+              {filteredAnnualClients.length > 25 && (
+                <div className="px-4 py-3 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 text-neutral-600">
+                    <span>Sahifada:</span>
+                    <select
+                      value={block2PageSize}
+                      onChange={(e) => setBlock2PageSize(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                      className="px-2 py-1 rounded-lg border border-neutral-300 bg-white font-bold text-neutral-900 outline-none cursor-pointer"
+                    >
+                      <option value={50}>50 ta</option>
+                      <option value={100}>100 ta</option>
+                      <option value={250}>250 ta</option>
+                      <option value="all">Barchasi ({filteredAnnualClients.length} ta)</option>
+                    </select>
+                  </div>
+                  {block2PageSize !== 'all' && block2TotalPages > 1 && (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={safeBlock2Page <= 1}
+                        onClick={() => setBlock2Page((p) => Math.max(1, p - 1))}
+                        className="px-2.5 py-1 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 disabled:opacity-40 font-semibold cursor-pointer"
+                      >
+                        Oldingi
+                      </button>
+                      <span className="px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 font-mono font-bold">
+                        {safeBlock2Page} / {block2TotalPages}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={safeBlock2Page >= block2TotalPages}
+                        onClick={() => setBlock2Page((p) => Math.min(block2TotalPages, p + 1))}
+                        className="px-2.5 py-1 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 disabled:opacity-40 font-semibold cursor-pointer"
+                      >
+                        Keyingi
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -1554,14 +2300,14 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
                 <div className="text-[10px] text-rose-300 uppercase font-semibold">Qarzga berilgan</div>
                 <div className="text-sm sm:text-base font-bold font-mono text-rose-300">
-                  {formatMoney(delivStats.grandCreditSum)} so'm
+                  {formatMoney(delivStats.grandCreditSum)}
                 </div>
               </div>
 
               <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
                 <div className="text-[10px] text-emerald-300 uppercase font-semibold">Qarzsiz berilgan</div>
                 <div className="text-sm sm:text-base font-bold font-mono text-emerald-300">
-                  {formatMoney(delivStats.grandPaidSum)} so'm
+                  {formatMoney(delivStats.grandPaidSum)}
                 </div>
               </div>
 
@@ -1603,12 +2349,14 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-150">
-                {filteredDeliveryClients.map((item, index) => {
+                {visibleBlock3Clients.map((item, index) => {
+                  const globalIndex =
+                    block3PageSize === 'all' ? index : (safeBlock3Page - 1) * block3PageSize + index;
                   const c = item.client;
                   const location = [c.region, c.district].filter(Boolean).join(', ') || c.address || '-';
                   return (
                     <tr key={c.id} className={index % 2 === 1 ? 'bg-neutral-50/40' : 'bg-white'}>
-                      <td className="py-2.5 px-3 text-center font-mono text-neutral-400">{index + 1}</td>
+                      <td className="py-2.5 px-3 text-center font-mono text-neutral-400">{globalIndex + 1}</td>
                       <td className="py-2.5 px-3.5 font-bold text-neutral-900">{c.name}</td>
                       <td className="py-2.5 px-3 font-mono text-neutral-600">{c.phone}</td>
                       <td className="py-2.5 px-3 text-neutral-700 truncate max-w-[130px]">{location}</td>
@@ -1655,6 +2403,46 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 })}
               </tbody>
             </table>
+            {filteredDeliveryClients.length > 25 && (
+              <div className="px-4 py-3 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 text-neutral-600">
+                  <span>Sahifada:</span>
+                  <select
+                    value={block3PageSize}
+                    onChange={(e) => setBlock3PageSize(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                    className="px-2 py-1 rounded-lg border border-neutral-300 bg-white font-bold text-neutral-900 outline-none cursor-pointer"
+                  >
+                    <option value={50}>50 ta</option>
+                    <option value={100}>100 ta</option>
+                    <option value={250}>250 ta</option>
+                    <option value="all">Barchasi ({filteredDeliveryClients.length} ta)</option>
+                  </select>
+                </div>
+                {block3PageSize !== 'all' && block3TotalPages > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={safeBlock3Page <= 1}
+                      onClick={() => setBlock3Page((p) => Math.max(1, p - 1))}
+                      className="px-2.5 py-1 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 disabled:opacity-40 font-semibold cursor-pointer"
+                    >
+                      Oldingi
+                    </button>
+                    <span className="px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 font-mono font-bold">
+                      {safeBlock3Page} / {block3TotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={safeBlock3Page >= block3TotalPages}
+                      onClick={() => setBlock3Page((p) => Math.min(block3TotalPages, p + 1))}
+                      className="px-2.5 py-1 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-100 disabled:opacity-40 font-semibold cursor-pointer"
+                    >
+                      Keyingi
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1692,14 +2480,14 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
                 <div className="text-[10px] text-emerald-300 uppercase font-semibold">Jami tushum</div>
                 <div className="text-sm sm:text-base font-bold font-mono text-emerald-300">
-                  {formatMoney(actionStats.totalReceipts)} so'm
+                  {formatMoney(actionStats.totalReceipts)}
                 </div>
               </div>
 
               <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
                 <div className="text-[10px] text-rose-300 uppercase font-semibold">Qarzga berildi</div>
                 <div className="text-sm sm:text-base font-bold font-mono text-rose-300">
-                  {formatMoney(actionStats.creditDelivSum)} so'm
+                  {formatMoney(actionStats.creditDelivSum)}
                 </div>
               </div>
 
@@ -2004,7 +2792,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     <span>Tushumlar (to'lov turlari bo'yicha)</span>
                   </span>
                   <span className="font-mono font-bold text-emerald-800 text-sm">
-                    {formatMoney(actionStats.totalReceipts)} so'm
+                    {formatMoney(actionStats.totalReceipts)}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 text-[11px] pt-1 border-t border-neutral-100 font-mono">
@@ -2035,7 +2823,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     <span>Berilgan mahsulotlar summasi</span>
                   </span>
                   <span className="font-mono font-bold text-neutral-900 text-sm">
-                    {formatMoney(actionStats.totalDeliveredSum)} so'm
+                    {formatMoney(actionStats.totalDeliveredSum)}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 text-[11px] pt-1 border-t border-neutral-100 font-mono">

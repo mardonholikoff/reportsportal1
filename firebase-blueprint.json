@@ -81,6 +81,8 @@
         "totalSum": { "type": "number" },
         "totalPieces": { "type": "number" },
         "totalVolume": { "type": "number" },
+        "minSellingPricingUnitType": { "type": "string", "enum": ["piece", "package"] },
+        "minSellingPrice": { "type": "number" },
         "createdBy": { "type": "string", "maxLength": 100 },
         "createdAt": { "type": "string", "maxLength": 100 },
         "notes": { "type": "string", "maxLength": 1000 }

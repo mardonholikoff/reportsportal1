@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Client, WarehouseProduct } from '../types';
 import { formatMoney } from '../utils/format';
-import { X, Warehouse, DollarSign, AlertCircle, CheckCircle2, UserCheck, ShieldAlert } from 'lucide-react';
+import { UsdConverterPanel } from './UsdConverterPanel';
+import { X, Warehouse, CheckCircle2, UserCheck } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
@@ -23,30 +24,13 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
   onClose,
   clients,
   initialClient,
-  warehouseProducts,
   currentUsername,
   onSaveWarehouseDebt,
 }) => {
   const [selectedClientId, setSelectedClientId] = useState<string>('');
-  const [currency, setCurrency] = useState<string>('');
   const [amount, setAmount] = useState<number | ''>('');
   const [note, setNote] = useState<string>('');
   const [clientSearch, setClientSearch] = useState<string>('');
-
-  // Extract unique currencies from warehouse products
-  const warehouseCurrencies = useMemo(() => {
-    const set = new Set<string>();
-    warehouseProducts.forEach((p) => {
-      if (p.currency && p.currency.trim()) {
-        set.add(p.currency.trim());
-      }
-    });
-    if (set.size === 0) {
-      set.add('USD');
-      set.add("so'm");
-    }
-    return Array.from(set);
-  }, [warehouseProducts]);
 
   useEffect(() => {
     if (isOpen) {
@@ -55,17 +39,11 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
       } else if (clients.length > 0) {
         setSelectedClientId(clients[0].id);
       }
-      // Initialize currency to first warehouse currency
-      if (warehouseCurrencies.length > 0) {
-        setCurrency(warehouseCurrencies[0]);
-      } else {
-        setCurrency('USD');
-      }
       setAmount('');
       setNote('');
       setClientSearch('');
     }
-  }, [isOpen, initialClient, clients, warehouseCurrencies]);
+  }, [isOpen, initialClient, clients]);
 
   if (!isOpen) return null;
 
@@ -83,15 +61,14 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedClientId) return;
-    if (!currency || currency.trim().length === 0) return;
     if (numAmount <= 0) return;
 
-    onSaveWarehouseDebt(selectedClientId, numAmount, currency.trim(), note.trim());
+    onSaveWarehouseDebt(selectedClientId, numAmount, 'USD', note.trim());
     onClose();
   };
 
   const oldDebt = selectedClient?.currentDebt || 0;
-  const newDebt = oldDebt + numAmount;
+  const newDebt = Math.round((oldDebt + numAmount) * 100) / 100;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
@@ -104,10 +81,10 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-bold font-display leading-tight">
-                Ombordagi qarzdorlikni qo'shish
+                Ombordagi qarzdorlikni qo'shish (USD)
               </h2>
               <p className="text-[11px] text-rose-200/90 font-medium">
-                Ombordagi narxlar valyutasida mijoz hisobiga qarz kiritish ({currentUsername})
+                Mijoz hisobiga ombor qarzdorligini USD valyutasida kiritish ({currentUsername})
               </p>
             </div>
           </div>
@@ -135,12 +112,18 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
                     <span>{initialClient.name}</span>
                   </div>
                   <div className="text-xs text-neutral-600 mt-0.5 font-mono">
-                    {initialClient.phone} | {[initialClient.region, initialClient.district].filter(Boolean).join(', ') || initialClient.address}
+                    {initialClient.phone} |{' '}
+                    {[initialClient.region, initialClient.district].filter(Boolean).join(', ') ||
+                      initialClient.address}
                   </div>
                 </div>
                 <div className="text-right">
-                  <span className="text-[10px] uppercase font-bold text-neutral-500 block">Joriy qarz</span>
-                  <span className="text-xs font-bold font-mono text-rose-800">{formatMoney(initialClient.currentDebt)}</span>
+                  <span className="text-[10px] uppercase font-bold text-neutral-500 block">
+                    Joriy qarz
+                  </span>
+                  <span className="text-xs font-bold font-mono text-rose-800">
+                    {formatMoney(initialClient.currentDebt)}
+                  </span>
                 </div>
               </div>
             ) : (
@@ -169,87 +152,42 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
             )}
           </div>
 
-          {/* 1-QATOR: VALYUTA TURI (Ombordagi mahsulot narxlaridagi valyutalardan biri) */}
-          <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="block text-xs font-bold text-amber-950 uppercase tracking-wide flex items-center gap-1.5">
-                <DollarSign className="w-4 h-4 text-amber-700" />
-                <span>1-qator: Valyuta turi <span className="text-rose-600">*</span></span>
-              </label>
-              <span className="text-[11px] font-semibold text-amber-800 bg-amber-100/80 px-2 py-0.5 rounded-md">
-                Ombor narxlari bo'yicha
-              </span>
-            </div>
+          {/* Konvertatsiya (So'mdan USDga) */}
+          <UsdConverterPanel
+            label="So'mdagi (UZS) qarz summasini USDga konvertatsiya qilish"
+            onApplyUsd={(usdVal, convNote) => {
+              setAmount(usdVal);
+              setNote((prev) => (prev ? `${prev} | ${convNote}` : convNote));
+            }}
+          />
 
-            <p className="text-[11px] text-amber-800/90 leading-tight">
-              Birinchi navbatda ombordagi mahsulotlarga kiritilgan narxlardagi valyutalar qiymatidan birini tanlang:
-            </p>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
-              {warehouseCurrencies.map((curr) => {
-                const isSelected = currency === curr;
-                return (
-                  <button
-                    key={curr}
-                    type="button"
-                    onClick={() => setCurrency(curr)}
-                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-                      isSelected
-                        ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
-                        : 'bg-white text-neutral-800 border-neutral-200 hover:bg-amber-100/50'
-                    }`}
-                  >
-                    <span>{curr}</span>
-                    {isSelected && <CheckCircle2 className="w-3.5 h-3.5" />}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Select dropdown in case of custom or large currency set */}
-            <div className="pt-1">
-              <select
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-amber-300 text-neutral-900 text-xs font-bold bg-white focus:outline-amber-600"
-                required
-              >
-                {warehouseCurrencies.map((c) => (
-                  <option key={c} value={c}>
-                    Valyuta: {c}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* 2-QATOR: SUMMA */}
+          {/* Summa (USD) */}
           <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-2">
             <label className="block text-xs font-bold text-neutral-900 uppercase tracking-wide">
-              2-qator: Summa <span className="text-rose-600">*</span>
+              Qo'shiladigan qarz summasi (USD) <span className="text-rose-600">*</span>
             </label>
             <div className="relative">
               <input
                 type="number"
-                min="1"
+                min="0.01"
                 step="any"
                 value={amount}
                 onChange={(e) => {
                   const val = e.target.value;
                   setAmount(val === '' ? '' : Math.max(0, parseFloat(val)));
                 }}
-                placeholder="Qo'shiladigan qarz summasini kiriting..."
+                placeholder="Masalan: 250"
                 className="w-full px-3.5 py-3 rounded-xl border border-neutral-300 text-neutral-900 text-base sm:text-lg font-bold font-mono focus:outline-rose-600 bg-white tabular-nums pr-16"
                 required
               />
-              <span className="absolute right-3.5 top-1/2 -translate-y-1/2 font-bold text-xs text-neutral-500 bg-neutral-100 px-2 py-1 rounded-md uppercase font-mono">
-                {currency || 'VALYUTA'}
+              <span className="absolute right-3.5 top-1/2 -translate-y-1/2 font-bold text-xs text-rose-800 bg-rose-100 px-2 py-1 rounded-md uppercase font-mono">
+                USD
               </span>
             </div>
 
             {numAmount > 0 && (
               <div className="text-xs text-neutral-600 font-medium font-mono">
-                Kiritilgan summa: <strong className="text-neutral-900">{formatMoney(numAmount)} {currency}</strong>
+                Kiritilgan summa: <strong className="text-neutral-900">{formatMoney(numAmount)}</strong>
               </div>
             )}
           </div>
@@ -277,11 +215,11 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
               </div>
               <div className="flex items-center justify-between text-rose-700 font-bold">
                 <span>Ombordagi qarzdorlik qo'shilishi:</span>
-                <span className="font-mono">+{formatMoney(numAmount)} {currency}</span>
+                <span className="font-mono">+{formatMoney(numAmount)}</span>
               </div>
               <div className="pt-2 border-t border-rose-200/80 flex items-center justify-between font-bold text-neutral-900 text-sm">
                 <span>Yangi qarzdorlik miqdori:</span>
-                <span className="font-mono text-rose-900">{formatMoney(newDebt)} {currency}</span>
+                <span className="font-mono text-rose-900">{formatMoney(newDebt)}</span>
               </div>
             </div>
           )}
@@ -297,7 +235,7 @@ export const AddWarehouseDebtModal: React.FC<Props> = ({
             </button>
             <button
               type="submit"
-              disabled={numAmount <= 0 || !currency || !selectedClientId}
+              disabled={numAmount <= 0 || !selectedClientId}
               className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 active:bg-rose-900 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs sm:text-sm font-bold shadow-xs transition cursor-pointer min-h-[42px] flex items-center gap-1.5"
             >
               <CheckCircle2 className="w-4 h-4" />

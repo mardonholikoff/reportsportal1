@@ -266,6 +266,7 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                     <th className="py-3 px-3.5 text-center">Katta o'lcham (Qadoq)</th>
                     <th className="py-3 px-3.5 text-center">Dona soni</th>
                     <th className="py-3 px-3.5 text-center">Umumiy hajm</th>
+                    <th className="py-3 px-3.5 text-center">Eng kam sotilish narxi</th>
                     <th className="py-3 px-3.5 text-center">Kirim sanasi</th>
                     <th className="py-3 px-3.5 text-center">Holati</th>
                   </tr>
@@ -326,12 +327,18 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
 
                         {/* Katta o'lcham (Qadoq) */}
                         <td className="py-3 px-3.5 text-center">
-                          <span className="font-semibold text-neutral-800">
-                            {p.intakeQuantity} {p.packageUnitName || 'korobka'}
-                          </span>
-                          <div className="text-[10px] text-neutral-400">
-                            (1 {p.packageUnitName} = {p.piecesPerPackage} dona)
-                          </div>
+                          {p.packageUnitName ? (
+                            <>
+                              <span className="font-semibold text-neutral-800">
+                                {Math.floor(p.totalPieces / (p.piecesPerPackage || 1))} {p.packageUnitName}
+                              </span>
+                              <div className="text-[10px] text-neutral-400">
+                                (1 {p.packageUnitName} = {p.piecesPerPackage} dona)
+                              </div>
+                            </>
+                          ) : (
+                            <span className="text-[11px] text-neutral-400">—</span>
+                          )}
                         </td>
 
                         {/* Dona soni */}
@@ -349,6 +356,16 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                           <span className="font-semibold text-neutral-700 font-mono">
                             {p.totalVolume.toLocaleString()} {p.baseUnit}
                           </span>
+                        </td>
+
+                        {/* Eng kam sotilish narxi (5-blok) */}
+                        <td className="py-3 px-3.5 text-center">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-indigo-50 border border-indigo-200 font-bold font-mono text-indigo-900 text-xs">
+                            {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
+                          </span>
+                          <div className="text-[10px] text-neutral-500 mt-0.5">
+                            1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
+                          </div>
                         </td>
 
                         {/* Kirim sanasi */}
@@ -459,8 +476,8 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                       </div>
                     )}
 
-                    {/* Compact stats grid: Dona, Qadoq, Hajm */}
-                    <div className="grid grid-cols-3 gap-2 p-2 rounded-xl bg-neutral-50 border border-neutral-200/80 text-center">
+                    {/* Compact stats grid: Dona, Qadoq, Hajm, Eng kam sotilish narxi */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2 rounded-xl bg-neutral-50 border border-neutral-200/80 text-center">
                       <div>
                         <span className="text-[10px] text-neutral-500 block">Dona soni</span>
                         <span className="font-mono font-bold text-neutral-900 text-xs sm:text-sm tabular-nums">
@@ -473,12 +490,18 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
 
                       <div>
                         <span className="text-[10px] text-neutral-500 block">Qadoqda</span>
-                        <span className="font-semibold text-neutral-800 text-xs">
-                          {p.intakeQuantity} {p.packageUnitName || 'quti'}
-                        </span>
-                        <span className="text-[9px] text-neutral-400 block">
-                          (1={p.piecesPerPackage})
-                        </span>
+                        {p.packageUnitName ? (
+                          <>
+                            <span className="font-semibold text-neutral-800 text-xs">
+                              {Math.floor(p.totalPieces / (p.piecesPerPackage || 1))} {p.packageUnitName}
+                            </span>
+                            <span className="text-[9px] text-neutral-400 block">
+                              (1={p.piecesPerPackage})
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[11px] text-neutral-400">—</span>
+                        )}
                       </div>
 
                       <div>
@@ -488,6 +511,18 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                         </span>
                         <span className="text-[10px] text-neutral-500 ml-0.5">
                           {p.baseUnit}
+                        </span>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] text-indigo-700 font-semibold block">
+                          Eng kam sotilish narxi
+                        </span>
+                        <span className="font-mono font-bold text-indigo-900 text-xs">
+                          {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
+                        </span>
+                        <span className="text-[9px] text-neutral-500 block">
+                          1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
                         </span>
                       </div>
                     </div>

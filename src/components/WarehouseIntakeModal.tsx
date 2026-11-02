@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   PackagePlus,
@@ -13,24 +13,40 @@ import {
   Calendar,
   AlertCircle,
   HelpCircle,
+  Edit3,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
+import {
+  ExcelWarehouseImporter,
+  ImportedWarehouseProductPayload,
+} from './ExcelWarehouseImporter';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   onSave: (product: Omit<WarehouseProduct, 'id' | 'createdAt'>) => void;
+  onBulkImport?: (products: ImportedWarehouseProductPayload[]) => void;
+  onUpdate?: (id: string, product: Omit<WarehouseProduct, 'id' | 'createdAt'>) => void;
+  editingProduct?: WarehouseProduct | null;
   currentUsername: string;
+  initialMode?: 'single' | 'excel';
 }
 
 export const WarehouseIntakeModal: React.FC<Props> = ({
   isOpen,
   onClose,
   onSave,
+  onBulkImport,
+  onUpdate,
+  editingProduct,
   currentUsername,
+  initialMode = 'single',
 }) => {
   // Helper for today's date in YYYY-MM-DD
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const [entryMode, setEntryMode] = useState<'single' | 'excel'>(initialMode);
 
   // 1-BLOK: Mahsulot
   const [brand, setBrand] = useState('');
@@ -44,26 +60,105 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
   const [baseUnit, setBaseUnit] = useState('litr'); // litr, kg, metr, metr kvadrat, dona, gramm
   const [pieceUnitName, setPieceUnitName] = useState('1 idish'); // 1 idish, 1 dona, 1 shisha...
   const [volumePerPiece, setVolumePerPiece] = useState<string>('5'); // e.g. 5
-  // 2.2:
+  // 2.2 (Ixtiyoriy — tashlab ketish / bo'sh qoldirish mumkin):
   const [packageUnitName, setPackageUnitName] = useState('korobka'); // korobka, qop, blok, yashik...
   const [piecesPerPackage, setPiecesPerPackage] = useState<string>('4'); // e.g. 4
+  const [skipSubBlock22, setSkipSubBlock22] = useState<boolean>(false);
 
-  // 3-BLOK: Narx
+  // 3-BLOK: Narx (ixtiyoriy / o'tkazib yuborish mumkin)
   const [pricingUnitType, setPricingUnitType] = useState<'piece' | 'package'>('piece');
-  const [currency, setCurrency] = useState<string>("so'm");
-  const [price, setPrice] = useState<string>('380000');
+  const currency = 'USD';
+  const [price, setPrice] = useState<string>('30');
+  const [skipPricing, setSkipPricing] = useState<boolean>(false);
 
   // 4-BLOK: Omborga kirim
   const [intakeDate, setIntakeDate] = useState<string>(todayStr);
   const [intakeUnitType, setIntakeUnitType] = useState<'package' | 'piece'>('package');
   const [intakeQuantity, setIntakeQuantity] = useState<string>('10');
+  const [customRemainingPieces, setCustomRemainingPieces] = useState<string>('');
+  const [isRemainingManuallyEdited, setIsRemainingManuallyEdited] = useState<boolean>(false);
   const [notes, setNotes] = useState<string>('');
+
+  // 5-BLOK: Eng kam sotilish narxi (Agentlar mijozga sotayotganda ko'rinadigan narx)
+  const [minSellingPricingUnitType, setMinSellingPricingUnitType] = useState<'piece' | 'package'>('piece');
+  const [minSellingPrice, setMinSellingPrice] = useState<string>('35');
 
   const [formError, setFormError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    setFormError(null);
+    if (editingProduct) {
+      setBrand(editingProduct.brand || '');
+      setName(editingProduct.name || '');
+      setMark1(editingProduct.mark1 || '');
+      setMark2(editingProduct.mark2 || '');
+      setExtraMarks(editingProduct.extraMarks ? [...editingProduct.extraMarks] : []);
+
+      setBaseUnit(editingProduct.baseUnit || 'litr');
+      setPieceUnitName(editingProduct.pieceUnitName || '1 idish');
+      setVolumePerPiece(String(editingProduct.volumePerPiece || 1));
+
+      const hasPkg = Boolean(editingProduct.packageUnitName && editingProduct.packageUnitName.trim());
+      setSkipSubBlock22(!hasPkg);
+      setPackageUnitName(hasPkg ? editingProduct.packageUnitName : '');
+      setPiecesPerPackage(hasPkg ? String(editingProduct.piecesPerPackage || 1) : '');
+
+      const hasPr = (editingProduct.price || 0) > 0;
+      setSkipPricing(!hasPr);
+      setPricingUnitType(editingProduct.pricingUnitType || 'piece');
+      setPrice(hasPr ? String(editingProduct.price) : '');
+
+      setIntakeDate(editingProduct.intakeDate || todayStr);
+      setIntakeUnitType(hasPkg ? editingProduct.intakeUnitType || 'package' : 'piece');
+      setIntakeQuantity(String(editingProduct.intakeQuantity || 1));
+      setCustomRemainingPieces(String(editingProduct.totalPieces ?? 0));
+      setIsRemainingManuallyEdited(true);
+      setNotes(editingProduct.notes || '');
+
+      setMinSellingPricingUnitType(
+        editingProduct.minSellingPricingUnitType || editingProduct.pricingUnitType || 'piece'
+      );
+      setMinSellingPrice(
+        String(
+          editingProduct.minSellingPrice !== undefined && editingProduct.minSellingPrice > 0
+            ? editingProduct.minSellingPrice
+            : editingProduct.price && editingProduct.price > 0
+            ? editingProduct.price
+            : 35
+        )
+      );
+    } else {
+      setBrand('');
+      setName('');
+      setMark1('');
+      setMark2('');
+      setExtraMarks([]);
+      setBaseUnit('litr');
+      setPieceUnitName('1 idish');
+      setVolumePerPiece('5');
+      setPackageUnitName('korobka');
+      setPiecesPerPackage('4');
+      setSkipSubBlock22(false);
+      setPricingUnitType('piece');
+      setPrice('30');
+      setSkipPricing(false);
+      setIntakeDate(todayStr);
+      setIntakeUnitType('package');
+      setIntakeQuantity('10');
+      setCustomRemainingPieces('');
+      setIsRemainingManuallyEdited(false);
+      setNotes('');
+      setMinSellingPricingUnitType('piece');
+      setMinSellingPrice('35');
+      setEntryMode(initialMode);
+    }
+  }, [isOpen, editingProduct, todayStr, initialMode]);
+
   // =========================================================
   // Progressive Unlocking Chain:
-  // 1-blok to'lmaguncha 2-blok, 2-blok to'lmaguncha 3-blok, 3-blok to'lmaguncha 4-blok yonmaydi
+  // 1-blok to'lmaguncha 2-blok, 2-blok (2.1) to'lmaguncha 3-blok va 4-blok yonmaydi.
+  // 2.2-kichik blok (Katta o'lcham) va 3-blok (Narx) ni o'tkazib yuborish / bo'sh qoldirish mumkin.
   // =========================================================
 
   // 1-blok: Brand va Name to'ldirilsa bo'ldi (mark1 endi majburiy emas)
@@ -86,42 +181,88 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
     );
   }, [isBlock2Unlocked, baseUnit, pieceUnitName, volumePerPiece]);
 
-  // 2.2: faqat 2.1 to'lsa ochiladi
-  const isBlock22Valid = useMemo(() => {
-    if (!isBlock21Valid) return false;
+  // 2.2-kichik blok to'ldirilganmi yoki bo'sh tashlab ketilganmi?
+  const hasPackageUnit = useMemo(() => {
+    if (!isBlock21Valid || skipSubBlock22) return false;
     const count = parseInt(piecesPerPackage, 10);
     return packageUnitName.trim().length > 0 && !isNaN(count) && count > 0;
-  }, [isBlock21Valid, packageUnitName, piecesPerPackage]);
+  }, [isBlock21Valid, skipSubBlock22, packageUnitName, piecesPerPackage]);
 
-  // Butun 2-blok to'liq to'ldirilganligi
+  const isBlock22SkippedOrEmpty = useMemo(() => {
+    if (skipSubBlock22) return true;
+    return packageUnitName.trim() === '' && piecesPerPackage.trim() === '';
+  }, [skipSubBlock22, packageUnitName, piecesPerPackage]);
+
+  // 2.2 validligi: to'liq to'ldirilgan YOKI o'tkazib yuborilgan / bo'sh qoldirilgan
+  const isBlock22Valid = useMemo(() => {
+    if (!isBlock21Valid) return false;
+    return hasPackageUnit || isBlock22SkippedOrEmpty;
+  }, [isBlock21Valid, hasPackageUnit, isBlock22SkippedOrEmpty]);
+
+  // Butun 2-blok: 2.1 to'ldirilgan bo'lsa va 2.2 to'ldirilgan yoki bo'sh qoldirilgan bo'lsa
   const isBlock2Valid = isBlock2Unlocked && isBlock21Valid && isBlock22Valid;
 
   // 3-blok faqat 2-blok to'lsa ochiladi
   const isBlock3Unlocked = isBlock2Valid;
 
-  // 3-blok validligi: narx musbat va valyuta kiritilgan
-  const isBlock3Valid = useMemo(() => {
-    if (!isBlock3Unlocked) return false;
+  // 3-blokda narx kiritilganligi
+  const hasEnteredPrice = useMemo(() => {
+    if (!isBlock3Unlocked || skipPricing) return false;
     const pr = parseFloat(price);
     return !isNaN(pr) && pr > 0 && currency.trim().length > 0;
-  }, [isBlock3Unlocked, price, currency]);
+  }, [isBlock3Unlocked, skipPricing, price, currency]);
 
-  // 4-blok faqat 3-blok to'lsa ochiladi
-  const isBlock4Unlocked = isBlock3Valid;
+  // 3-blok validligi: narx musbat kiritilgan YOKI o'tkazib yuborilgan (yoki bo'sh/0 qoldirilgan)
+  const isBlock3Valid = useMemo(() => {
+    if (!isBlock3Unlocked) return false;
+    if (skipPricing) return true;
+    if (price.trim() === '') return true;
+    const pr = parseFloat(price);
+    return !isNaN(pr) && pr >= 0;
+  }, [isBlock3Unlocked, skipPricing, price]);
 
-  // Real-time Calculations for Block 4
+  // 4-blok 2-blok to'liq bo'lganda va 3-blok to'ldirilgan yoki o'tkazib yuborilganda ochiladi
+  const isBlock4Unlocked = isBlock2Valid && isBlock3Valid;
+
+  // Agar 2.2-kichik blok tashlab ketilgan bo'lsa, narx va kirim birligi avtomatik 'piece' (dona/idish) bo'ladi
+  const effectivePricingUnitType: 'piece' | 'package' = hasPackageUnit ? pricingUnitType : 'piece';
+  const effectiveIntakeUnitType: 'package' | 'piece' = hasPackageUnit ? intakeUnitType : 'piece';
+  const effectiveMinSellingUnitType: 'piece' | 'package' = hasPackageUnit
+    ? minSellingPricingUnitType
+    : 'piece';
+
+  // Real-time Calculations for Block 4 & Block 5
   const parsedIntakeQty = parseFloat(intakeQuantity) || 0;
-  const parsedPrice = parseFloat(price) || 0;
-  const parsedPiecesPerPkg = parseInt(piecesPerPackage, 10) || 1;
+  const parsedPrice = skipPricing ? 0 : Math.max(0, parseFloat(price) || 0);
+  const parsedPiecesPerPkg = hasPackageUnit ? Math.max(1, parseInt(piecesPerPackage, 10) || 1) : 1;
   const parsedVolumePerPiece = parseFloat(volumePerPiece) || 0;
+  const parsedMinSellingPrice = Math.max(0, parseFloat(minSellingPrice) || 0);
+
+  // 5-blok 4-blok ochilganda va kirim soni kiritilganda ochiladi
+  const isBlock5Unlocked = isBlock4Unlocked && parsedIntakeQty > 0;
+  const isBlock5Valid = useMemo(() => {
+    if (!isBlock5Unlocked) return false;
+    const val = parseFloat(minSellingPrice);
+    return minSellingPrice.trim() !== '' && !isNaN(val) && val > 0;
+  }, [isBlock5Unlocked, minSellingPrice]);
 
   // Total Pieces and Total Volume
-  const calculatedTotalPieces = useMemo(() => {
-    if (intakeUnitType === 'package') {
+  const calculatedIntakePieces = useMemo(() => {
+    if (effectiveIntakeUnitType === 'package') {
       return parsedIntakeQty * parsedPiecesPerPkg;
     }
     return parsedIntakeQty;
-  }, [intakeUnitType, parsedIntakeQty, parsedPiecesPerPkg]);
+  }, [effectiveIntakeUnitType, parsedIntakeQty, parsedPiecesPerPkg]);
+
+  const calculatedTotalPieces = useMemo(() => {
+    if (editingProduct && isRemainingManuallyEdited && customRemainingPieces.trim() !== '') {
+      const parsedCustom = parseFloat(customRemainingPieces);
+      if (!isNaN(parsedCustom) && parsedCustom >= 0) {
+        return parsedCustom;
+      }
+    }
+    return calculatedIntakePieces;
+  }, [editingProduct, isRemainingManuallyEdited, customRemainingPieces, calculatedIntakePieces]);
 
   const calculatedTotalVolume = useMemo(() => {
     return calculatedTotalPieces * parsedVolumePerPiece;
@@ -129,20 +270,28 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
 
   // Total Sum
   const calculatedTotalSum = useMemo(() => {
-    if (pricingUnitType === 'package') {
-      if (intakeUnitType === 'package') {
+    if (skipPricing || parsedPrice <= 0) return 0;
+    if (effectivePricingUnitType === 'package') {
+      if (effectiveIntakeUnitType === 'package') {
         return parsedIntakeQty * parsedPrice;
       } else {
         return (parsedIntakeQty * parsedPrice) / parsedPiecesPerPkg;
       }
     } else {
-      if (intakeUnitType === 'package') {
+      if (effectiveIntakeUnitType === 'package') {
         return parsedIntakeQty * parsedPiecesPerPkg * parsedPrice;
       } else {
         return parsedIntakeQty * parsedPrice;
       }
     }
-  }, [pricingUnitType, intakeUnitType, parsedIntakeQty, parsedPrice, parsedPiecesPerPkg]);
+  }, [
+    skipPricing,
+    effectivePricingUnitType,
+    effectiveIntakeUnitType,
+    parsedIntakeQty,
+    parsedPrice,
+    parsedPiecesPerPkg,
+  ]);
 
   // Handlers for dynamic extra marks
   const handleAddExtraMark = () => {
@@ -178,15 +327,21 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
       return;
     }
     if (!isBlock22Valid) {
-      setFormError("2-blokda katta o'lcham (korobka/qop) va undagi dona sonini to'ldiring!");
+      setFormError(
+        "2.2-kichik blokda katta o'lcham va dona sonini to'liq kiriting yoki 2.2-kichik blokni bo'sh qoldiring (o'tkazib yuboring)!"
+      );
       return;
     }
-    if (!isBlock3Valid) {
-      setFormError('3-blokda narx summasi va valyutani kiriting!');
+    if (!skipPricing && price.trim() !== '' && (isNaN(parseFloat(price)) || parseFloat(price) < 0)) {
+      setFormError("3-blokda narx summasini to'g'ri kiriting yoki 3-blokni o'tkazib yuboring!");
       return;
     }
     if (parsedIntakeQty <= 0) {
       setFormError('4-blokda qabul qilinayotgan mahsulot sonini musbat kiriting!');
+      return;
+    }
+    if (!isBlock5Valid) {
+      setFormError('5-blokda eng kam sotilish narxini (USD) musbat kiriting!');
       return;
     }
 
@@ -199,22 +354,28 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
       baseUnit: baseUnit.trim(),
       pieceUnitName: pieceUnitName.trim(),
       volumePerPiece: parsedVolumePerPiece,
-      packageUnitName: packageUnitName.trim(),
-      piecesPerPackage: parsedPiecesPerPkg,
-      pricingUnitType,
-      currency: currency.trim() || "so'm",
+      packageUnitName: hasPackageUnit ? packageUnitName.trim() : '',
+      piecesPerPackage: hasPackageUnit ? parsedPiecesPerPkg : 1,
+      pricingUnitType: effectivePricingUnitType,
+      currency: 'USD',
       price: parsedPrice,
       intakeDate: intakeDate || todayStr,
-      intakeUnitType,
+      intakeUnitType: effectiveIntakeUnitType,
       intakeQuantity: parsedIntakeQty,
-      totalSum: Math.round(calculatedTotalSum),
+      totalSum: Math.round(calculatedTotalSum * 100) / 100,
       totalPieces: calculatedTotalPieces,
       totalVolume: calculatedTotalVolume,
-      createdBy: currentUsername || 'adminc',
+      minSellingPricingUnitType: effectiveMinSellingUnitType,
+      minSellingPrice: parsedMinSellingPrice,
+      createdBy: editingProduct?.createdBy || currentUsername || 'adminc',
       notes: notes.trim() || undefined,
     };
 
-    onSave(payload);
+    if (editingProduct && onUpdate) {
+      onUpdate(editingProduct.id, payload);
+    } else {
+      onSave(payload);
+    }
     onClose();
   };
 
@@ -230,11 +391,17 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
         <div className="px-6 py-4 bg-gradient-to-r from-rose-800 to-rose-700 text-white flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-white/15 flex items-center justify-center text-white border border-white/20 shadow-xs">
-              <PackagePlus className="w-5 h-5 stroke-[2.2]" />
+              {editingProduct ? (
+                <Edit3 className="w-5 h-5 stroke-[2.2]" />
+              ) : (
+                <PackagePlus className="w-5 h-5 stroke-[2.2]" />
+              )}
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-bold font-display tracking-tight text-white">
-                Omborga mahsulotlar kiritish
+                {editingProduct
+                  ? `Ombor mahsulotini tahrirlash: ${editingProduct.brand} — ${editingProduct.name}`
+                  : 'Omborga mahsulotlar kiritish'}
               </h2>
             </div>
           </div>
@@ -249,14 +416,58 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Modal Body with 4 strictly conditioned blocks */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6">
-          {formError && (
-            <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-xs font-semibold flex items-center gap-2.5 animate-in fade-in">
-              <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
-              <span>{formError}</span>
+        {/* Mode Switcher: Single 5-Block Intake vs Excel (.xlsx) Upload */}
+        {!editingProduct && onBulkImport && (
+          <div className="px-5 sm:px-6 pt-4 pb-1 bg-rose-50/40 border-b border-rose-100 shrink-0">
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-neutral-100 border border-neutral-200">
+              <button
+                type="button"
+                onClick={() => setEntryMode('single')}
+                className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition cursor-pointer ${
+                  entryMode === 'single'
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'text-neutral-700 hover:bg-white/70'
+                }`}
+              >
+                <PackagePlus className="w-4 h-4 shrink-0" />
+                <span>Bittalab kiritish (5 blok)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEntryMode('excel')}
+                className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition cursor-pointer ${
+                  entryMode === 'excel'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-neutral-700 hover:bg-white/70'
+                }`}
+              >
+                <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                <span>Excel (.xlsx) fayldan yuklash</span>
+              </button>
             </div>
-          )}
+          </div>
+        )}
+
+        {!editingProduct && entryMode === 'excel' && onBulkImport ? (
+          <div className="flex-1 overflow-y-auto p-5 sm:p-6">
+            <ExcelWarehouseImporter
+              currentUsername={currentUsername}
+              onImportProducts={(importedProducts) => {
+                onBulkImport(importedProducts);
+                onClose();
+              }}
+              onCancel={onClose}
+            />
+          </div>
+        ) : (
+          /* Modal Body with 5 strictly conditioned blocks */
+          <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6">
+            {formError && (
+              <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-xs font-semibold flex items-center gap-2.5 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
 
           {/* ========================================================= */}
           {/* 1-BLOK: MAHSULOT */}
@@ -522,117 +733,199 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
               )}
             </div>
 
-            {/* 2.2-Kichik blok: Ochilish sharti: 2.1 to'lgandan keyin ochiladi */}
+            {/* 2.2-Kichik blok: Ochilish sharti: 2.1 to'lgandan keyin ochiladi (Ixtiyoriy — bo'sh qoldirish mumkin) */}
             <div
               className={`rounded-xl p-3.5 border transition ${
                 isBlock21Valid
-                  ? 'bg-white border-neutral-200/80 shadow-xs'
+                  ? skipSubBlock22 || isBlock22SkippedOrEmpty
+                    ? 'bg-amber-50/30 border-amber-200/80 shadow-xs'
+                    : 'bg-white border-neutral-200/80 shadow-xs'
                   : 'bg-neutral-100/70 border-neutral-200 text-neutral-400 opacity-60 pointer-events-none'
               }`}
             >
-              <div className="flex items-center justify-between mb-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
                 <span className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
                   {!isBlock21Valid && <Lock className="w-3.5 h-3.5 text-neutral-400" />}
                   <span>2.2-kichik blok: Katta o'lcham (korobka / qop / blok)</span>
+                  <span className="text-[10px] font-medium text-neutral-500">
+                    (ixtiyoriy — bo'sh qoldirish mumkin)
+                  </span>
                 </span>
-                {!isBlock21Valid && (
-                  <span className="text-[10px] text-neutral-500 font-medium">
-                    2.1 to'ldirilgach ochiladi
-                  </span>
-                )}
+
+                <div className="flex items-center gap-2">
+                  {isBlock21Valid && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!skipSubBlock22 && !isBlock22SkippedOrEmpty) {
+                          setSkipSubBlock22(true);
+                          setPackageUnitName('');
+                          setPiecesPerPackage('');
+                          setPricingUnitType('piece');
+                          setIntakeUnitType('piece');
+                        } else {
+                          setSkipSubBlock22(false);
+                          if (!packageUnitName) setPackageUnitName('korobka');
+                          if (!piecesPerPackage) setPiecesPerPackage('4');
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                        skipSubBlock22 || isBlock22SkippedOrEmpty
+                          ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
+                          : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                      }`}
+                    >
+                      {skipSubBlock22 || isBlock22SkippedOrEmpty
+                        ? "✓ 2.2-kichik blok tashlab ketildi (Katta o'lcham kiritish)"
+                        : "2.2-kichik blokni tashlab ketish (bo'sh qoldirish)"}
+                    </button>
+                  )}
+
+                  {!isBlock21Valid && (
+                    <span className="text-[10px] text-neutral-500 font-medium">
+                      2.1 to'ldirilgach ochiladi
+                    </span>
+                  )}
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* 1-qator: O'lcham (korobka, qop va hk) */}
-                <div>
-                  <label className="block text-[11px] font-bold text-neutral-700 mb-1">
-                    1-qator: O'lcham nomi <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    disabled={!isBlock21Valid}
-                    value={packageUnitName}
-                    onChange={(e) => setPackageUnitName(e.target.value)}
-                    placeholder="Masalan: korobka, qop, blok, yashik"
-                    className="w-full px-3 py-2 rounded-xl border border-neutral-300 text-neutral-900 text-xs focus:outline-rose-600 bg-white disabled:bg-neutral-100"
-                  />
-                  <div className="flex gap-1 mt-1 text-[10px] text-neutral-500">
-                    <span
-                      onClick={() => setPackageUnitName('korobka')}
-                      className="cursor-pointer underline hover:text-rose-700"
-                    >
-                      korobka
-                    </span>
-                    <span>•</span>
-                    <span
-                      onClick={() => setPackageUnitName('qop')}
-                      className="cursor-pointer underline hover:text-rose-700"
-                    >
-                      qop
-                    </span>
-                    <span>•</span>
-                    <span
-                      onClick={() => setPackageUnitName('blok')}
-                      className="cursor-pointer underline hover:text-rose-700"
-                    >
-                      blok
-                    </span>
-                    <span>•</span>
-                    <span
-                      onClick={() => setPackageUnitName('yashik')}
-                      className="cursor-pointer underline hover:text-rose-700"
-                    >
-                      yashik
-                    </span>
+              {skipSubBlock22 ? (
+                <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-950">
+                  <div>
+                    <span className="font-bold">2.2-kichik blok bo'sh qoldirildi (tashlab ketildi).</span>{' '}
+                    Mahsulot faqat birlamchi birlikda (<strong>{pieceUnitName || 'dona'}</strong>) hisoblanadi.
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSkipSubBlock22(false);
+                      setPackageUnitName('korobka');
+                      setPiecesPerPackage('4');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[11px] shrink-0 cursor-pointer"
+                  >
+                    Katta o'lcham kiritish
+                  </button>
                 </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* 1-qator: O'lcham (korobka, qop va hk) */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-neutral-700 mb-1">
+                        1-qator: O'lcham nomi{' '}
+                        <span className="text-neutral-400 font-normal">(bo'sh qoldirish mumkin)</span>
+                      </label>
+                      <input
+                        type="text"
+                        disabled={!isBlock21Valid}
+                        value={packageUnitName}
+                        onChange={(e) => setPackageUnitName(e.target.value)}
+                        placeholder="Masalan: korobka, qop, blok (bo'sh qoldirish mumkin)"
+                        className="w-full px-3 py-2 rounded-xl border border-neutral-300 text-neutral-900 text-xs focus:outline-rose-600 bg-white disabled:bg-neutral-100"
+                      />
+                      <div className="flex flex-wrap gap-1 mt-1 text-[10px] text-neutral-500">
+                        <span
+                          onClick={() => setPackageUnitName('korobka')}
+                          className="cursor-pointer underline hover:text-rose-700"
+                        >
+                          korobka
+                        </span>
+                        <span>•</span>
+                        <span
+                          onClick={() => setPackageUnitName('qop')}
+                          className="cursor-pointer underline hover:text-rose-700"
+                        >
+                          qop
+                        </span>
+                        <span>•</span>
+                        <span
+                          onClick={() => setPackageUnitName('blok')}
+                          className="cursor-pointer underline hover:text-rose-700"
+                        >
+                          blok
+                        </span>
+                        <span>•</span>
+                        <span
+                          onClick={() => setPackageUnitName('yashik')}
+                          className="cursor-pointer underline hover:text-rose-700"
+                        >
+                          yashik
+                        </span>
+                        <span>•</span>
+                        <span
+                          onClick={() => {
+                            setPackageUnitName('');
+                            setPiecesPerPackage('');
+                            setPricingUnitType('piece');
+                            setIntakeUnitType('piece');
+                          }}
+                          className="cursor-pointer underline text-amber-700 hover:text-amber-900 font-semibold"
+                        >
+                          bo'sh qoldirish
+                        </span>
+                      </div>
+                    </div>
 
-                {/* 2-qator: Dona soni */}
-                <div>
-                  <label className="block text-[11px] font-bold text-neutral-700 mb-1">
-                    2-qator: Dona soni <span className="text-rose-600">*</span>
-                  </label>
-                  <input
-                    type="number"
-                    disabled={!isBlock21Valid}
-                    min="1"
-                    step="1"
-                    value={piecesPerPackage}
-                    onChange={(e) => setPiecesPerPackage(e.target.value)}
-                    placeholder="Masalan: 4 yoki 5 dona"
-                    className="w-full px-3 py-2 rounded-xl border border-neutral-300 text-neutral-900 text-xs focus:outline-rose-600 bg-white disabled:bg-neutral-100"
-                  />
-                </div>
-              </div>
+                    {/* 2-qator: Dona soni */}
+                    <div>
+                      <label className="block text-[11px] font-bold text-neutral-700 mb-1">
+                        2-qator: Dona soni{' '}
+                        <span className="text-neutral-400 font-normal">(bo'sh qoldirish mumkin)</span>
+                      </label>
+                      <input
+                        type="number"
+                        disabled={!isBlock21Valid}
+                        min="1"
+                        step="1"
+                        value={piecesPerPackage}
+                        onChange={(e) => setPiecesPerPackage(e.target.value)}
+                        placeholder="Masalan: 4 yoki 5 dona (bo'sh qoldirish mumkin)"
+                        className="w-full px-3 py-2 rounded-xl border border-neutral-300 text-neutral-900 text-xs focus:outline-rose-600 bg-white disabled:bg-neutral-100"
+                      />
+                    </div>
+                  </div>
 
-              {/* 2.2 Nisbat ko'rsatkichi (Xulosa va tayyor chiqariladi so'zlarisiz) */}
-              {isBlock22Valid && (
-                <div className="mt-2.5 p-2 bg-emerald-50 rounded-lg border border-emerald-200 text-xs text-emerald-900 font-medium flex items-center gap-2">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>
-                    <strong>
-                      1 {packageUnitName || 'korobka'} = {piecesPerPackage} dona (jami{' '}
-                      {(parseFloat(volumePerPiece) || 0) * (parseInt(piecesPerPackage, 10) || 0)}{' '}
-                      {baseUnit})
-                    </strong>
-                  </span>
-                </div>
+                  {/* 2.2 Nisbat ko'rsatkichi */}
+                  {hasPackageUnit ? (
+                    <div className="mt-2.5 p-2 bg-emerald-50 rounded-lg border border-emerald-200 text-xs text-emerald-900 font-medium flex items-center gap-2">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>
+                        <strong>
+                          1 {packageUnitName || 'korobka'} = {piecesPerPackage} dona (jami{' '}
+                          {(parseFloat(volumePerPiece) || 0) * (parseInt(piecesPerPackage, 10) || 0)}{' '}
+                          {baseUnit})
+                        </strong>
+                      </span>
+                    </div>
+                  ) : isBlock22SkippedOrEmpty ? (
+                    <div className="mt-2.5 p-2 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-900 font-medium flex items-center gap-2">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>
+                        2.2-kichik blok bo'sh qoldirildi — mahsulot faqat{' '}
+                        <strong>{pieceUnitName || 'dona'}</strong> bo'yicha kiritiladi.
+                      </span>
+                    </div>
+                  ) : null}
+                </>
               )}
             </div>
           </div>
 
           {/* ========================================================= */}
-          {/* 3-BLOK: NARX */}
+          {/* 3-BLOK: NARX (Ixtiyoriy - o'tkazib yuborish mumkin) */}
           {/* Shart: 2-blok to'ldirilmaguncha yonmaydi */}
           {/* ========================================================= */}
           <div
             className={`rounded-2xl border transition p-4 sm:p-5 ${
               isBlock3Unlocked
-                ? 'border-neutral-200 bg-white shadow-xs'
+                ? skipPricing
+                  ? 'border-amber-200 bg-amber-50/20 shadow-xs'
+                  : 'border-neutral-200 bg-white shadow-xs'
                 : 'border-neutral-200 bg-neutral-100/70 opacity-60 pointer-events-none'
             }`}
           >
-            <div className="flex items-center justify-between gap-2 pb-2.5 mb-3.5 border-b border-neutral-200">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 mb-3.5 border-b border-neutral-200">
               <div className="flex items-center gap-2.5">
                 <span
                   className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center shadow-xs ${
@@ -644,140 +937,157 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                 <h3 className="text-sm sm:text-base font-bold text-neutral-900 flex items-center gap-2">
                   <DollarSign className="w-4 h-4 text-amber-600" />
                   <span>3-BLOK: Narx</span>
+                  <span className="text-[11px] font-medium text-neutral-500">(ixtiyoriy)</span>
                   {!isBlock3Unlocked && <Lock className="w-3.5 h-3.5 text-neutral-400" />}
                 </h3>
               </div>
-              {isBlock3Valid ? (
-                <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  To'ldirildi
-                </span>
-              ) : (
-                <span className="text-[10px] text-neutral-500 font-medium">
-                  2-blok to'ldirilmaguncha yonmaydi
-                </span>
-              )}
-            </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-              {/* 1-qator: 2-blok ichidagi birlik tanlanadi (dona yoki korobka) */}
-              <div>
-                <label className="block text-xs font-bold text-neutral-800 mb-1">
-                  1-qator: Narx birligi <span className="text-rose-600">*</span>
-                </label>
-                <select
-                  disabled={!isBlock3Unlocked}
-                  value={pricingUnitType}
-                  onChange={(e) => setPricingUnitType(e.target.value as 'piece' | 'package')}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-rose-600 bg-white"
-                >
-                  <option value="piece">
-                    1 {pieceUnitName || 'dona'} uchun narx
-                  </option>
-                  <option value="package">
-                    1 {packageUnitName || 'korobka'} uchun narx
-                  </option>
-                </select>
-              </div>
+              <div className="flex items-center gap-2">
+                {isBlock3Unlocked && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!skipPricing) {
+                        setSkipPricing(true);
+                        setPrice('');
+                      } else {
+                        setSkipPricing(false);
+                        if (!price) setPrice('30');
+                      }
+                    }}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                      skipPricing
+                        ? 'bg-amber-600 text-white border-amber-700 shadow-2xs'
+                        : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                    }`}
+                  >
+                    {skipPricing
+                      ? "✓ Narx qo'yish o'tkazib yuborildi (Narx kiritishga qaytish)"
+                      : "Narx qo'yishni o'tkazib yuborish"}
+                  </button>
+                )}
 
-              {/* 2-qator: Valyutani qo'lda kiritish va tez tanlash imkoniyati */}
-              <div>
-                <label className="block text-xs font-bold text-neutral-800 mb-1">
-                  2-qator: Valyuta <span className="text-rose-600">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    disabled={!isBlock3Unlocked}
-                    list="currency_suggestions_list"
-                    value={currency}
-                    onChange={(e) => setCurrency(e.target.value)}
-                    placeholder="so'm, USD, EUR..."
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-rose-600 bg-white font-medium"
-                  />
-                  <datalist id="currency_suggestions_list">
-                    <option value="so'm" />
-                    <option value="USD" />
-                    <option value="EUR" />
-                    <option value="RUB" />
-                  </datalist>
-                </div>
-                <div className="flex gap-1.5 mt-1 text-[10px] text-neutral-500">
-                  <span
-                    onClick={() => setCurrency("so'm")}
-                    className="cursor-pointer underline hover:text-rose-700"
-                  >
-                    so'm
+                {!isBlock3Unlocked ? (
+                  <span className="text-[10px] text-neutral-500 font-medium">
+                    2-blok to'ldirilmaguncha yonmaydi
                   </span>
-                  <span>•</span>
-                  <span
-                    onClick={() => setCurrency("USD")}
-                    className="cursor-pointer underline hover:text-rose-700"
-                  >
-                    USD
+                ) : skipPricing || parsedPrice <= 0 ? (
+                  <span className="flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                    O'tkazib yuborildi (Narxsiz)
                   </span>
-                  <span>•</span>
-                  <span
-                    onClick={() => setCurrency("EUR")}
-                    className="cursor-pointer underline hover:text-rose-700"
-                  >
-                    EUR
+                ) : hasEnteredPrice ? (
+                  <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    To'ldirildi
                   </span>
-                  <span>•</span>
-                  <span
-                    onClick={() => setCurrency("RUB")}
-                    className="cursor-pointer underline hover:text-rose-700"
-                  >
-                    RUB
-                  </span>
-                </div>
-              </div>
-
-              {/* 3-qator: Summasi yoziladi */}
-              <div>
-                <label className="block text-xs font-bold text-neutral-800 mb-1">
-                  3-qator: Summasi (narx) <span className="text-rose-600">*</span>
-                </label>
-                <input
-                  type="number"
-                  disabled={!isBlock3Unlocked}
-                  min="0"
-                  step="any"
-                  value={price}
-                  onChange={(e) => setPrice(e.target.value)}
-                  placeholder="Masalan: 380000"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-rose-600 bg-white"
-                />
+                ) : null}
               </div>
             </div>
 
-            {/* Dynamic Calculation breakdown */}
-            {isBlock3Valid && (
-              <div className="mt-3 p-2.5 bg-neutral-50 rounded-xl border border-neutral-200/80 text-xs text-neutral-700 flex flex-wrap items-center justify-between gap-2">
+            {skipPricing ? (
+              <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-950">
                 <div>
-                  Tanlangan:{' '}
-                  <strong>
-                    {pricingUnitType === 'piece'
-                      ? `1 ${pieceUnitName || 'dona'}`
-                      : `1 ${packageUnitName || 'korobka'}`}
-                  </strong>{' '}
-                  ={' '}
-                  <span className="font-bold text-neutral-900">
-                    {parsedPrice.toLocaleString()} {currency}
-                  </span>
+                  <span className="font-bold">3-blok (Narx qo'yish) o'tkazib yuborildi.</span>{' '}
+                  Mahsulot omborga narxsiz (0 USD) holatda kiritiladi. To'g'ridan-to'g'ri 4-blokni to'ldirib saqlashingiz mumkin.
                 </div>
-                <div className="text-[11px] text-neutral-500">
-                  {pricingUnitType === 'piece'
-                    ? `(1 ${packageUnitName || 'korobka'} = ${(parsedPrice * parsedPiecesPerPkg).toLocaleString()} ${currency})`
-                    : `(1 ${pieceUnitName || 'dona'} = ${Math.round(parsedPrice / parsedPiecesPerPkg).toLocaleString()} ${currency})`}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSkipPricing(false);
+                    if (!price) setPrice('30');
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-[11px] shrink-0 cursor-pointer"
+                >
+                  Narx kiritish
+                </button>
               </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                  {/* 1-qator: 2-blok ichidagi birlik tanlanadi (dona yoki korobka) */}
+                  <div>
+                    <label className="block text-xs font-bold text-neutral-800 mb-1">
+                      1-qator: Narx birligi
+                    </label>
+                    <select
+                      disabled={!isBlock3Unlocked}
+                      value={effectivePricingUnitType}
+                      onChange={(e) => setPricingUnitType(e.target.value as 'piece' | 'package')}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-rose-600 bg-white"
+                    >
+                      <option value="piece">
+                        1 {pieceUnitName || 'dona'} uchun narx
+                      </option>
+                      {hasPackageUnit && (
+                        <option value="package">
+                          1 {packageUnitName || 'korobka'} uchun narx
+                        </option>
+                      )}
+                    </select>
+                  </div>
+
+                  {/* 2-qator: Valyuta avtomatik USD */}
+                  <div>
+                    <label className="block text-xs font-bold text-neutral-800 mb-1">
+                      2-qator: Valyuta
+                    </label>
+                    <div className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm bg-neutral-100 font-bold font-mono flex items-center justify-between">
+                      <span>USD ($)</span>
+                      <span className="text-[10px] font-sans font-semibold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded">
+                        Avtomatik
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 3-qator: Summasi yoziladi */}
+                  <div>
+                    <label className="block text-xs font-bold text-neutral-800 mb-1">
+                      3-qator: Summasi (USD) <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                    </label>
+                    <input
+                      type="number"
+                      disabled={!isBlock3Unlocked}
+                      min="0"
+                      step="any"
+                      value={price}
+                      onChange={(e) => setPrice(e.target.value)}
+                      placeholder="Narxsiz kiritish uchun bo'sh qoldiring"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-rose-600 bg-white font-mono font-bold"
+                    />
+                  </div>
+                </div>
+
+                {/* Dynamic Calculation breakdown */}
+                {hasEnteredPrice && (
+                  <div className="mt-3 p-2.5 bg-neutral-50 rounded-xl border border-neutral-200/80 text-xs text-neutral-700 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      Tanlangan:{' '}
+                      <strong>
+                        {effectivePricingUnitType === 'piece'
+                          ? `1 ${pieceUnitName || 'dona'}`
+                          : `1 ${packageUnitName || 'korobka'}`}
+                      </strong>{' '}
+                      ={' '}
+                      <span className="font-bold text-neutral-900">
+                        {parsedPrice.toLocaleString()} {currency}
+                      </span>
+                    </div>
+                    {hasPackageUnit && (
+                      <div className="text-[11px] text-neutral-500">
+                        {effectivePricingUnitType === 'piece'
+                          ? `(1 ${packageUnitName || 'korobka'} = ${(parsedPrice * parsedPiecesPerPkg).toLocaleString()} ${currency})`
+                          : `(1 ${pieceUnitName || 'dona'} = ${Math.round(parsedPrice / parsedPiecesPerPkg).toLocaleString()} ${currency})`}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
 
           {/* ========================================================= */}
           {/* 4-BLOK: OMBORGA KIRIM BLOKI */}
-          {/* Shart: 3-blok to'ldirilmaguncha yonmaydi */}
+          {/* Shart: 2-blok to'ldirilmaguncha yonmaydi */}
           {/* ========================================================= */}
           <div
             className={`rounded-2xl border transition p-4 sm:p-5 ${
@@ -803,7 +1113,7 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
               </div>
               {!isBlock4Unlocked && (
                 <span className="text-[10px] text-neutral-500 font-medium">
-                  3-blok to'ldirilmaguncha yonmaydi
+                  2-blok to'ldirilmaguncha yonmaydi
                 </span>
               )}
             </div>
@@ -834,13 +1144,15 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                 </label>
                 <select
                   disabled={!isBlock4Unlocked}
-                  value={intakeUnitType}
+                  value={effectiveIntakeUnitType}
                   onChange={(e) => setIntakeUnitType(e.target.value as 'package' | 'piece')}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-emerald-600 bg-white font-medium"
                 >
-                  <option value="package">
-                    {packageUnitName || 'korobka'} (avtomatik tanlangan)
-                  </option>
+                  {hasPackageUnit && (
+                    <option value="package">
+                      {packageUnitName || 'korobka'} (avtomatik tanlangan)
+                    </option>
+                  )}
                   <option value="piece">{pieceUnitName || 'dona'}</option>
                 </select>
               </div>
@@ -856,12 +1168,55 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                   min="1"
                   step="any"
                   value={intakeQuantity}
-                  onChange={(e) => setIntakeQuantity(e.target.value)}
+                  onChange={(e) => {
+                    const nextVal = e.target.value;
+                    setIntakeQuantity(nextVal);
+                    setIsRemainingManuallyEdited(false);
+                    const qtyNum = parseFloat(nextVal) || 0;
+                    const nextPieces =
+                      effectiveIntakeUnitType === 'package'
+                        ? qtyNum * parsedPiecesPerPkg
+                        : qtyNum;
+                    setCustomRemainingPieces(String(nextPieces));
+                  }}
                   placeholder="Masalan: 10"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-emerald-600 bg-white font-semibold"
                 />
               </div>
             </div>
+
+            {editingProduct && (
+              <div className="mt-3.5 p-3.5 rounded-xl bg-amber-50/70 border border-amber-200/90">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div>
+                    <label className="block text-xs font-bold text-amber-950">
+                      Ombordagi joriy qoldiq soni (dona) — bevosita tahrirlash:
+                    </label>
+                    <p className="text-[11px] text-amber-800 mt-0.5">
+                      Agar mahsulotning bir qismi sotilgan bo'lsa yoki ombordagi qoldiq donasini o'zgartirmoqchi bo'lsangiz, shu yerda yozing
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={
+                        isRemainingManuallyEdited
+                          ? customRemainingPieces
+                          : String(calculatedIntakePieces)
+                      }
+                      onChange={(e) => {
+                        setCustomRemainingPieces(e.target.value);
+                        setIsRemainingManuallyEdited(true);
+                      }}
+                      className="w-32 px-3 py-2 rounded-xl border border-amber-400 text-neutral-900 text-xs sm:text-sm font-mono font-bold bg-white focus:outline-amber-600"
+                    />
+                    <span className="text-xs font-bold text-amber-950">dona</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* 4 va 5-qatorlar: Avtomatik hisoblangan umumiy summa va umumiy dona */}
             <div className="mt-4 pt-3 border-t border-emerald-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -870,22 +1225,35 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                 <div className="text-[11px] font-bold text-emerald-800 mb-1 uppercase tracking-wide">
                   4-qator: Avtomatik umumiy summa
                 </div>
-                <div className="text-lg sm:text-xl font-bold font-display text-neutral-900">
-                  {Math.round(calculatedTotalSum).toLocaleString()}{' '}
-                  <span className="text-xs font-semibold text-neutral-600">
-                    {currency}
-                  </span>
-                </div>
-                <div className="text-[10px] text-neutral-500 mt-0.5">
-                  Formula: {parsedIntakeQty}{' '}
-                  {intakeUnitType === 'package' ? packageUnitName : pieceUnitName} × narx
-                </div>
+                {skipPricing || parsedPrice <= 0 ? (
+                  <>
+                    <div className="text-sm sm:text-base font-bold font-display text-amber-800">
+                      Narx belgilanmagan (0 USD)
+                    </div>
+                    <div className="text-[10px] text-neutral-500 mt-0.5">
+                      3-blok (Narx) o'tkazib yuborilgan
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-lg sm:text-xl font-bold font-display text-neutral-900">
+                      {Math.round(calculatedTotalSum).toLocaleString()}{' '}
+                      <span className="text-xs font-semibold text-neutral-600">
+                        {currency}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-neutral-500 mt-0.5">
+                      Formula: {parsedIntakeQty}{' '}
+                      {effectiveIntakeUnitType === 'package' ? packageUnitName : pieceUnitName} × narx
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* 5-qator: Avtomatik umumiy dona va hajm */}
               <div className="p-3.5 rounded-xl bg-white border border-emerald-200/90 shadow-2xs">
                 <div className="text-[11px] font-bold text-emerald-800 mb-1 uppercase tracking-wide">
-                  5-qator: Avtomatik umumiy dona
+                  5-qator: Avtomatik umumiy dona (qoldiq)
                 </div>
                 <div className="text-lg sm:text-xl font-bold font-display text-neutral-900">
                   {calculatedTotalPieces.toLocaleString()}{' '}
@@ -894,7 +1262,9 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                   </span>
                 </div>
                 <div className="text-[10px] text-neutral-500 mt-0.5">
-                  1 {packageUnitName} = {piecesPerPackage} dona × {volumePerPiece} {baseUnit}
+                  {hasPackageUnit
+                    ? `1 ${packageUnitName} = ${piecesPerPackage} dona × ${volumePerPiece} ${baseUnit}`
+                    : `1 ${pieceUnitName || 'dona'} = ${volumePerPiece} ${baseUnit}`}
                 </div>
               </div>
             </div>
@@ -915,11 +1285,138 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
             </div>
           </div>
 
+          {/* ========================================================= */}
+          {/* 5-BLOK: ENG KAM SOTILISH NARXI */}
+          {/* Agentlar mijozga sotayotganda omborda mahsulot tanlaganda ko'rinadigan narx */}
+          {/* ========================================================= */}
+          <div
+            className={`rounded-2xl border transition p-4 sm:p-5 ${
+              isBlock5Unlocked
+                ? 'border-indigo-200 bg-indigo-50/20 shadow-xs'
+                : 'border-neutral-200 bg-neutral-100/70 opacity-60 pointer-events-none'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 mb-3.5 border-b border-indigo-100">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center shadow-xs ${
+                    isBlock5Unlocked ? 'bg-indigo-700 text-white' : 'bg-neutral-400 text-white'
+                  }`}
+                >
+                  5
+                </span>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold text-neutral-900 flex items-center gap-2">
+                    <DollarSign className="w-4 h-4 text-indigo-700" />
+                    <span>5-BLOK: Eng kam sotilish narxi</span>
+                    {!isBlock5Unlocked && <Lock className="w-3.5 h-3.5 text-neutral-400" />}
+                  </h3>
+                  <p className="text-[11px] text-indigo-800 font-medium mt-0.5">
+                    Agentlar mijozga mahsulot sotayotganda ombordan tanlaganda aynan shu narx ko'rinib turadi (4-blokdagi kirim narxi emas)
+                  </p>
+                </div>
+              </div>
+
+              {!isBlock5Unlocked ? (
+                <span className="text-[10px] text-neutral-500 font-medium">
+                  4-blok to'ldirilmaguncha yonmaydi
+                </span>
+              ) : isBlock5Valid ? (
+                <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  To'ldirildi
+                </span>
+              ) : null}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+              {/* 1-qator: Eng kam sotilish narx birligi */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-800 mb-1">
+                  1-qator: Sotilish narx birligi
+                </label>
+                <select
+                  disabled={!isBlock5Unlocked}
+                  value={effectiveMinSellingUnitType}
+                  onChange={(e) =>
+                    setMinSellingPricingUnitType(e.target.value as 'piece' | 'package')
+                  }
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-indigo-600 bg-white font-medium"
+                >
+                  <option value="piece">
+                    1 {pieceUnitName || 'dona'} uchun eng kam sotilish narxi
+                  </option>
+                  {hasPackageUnit && (
+                    <option value="package">
+                      1 {packageUnitName || 'korobka'} uchun eng kam sotilish narxi
+                    </option>
+                  )}
+                </select>
+              </div>
+
+              {/* 2-qator: Valyuta avtomatik USD */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-800 mb-1">
+                  2-qator: Valyuta
+                </label>
+                <div className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm bg-neutral-100 font-bold font-mono flex items-center justify-between">
+                  <span>USD ($)</span>
+                  <span className="text-[10px] font-sans font-semibold text-indigo-800 bg-indigo-100 px-2 py-0.5 rounded">
+                    Avtomatik
+                  </span>
+                </div>
+              </div>
+
+              {/* 3-qator: Eng kam sotilish narxi (USD) */}
+              <div>
+                <label className="block text-xs font-bold text-neutral-800 mb-1">
+                  3-qator: Eng kam sotilish narxi (USD) <span className="text-rose-600">*</span>
+                </label>
+                <input
+                  type="number"
+                  disabled={!isBlock5Unlocked}
+                  min="0.01"
+                  step="any"
+                  required
+                  value={minSellingPrice}
+                  onChange={(e) => setMinSellingPrice(e.target.value)}
+                  placeholder="Masalan: 35"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-indigo-300 text-neutral-900 text-xs sm:text-sm focus:outline-indigo-600 bg-white font-mono font-bold"
+                />
+              </div>
+            </div>
+
+            {/* Dynamic Calculation breakdown for Block 5 */}
+            {isBlock5Valid && (
+              <div className="mt-3 p-3 bg-white rounded-xl border border-indigo-200/90 text-xs text-indigo-950 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+                <div>
+                  Agentlarga ko'rinadigan eng kam sotilish narxi:{' '}
+                  <strong>
+                    {effectiveMinSellingUnitType === 'piece'
+                      ? `1 ${pieceUnitName || 'dona'}`
+                      : `1 ${packageUnitName || 'korobka'}`}
+                  </strong>{' '}
+                  ={' '}
+                  <span className="font-extrabold font-mono text-indigo-800">
+                    {parsedMinSellingPrice.toLocaleString()} {currency}
+                  </span>
+                </div>
+                {hasPackageUnit && (
+                  <div className="text-[11px] font-mono text-indigo-700 font-semibold">
+                    {effectiveMinSellingUnitType === 'piece'
+                      ? `(1 ${packageUnitName || 'korobka'} = ${(Math.round(parsedMinSellingPrice * parsedPiecesPerPkg * 100) / 100).toLocaleString()} ${currency})`
+                      : `(1 ${pieceUnitName || 'dona'} = ${(Math.round((parsedMinSellingPrice / parsedPiecesPerPkg) * 100) / 100).toLocaleString()} ${currency})`}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Modal Footer */}
           <div className="pt-2 flex flex-col-reverse sm:flex-row items-center justify-between gap-3 border-t border-neutral-200 shrink-0">
             <div className="text-xs text-neutral-500 flex items-center gap-1.5">
               <HelpCircle className="w-3.5 h-3.5" />
-              <span>Kiritilgan mahsulot ombor bazasiga saqlanadi</span>
+              <span>Kiritilgan mahsulot va eng kam sotilish narxi ombor bazasiga saqlanadi</span>
             </div>
 
             <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
@@ -933,15 +1430,25 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
 
               <button
                 type="submit"
-                disabled={!isBlock4Unlocked || parsedIntakeQty <= 0}
+                disabled={!isBlock4Unlocked || parsedIntakeQty <= 0 || !isBlock5Valid}
                 className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[42px] cursor-pointer"
               >
-                <PackagePlus className="w-4 h-4 stroke-[2.5]" />
-                <span>Kiritish</span>
+                {editingProduct ? (
+                  <>
+                    <Edit3 className="w-4 h-4 stroke-[2.5]" />
+                    <span>O'zgarishlarni saqlash</span>
+                  </>
+                ) : (
+                  <>
+                    <PackagePlus className="w-4 h-4 stroke-[2.5]" />
+                    <span>Kiritish</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

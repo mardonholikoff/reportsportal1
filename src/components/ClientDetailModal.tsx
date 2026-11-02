@@ -18,6 +18,7 @@ import {
   Lock,
   Warehouse,
 } from 'lucide-react';
+import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 
 interface Props {
   client: Client | null;
@@ -46,6 +47,7 @@ export const ClientDetailModal: React.FC<Props> = ({
   const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
   const canAddWarehouseDebt = currentUsername === 'adminc' || currentUsername === 'adminc1';
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+  const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
 
   // Compute the latest note by agentp1 regarding this client
   const latestAgentNote = useMemo(() => {
@@ -135,7 +137,33 @@ export const ClientDetailModal: React.FC<Props> = ({
   );
 
   const handlePrint = () => {
-    window.print();
+    setNakladnoyData({
+      docNumber: `NK-${client.id.slice(-6).toUpperCase()}`,
+      date: client.updatedAt || client.createdAt,
+      operationTitle: 'Mijozga biriktirilgan mahsulotlar va hisob-kitob',
+      clientName: client.name,
+      clientPhones:
+        client.phones && client.phones.length > 0
+          ? client.phones
+          : client.phone
+          ? [client.phone]
+          : [],
+      clientAddress:
+        [client.region, client.district, client.landmark].filter(Boolean).join(', ') ||
+        client.address,
+      authorUsername: currentUsername || client.createdBy || 'agentp1',
+      productsDelivered: client.products,
+      paymentInfo: {
+        paymentLabel: client.currentDebt > 0 ? 'Nasiya (Qarzga)' : "Naqd / To'langan",
+        paidAmount:
+          client.currentAdvance > 0
+            ? client.currentAdvance
+            : Math.max(0, totalProductsValue - client.currentDebt),
+        debtAmount: client.currentDebt,
+        totalClientDebt: client.currentDebt,
+      },
+      note: client.notes,
+    });
   };
 
   const logs = client.logs || [];
@@ -196,14 +224,28 @@ export const ClientDetailModal: React.FC<Props> = ({
               </div>
               <div>
                 <div className="text-[11px] font-semibold text-neutral-500 uppercase">
-                  Telefon
+                  Telefon {client.phones && client.phones.length > 1 ? `(${client.phones.length} ta)` : ''}
                 </div>
-                <a
-                  href={`tel:${client.phone}`}
-                  className="text-sm font-semibold text-neutral-900 hover:text-rose-700 underline font-mono tabular-nums"
-                >
-                  {client.phone || "Kiritilmagan"}
-                </a>
+                {client.phones && client.phones.length > 0 ? (
+                  <div className="flex flex-col gap-0.5 mt-0.5">
+                    {client.phones.map((ph, idx) => (
+                      <a
+                        key={idx}
+                        href={`tel:${ph}`}
+                        className="text-sm font-semibold text-neutral-900 hover:text-rose-700 underline font-mono tabular-nums"
+                      >
+                        {ph}
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <a
+                    href={`tel:${client.phone}`}
+                    className="text-sm font-semibold text-neutral-900 hover:text-rose-700 underline font-mono tabular-nums"
+                  >
+                    {client.phone || "Kiritilmagan"}
+                  </a>
+                )}
               </div>
             </div>
 
@@ -486,17 +528,15 @@ export const ClientDetailModal: React.FC<Props> = ({
               </div>
             )}
 
-            {/* Chop etish / Chek: Agentda YO'Q BO'LSIN */}
-            {!isAgent && (
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-neutral-700 hover:bg-white border border-neutral-200 transition min-h-[40px] cursor-pointer"
-              >
-                <Printer className="w-3.5 h-3.5" />
-                <span>Chop etish / Chek</span>
-              </button>
-            )}
+            {/* Print / Nakladnoy (PDF) qora borderlar bilan */}
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-white bg-neutral-900 hover:bg-neutral-800 border border-neutral-900 transition min-h-[40px] cursor-pointer shadow-xs"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Print / Nakladnoy (PDF)</span>
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -544,6 +584,14 @@ export const ClientDetailModal: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
+      {nakladnoyData && (
+        <NakladnoyModal
+          isOpen={!!nakladnoyData}
+          onClose={() => setNakladnoyData(null)}
+          data={nakladnoyData}
+        />
+      )}
     </div>
   );
 };

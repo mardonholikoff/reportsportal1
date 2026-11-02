@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Client } from '../types';
 import { formatMoney } from '../utils/format';
-import { X, CheckCircle2, TrendingDown, TrendingUp } from 'lucide-react';
+import { UsdConverterPanel } from './UsdConverterPanel';
+import { X } from 'lucide-react';
 
 interface Props {
   client: Client | null;
@@ -46,15 +47,15 @@ export const QuickPaymentModal: React.FC<Props> = ({
 
   if (mode === 'pay_debt') {
     if (numAmount <= currentDebt) {
-      calculatedNewDebt = currentDebt - numAmount;
+      calculatedNewDebt = Math.round((currentDebt - numAmount) * 100) / 100;
     } else {
       calculatedNewDebt = 0;
-      calculatedNewAdvance = currentAdvance + (numAmount - currentDebt);
+      calculatedNewAdvance = Math.round((currentAdvance + (numAmount - currentDebt)) * 100) / 100;
     }
   } else if (mode === 'add_debt') {
-    calculatedNewDebt = currentDebt + numAmount;
+    calculatedNewDebt = Math.round((currentDebt + numAmount) * 100) / 100;
   } else if (mode === 'advance') {
-    calculatedNewAdvance = currentAdvance + numAmount;
+    calculatedNewAdvance = Math.round((currentAdvance + numAmount) * 100) / 100;
   }
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -82,7 +83,7 @@ export const QuickPaymentModal: React.FC<Props> = ({
         <div className="px-5 py-4 bg-gradient-to-r from-rose-50 to-white border-b border-rose-100 flex items-center justify-between">
           <div>
             <h3 className="text-base font-bold font-display text-neutral-900">
-              Hisob-kitob amaliyati
+              Hisob-kitob amaliyoti (USD)
             </h3>
             <p className="text-xs text-neutral-600 truncate max-w-[260px]">
               Mijoz: <span className="font-semibold text-neutral-900">{client.name}</span>
@@ -118,7 +119,7 @@ export const QuickPaymentModal: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setMode('pay_debt')}
-              className={`py-2 text-xs font-semibold rounded-lg transition-colors min-h-[36px] ${
+              className={`py-2 text-xs font-semibold rounded-lg transition-colors min-h-[36px] cursor-pointer ${
                 mode === 'pay_debt'
                   ? 'bg-white text-neutral-900 shadow-xs'
                   : 'text-neutral-600 hover:text-neutral-900'
@@ -129,7 +130,7 @@ export const QuickPaymentModal: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setMode('advance')}
-              className={`py-2 text-xs font-semibold rounded-lg transition-colors min-h-[36px] ${
+              className={`py-2 text-xs font-semibold rounded-lg transition-colors min-h-[36px] cursor-pointer ${
                 mode === 'advance'
                   ? 'bg-white text-neutral-900 shadow-xs'
                   : 'text-neutral-600 hover:text-neutral-900'
@@ -140,7 +141,7 @@ export const QuickPaymentModal: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => setMode('add_debt')}
-              className={`py-2 text-xs font-semibold rounded-lg transition-colors min-h-[36px] ${
+              className={`py-2 text-xs font-semibold rounded-lg transition-colors min-h-[36px] cursor-pointer ${
                 mode === 'add_debt'
                   ? 'bg-white text-neutral-900 shadow-xs'
                   : 'text-neutral-600 hover:text-neutral-900'
@@ -150,19 +151,27 @@ export const QuickPaymentModal: React.FC<Props> = ({
             </button>
           </div>
 
+          <UsdConverterPanel
+            label="So'mdan (UZS) USDga konvertatsiya"
+            onApplyUsd={(usdVal, convNote) => {
+              setAmount(usdVal);
+              setNote((prev) => (prev ? `${prev} | ${convNote}` : convNote));
+            }}
+          />
+
           <div>
             <label className="block text-xs font-semibold text-neutral-800 mb-1">
-              Summa (so'm) <span className="text-rose-600">*</span>
+              Summa (USD) <span className="text-rose-600">*</span>
             </label>
             <input
               type="number"
-              min="1"
+              min="0.01"
+              step="any"
               required
-              placeholder="Masalan: 500000"
+              placeholder="Masalan: 100"
               value={amount}
               onChange={(e) => setAmount(e.target.value === '' ? '' : parseFloat(e.target.value) || 0)}
               className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:border-rose-500 text-base font-bold font-mono text-neutral-900 outline-none tabular-nums"
-              autoFocus
             />
             {numAmount > 0 && (
               <div className="mt-1 text-xs text-neutral-600 font-mono">
@@ -209,14 +218,14 @@ export const QuickPaymentModal: React.FC<Props> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700 hover:bg-neutral-50 transition min-h-[44px]"
+              className="px-4 py-2 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700 hover:bg-neutral-50 transition min-h-[44px] cursor-pointer"
             >
               Bekor qilish
             </button>
             <button
               type="submit"
               disabled={numAmount <= 0}
-              className="px-5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs transition disabled:opacity-50 min-h-[44px]"
+              className="px-5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs transition disabled:opacity-50 min-h-[44px] cursor-pointer"
             >
               Tasdiqlash
             </button>

@@ -36,12 +36,19 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [inspectedPlan, setInspectedPlan] = useState<DailyPlanItem | null>(null);
 
+  const formatActionLabel = (action?: string) => {
+    if (action === 'telefon qilindi') return 'Telefon qilish / qilindi';
+    if (action === 'joyiga borildi') return 'Joyiga borish / borildi';
+    if (action === 'telefon qilindi + joyiga borildi') return 'Telefon + Joyiga borish';
+    return action || '';
+  };
+
   // Remaining 24h helper
   const getRemainingTimeStr = (createdAt: string) => {
     const created = new Date(createdAt).getTime();
     const expires = created + 24 * 60 * 60 * 1000;
     const diffMs = expires - Date.now();
-    if (diffMs <= 0) return '24 soat tugagan';
+    if (diffMs <= 0) return 'Muddati: Faol';
     const hours = Math.floor(diffMs / (1000 * 60 * 60));
     const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
     return `${hours} soat ${mins} daqiqa qoldi`;
@@ -75,20 +82,50 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
     return [];
   };
 
+  // Har bir mijoz rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz)
+  const uniquePlans = useMemo(() => {
+    const byClient = new Map<string, DailyPlanItem>();
+    for (const p of plans) {
+      if (!p || !p.clientId) continue;
+      const existing = byClient.get(p.clientId);
+      if (!existing) {
+        byClient.set(p.clientId, p);
+      } else {
+        const eDone = Boolean(existing.status === 'bajarildi' || existing.actionDone || existing.isClosed || existing.status === 'yopildi');
+        const cDone = Boolean(p.status === 'bajarildi' || p.actionDone || p.isClosed || p.status === 'yopildi');
+        if (cDone && !eDone) {
+          byClient.set(p.clientId, p);
+        }
+      }
+    }
+    return Array.from(byClient.values());
+  }, [plans]);
+
+  // Mijoz bo'yicha amal bajarilganligini tekshirish (agent Bajarildi deb belgilagan bo'lsa -> Bajarildi, aks holda -> Jarayonda)
+  const isPlanCompleted = (p: DailyPlanItem): boolean => {
+    return Boolean(
+      p.status === 'bajarildi' ||
+        p.actionDone ||
+        (p.actionsHistory && p.actionsHistory.length > 0) ||
+        p.isClosed ||
+        p.status === 'yopildi'
+    );
+  };
+
   // Unique agents list
   const uniqueAgents = useMemo(() => {
     const set = new Set<string>();
-    plans.forEach((p) => {
+    uniquePlans.forEach((p) => {
       if (p.agentUsername) set.add(p.agentUsername);
     });
     return Array.from(set).sort();
-  }, [plans]);
+  }, [uniquePlans]);
 
   // Comprehensive analytics calculation across all plans
   const analytics = useMemo(() => {
-    let totalClients = plans.length;
-    let completedClients = 0; // Only when isClosed === true or status === 'yopildi'
-    let inProgressClients = 0; // Not closed
+    let totalClients = uniquePlans.length;
+    let completedClients = 0; // Agent amal bajargan ("Bajarildi") yoki yopilgan
+    let inProgressClients = 0; // Amal hali bajarilmagan ("Jarayonda")
 
     let totalReceipts = 0; // Jami tushumlar
     const receiptsByType = {
@@ -103,9 +140,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
     let totalReturnedSum = 0; // Mahsulot qaytishi jami summasi
     let totalReturnedPieces = 0; // Mahsulot qaytishi jami soni
 
-    plans.forEach((p) => {
-      const isClosed = p.isClosed || p.status === 'yopildi';
-      if (isClosed) {
+    uniquePlans.forEach((p) => {
+      if (isPlanCompleted(p)) {
         completedClients++;
       } else {
         inProgressClients++;
@@ -196,11 +232,11 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
       totalReturnedSum,
       totalReturnedPieces,
     };
-  }, [plans]);
+  }, [uniquePlans]);
 
   // Filtered plans list
   const filteredPlans = useMemo(() => {
-    return plans.filter((p) => {
+    return uniquePlans.filter((p) => {
       // 1. Search filter
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase().trim();
@@ -214,10 +250,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
         }
       }
 
-      // 2. Status filter: To'liq yopilmaguncha mijoz holati jarayonda deb ko'riladi
-      const isClosed = p.isClosed || p.status === 'yopildi';
-      if (statusFilter === 'bajarildi' && !isClosed) return false;
-      if (statusFilter === 'jarayonda' && isClosed) return false;
+      // 2. Status filter: Agent bajarildi deb belgilagan bo'lsa 'bajarildi', aks holda 'jarayonda'
+      const completed = isPlanCompleted(p);
+      if (statusFilter === 'bajarildi' && !completed) return false;
+      if (statusFilter === 'jarayonda' && completed) return false;
 
       // 3. Agent filter
       if (selectedAgent !== 'all' && p.agentUsername !== selectedAgent) {
@@ -226,7 +262,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
 
       return true;
     });
-  }, [plans, searchTerm, statusFilter, selectedAgent]);
+  }, [uniquePlans, searchTerm, statusFilter, selectedAgent]);
 
   return (
     <div className="space-y-5">
@@ -268,7 +304,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
               <Receipt className="w-4 h-4 text-emerald-600" />
             </div>
             <div className="text-xl sm:text-2xl font-extrabold font-display font-mono text-emerald-800 tabular-nums">
-              {formatMoney(analytics.totalReceipts)} so'm
+              {formatMoney(analytics.totalReceipts)}
             </div>
           </div>
 
@@ -355,7 +391,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
               <PackageCheck className="w-4 h-4 text-rose-700" />
             </div>
             <div className="text-xl sm:text-2xl font-extrabold font-display font-mono text-rose-900 tabular-nums">
-              {formatMoney(analytics.totalDeliveredSum)} so'm
+              {formatMoney(analytics.totalDeliveredSum)}
             </div>
           </div>
           <div className="text-[11px] text-neutral-500 pt-2 border-t border-neutral-100 flex items-center justify-between">
@@ -376,7 +412,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
               <PackageMinus className="w-4 h-4 text-amber-700" />
             </div>
             <div className="text-xl sm:text-2xl font-extrabold font-display font-mono text-amber-900 tabular-nums">
-              {formatMoney(analytics.totalReturnedSum)} so'm
+              {formatMoney(analytics.totalReturnedSum)}
             </div>
           </div>
           <div className="text-[11px] text-neutral-500 pt-2 border-t border-neutral-100 flex items-center justify-between">
@@ -433,7 +469,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                   : 'text-neutral-600 hover:text-neutral-900'
               }`}
             >
-              Barchasi ({plans.length})
+              Barchasi ({uniquePlans.length})
             </button>
             <button
               type="button"
@@ -498,8 +534,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
             </thead>
             <tbody className="divide-y divide-rose-100/60">
               {filteredPlans.map((item, idx) => {
-                // To'liq yopilmaguncha mijoz holati jarayonda deb va holati ko'rilsin va faqat to'liq yopilganda bajarildi deb oxirgi holati ko'rilsin
                 const isClosed = item.isClosed || item.status === 'yopildi';
+                const isCompleted = isPlanCompleted(item);
                 const actions = getPlanActions(item);
                 const hasActions = actions.length > 0;
 
@@ -590,29 +626,48 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                       </div>
                     </td>
 
-                    {/* Reja izohi */}
-                    <td className="py-3 px-3.5 max-w-[160px] text-[11px]" title={item.planNote}>
-                      {item.planNote ? (
-                        <span className="font-medium text-neutral-900 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 block truncate">
-                          {item.planNote}
-                        </span>
-                      ) : (
-                        <span className="text-neutral-400 italic">-</span>
-                      )}
+                    {/* Reja izohi va Undirish maqsadi */}
+                    <td className="py-3 px-3.5 max-w-[180px] text-[11px]" title={item.planNote}>
+                      <div className="space-y-1">
+                        {item.plannedAction && (
+                          <span className="font-bold text-amber-950 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 block truncate">
+                            Tanlangan: {formatActionLabel(item.plannedAction)}
+                          </span>
+                        )}
+                        {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
+                          <span className="font-mono font-bold text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 block truncate">
+                            Undirish rejasi: {formatMoney(item.plannedAmount)}
+                          </span>
+                        )}
+                        {item.planNote ? (
+                          <span className="font-medium text-neutral-800 bg-neutral-100 px-2 py-0.5 rounded border border-neutral-200 block truncate">
+                            Izoh: {item.planNote}
+                          </span>
+                        ) : (
+                          !item.plannedAction &&
+                          !(item.plannedAmount && item.plannedAmount > 0) && (
+                            <span className="text-neutral-400 italic">-</span>
+                          )
+                        )}
+                      </div>
                     </td>
 
-                    {/* HOLATI: To'liq yopilmaguncha mijoz holati jarayonda deb va holati ko'rilsin va faqat to'liq yopilganda bajarildi deb oxirgi holati ko'rilsin */}
+                    {/* HOLATI: Agent amal bajargan ("Bajarildi") bo'lsa Bajarildi, aks holda Jarayonda turadi */}
                     <td className="py-3 px-3.5 whitespace-nowrap">
-                      {isClosed ? (
+                      {isCompleted ? (
                         <div className="space-y-1">
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
                             <span>Bajarildi</span>
                           </span>
-                          <span className="text-[10px] text-neutral-500 block font-medium">
-                            Oxirgi holat: Yopilgan
+                          <span className="text-[10px] text-emerald-800 block font-semibold">
+                            {isClosed
+                              ? 'Oxirgi holat: Yopilgan'
+                              : item.actionDone
+                              ? `Amal: ${formatActionLabel(item.actionDone)}`
+                              : `${actions.length} ta amal bajarilgan`}
                           </span>
-                          {item.closeReason && (
+                          {isClosed && item.closeReason && (
                             <span
                               className="text-[10px] text-rose-800 font-bold block max-w-[190px] truncate bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
                               title={`Yopilish sababi: ${item.closeReason}`}
@@ -620,7 +675,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                               Sabab: {item.closeReason}
                             </span>
                           )}
-                          {item.closedBy && (
+                          {isClosed && item.closedBy && (
                             <span className="text-[9px] text-neutral-400 block font-mono">
                               @{item.closedBy} tomonidan
                             </span>
@@ -633,8 +688,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                             <span>Jarayonda</span>
                           </span>
                           <span className="text-[10px] text-neutral-500 block mt-0.5 font-medium">
-                            {hasActions
-                              ? `${actions.length} ta amal bajarilgan`
+                            {item.plannedAction
+                              ? `Rejada: ${formatActionLabel(item.plannedAction)}`
                               : 'Amal kutilmoqda'}
                           </span>
                           <span className="text-[9px] text-neutral-400 font-mono block">
@@ -644,13 +699,24 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                       )}
                     </td>
 
-                    {/* QILINGAN AMALLAR: joyiga borish va boshqalardan tashqari to'lov, mahsulot berish, qaytarib olish hammasi to'liq ko'rinsin, agar amal bo'lmasa 'Amal yo'q' deb chiqsin */}
+                    {/* QILINGAN AMALLAR: joyiga borish va boshqalardan tashqari to'lov, mahsulot berish, qaytarib olish hammasi to'liq ko'rinsin */}
                     <td className="py-3 px-3.5 max-w-[240px]">
                       {!hasActions ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-neutral-100 text-neutral-500 border border-neutral-200">
-                          <MinusCircle className="w-3 h-3 text-neutral-400" />
-                          <span>Amal yo'q</span>
-                        </span>
+                        <div className="space-y-1">
+                          {item.plannedAction ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
+                              Rejadagi amal: {formatActionLabel(item.plannedAction)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-neutral-100 text-neutral-500 border border-neutral-200">
+                              <MinusCircle className="w-3 h-3 text-neutral-400" />
+                              <span>Amal yo'q</span>
+                            </span>
+                          )}
+                          <span className="text-[10px] text-neutral-400 block italic">
+                            Hali bajarilmagan (Rejada)
+                          </span>
+                        </div>
                       ) : (
                         <div className="space-y-1">
                           {/* Tashrif turi */}
@@ -659,9 +725,9 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                               {visitActionLabels.map((vLabel, i) => (
                                 <span
                                   key={i}
-                                  className="px-2 py-0.5 rounded bg-neutral-100 text-neutral-900 font-bold text-[10px]"
+                                  className="px-2 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-200 font-bold text-[10px]"
                                 >
-                                  {vLabel}
+                                  Bajardi: {formatActionLabel(vLabel)}
                                 </span>
                               ))}
                             </div>
@@ -671,7 +737,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                           {planReceipts > 0 && (
                             <div className="flex items-center gap-1 text-[11px] text-emerald-800 font-semibold">
                               <Receipt className="w-3 h-3 text-emerald-600 shrink-0" />
-                              <span>To'lov: +{formatMoney(planReceipts)} so'm</span>
+                              <span>To'lov: +{formatMoney(planReceipts)}</span>
                             </div>
                           )}
 
@@ -710,14 +776,14 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                       {planReceipts > 0 ? (
                         <div>
                           <span className="font-mono font-extrabold text-sm text-emerald-800">
-                            +{formatMoney(planReceipts)} so'm
+                            +{formatMoney(planReceipts)}
                           </span>
                           <div className="text-[10px] text-neutral-500 font-medium truncate max-w-[140px]">
                             {planReceiptMethods.join(', ')}
                           </div>
                         </div>
                       ) : (
-                        <span className="text-neutral-400 italic">0 so'm</span>
+                        <span className="text-neutral-400 italic">0 USD</span>
                       )}
                     </td>
 
@@ -806,20 +872,25 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
               {/* Status Banner */}
               <div
                 className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 ${
-                  inspectedPlan.isClosed || inspectedPlan.status === 'yopildi'
+                  isPlanCompleted(inspectedPlan)
                     ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
                     : 'bg-amber-50 border-amber-200 text-amber-950'
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  {inspectedPlan.isClosed || inspectedPlan.status === 'yopildi' ? (
+                  {isPlanCompleted(inspectedPlan) ? (
                     <CheckCircle2 className="w-5 h-5 text-emerald-700 shrink-0" />
                   ) : (
                     <Clock className="w-5 h-5 text-amber-700 shrink-0" />
                   )}
                   <div>
                     <span className="font-bold text-xs block">
-                      Holat: {inspectedPlan.isClosed || inspectedPlan.status === 'yopildi' ? "Bajarildi (To'liq yopilgan)" : 'Jarayonda'}
+                      Holat:{' '}
+                      {inspectedPlan.isClosed || inspectedPlan.status === 'yopildi'
+                        ? "Bajarildi (To'liq yopilgan)"
+                        : isPlanCompleted(inspectedPlan)
+                        ? 'Bajarildi (Amal bajarilgan)'
+                        : 'Jarayonda (Hali bajarilmagan)'}
                     </span>
                     <span className="text-[11px] opacity-80">
                       Tuzilgan sana: {formatDate(inspectedPlan.createdAt)} · {getRemainingTimeStr(inspectedPlan.createdAt)}
@@ -852,11 +923,30 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                 </div>
               )}
 
-              {/* Plan Note */}
-              {inspectedPlan.planNote && (
-                <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-xs">
-                  <span className="font-bold text-neutral-700 block mb-0.5">Rejadagi izoh:</span>
-                  <span className="text-neutral-900">{inspectedPlan.planNote}</span>
+              {/* Planned Action, Planned Amount & Plan Note */}
+              {(inspectedPlan.plannedAction ||
+                (inspectedPlan.plannedAmount && inspectedPlan.plannedAmount > 0) ||
+                inspectedPlan.planNote) && (
+                <div className="p-3.5 bg-neutral-50 rounded-2xl border border-neutral-200 text-xs space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {inspectedPlan.plannedAction && (
+                      <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-950 border border-amber-200 font-bold">
+                        Tanlangan reja amali: {formatActionLabel(inspectedPlan.plannedAction)}
+                      </span>
+                    )}
+                    {inspectedPlan.plannedAmount !== undefined &&
+                      inspectedPlan.plannedAmount > 0 && (
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-950 border border-emerald-200 font-mono font-bold">
+                          Undirish rejadagi summa: {formatMoney(inspectedPlan.plannedAmount)}
+                        </span>
+                      )}
+                  </div>
+                  {inspectedPlan.planNote && (
+                    <div>
+                      <span className="font-bold text-neutral-700 block mb-0.5">Rejadagi izoh:</span>
+                      <span className="text-neutral-900">{inspectedPlan.planNote}</span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -891,9 +981,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                           <div className="p-2 bg-emerald-50 rounded-lg text-xs text-emerald-900 flex items-center justify-between">
                             <span>To'lov qabul qilindi:</span>
                             <span className="font-mono font-bold">
-                              +{formatMoney(act.financialAction.amount)}{' '}
-                              {act.financialAction.currency || "so'm"} (
-                              {act.financialAction.methodLabel})
+                              +{formatMoney(act.financialAction.amount)} ({act.financialAction.methodLabel})
                             </span>
                           </div>
                         )}
@@ -903,7 +991,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                           <div className="p-2 bg-rose-50 rounded-lg text-xs text-rose-950 flex items-center justify-between">
                             <span>Tovar to'lov shakli:</span>
                             <span className="font-bold">
-                              {act.deliveryPayment.paymentLabel} ({formatMoney(act.deliveryPayment.paidAmount)} {act.deliveryPayment.currency || "so'm"})
+                              {act.deliveryPayment.paymentLabel} ({formatMoney(act.deliveryPayment.paidAmount)})
                             </span>
                           </div>
                         )}
@@ -920,7 +1008,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                                   key={pIdx}
                                   className="px-2 py-0.5 bg-neutral-100 rounded text-[11px] text-neutral-800"
                                 >
-                                  <strong>{p.name}</strong>: {p.quantity} {p.unit} ({formatMoney(p.totalPrice || p.quantity * p.unitPrice)} so'm)
+                                  <strong>{p.name}</strong>: {p.quantity} {p.unit} ({formatMoney(p.totalPrice || p.quantity * p.unitPrice)})
                                 </span>
                               ))}
                             </div>
@@ -939,7 +1027,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans }) => {
                                   key={rIdx}
                                   className="px-2 py-0.5 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-900"
                                 >
-                                  <strong>{r.name}</strong>: {r.quantity} {r.unit} ({formatMoney((r.quantity || 0) * (r.unitPrice || 0))} so'm)
+                                  <strong>{r.name}</strong>: {r.quantity} {r.unit} ({formatMoney((r.quantity || 0) * (r.unitPrice || 0))})
                                 </span>
                               ))}
                             </div>
