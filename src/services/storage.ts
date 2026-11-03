@@ -1345,6 +1345,60 @@ class StorageService {
     return reopenedItems;
   }
 
+  // Rejadagi mijozlarni (faollarini yoki yopilganini) bittalab yoki bir nechtasini tanlab rejadan olib tashlash (majburiy izoh bilan)
+  public removeDailyPlanItems(
+    planItemIds: string[],
+    author: string,
+    reason: string
+  ): { success: boolean; removedPlans: DailyPlanItem[] } {
+    if (!Array.isArray(planItemIds) || planItemIds.length === 0) {
+      return { success: false, removedPlans: [] };
+    }
+    const finalReason = reason.trim();
+    if (!finalReason) {
+      return { success: false, removedPlans: [] };
+    }
+
+    const idSet = new Set(planItemIds);
+    const plans = this.getDailyPlans();
+    const removedPlans: DailyPlanItem[] = [];
+    const remainingPlans = plans.filter((p) => {
+      if (idSet.has(p.id)) {
+        removedPlans.push(p);
+        return false;
+      }
+      return true;
+    });
+
+    if (removedPlans.length > 0) {
+      this.saveDailyPlans(remainingPlans);
+
+      // Audit logga yozish
+      const nowStr = new Date().toISOString();
+      removedPlans.forEach((rp) => {
+        const client = this.getClients().find((c) => c.id === rp.clientId);
+        if (client) {
+          const clientLogs = client.logs || [];
+          clientLogs.unshift({
+            id: 'log_' + Date.now() + '_plan_rem_' + Math.random().toString(36).substring(2, 5),
+            clientId: client.id,
+            author,
+            timestamp: nowStr,
+            type: 'visit_action',
+            title: "Rejadan olib tashlandi",
+            details: `${author} tomonidan mijoz rejadan olib tashlandi. Izoh: ${finalReason}`,
+          });
+          this.updateClient(client.id, {
+            logs: clientLogs,
+            updatedAt: nowStr,
+          });
+        }
+      });
+    }
+
+    return { success: true, removedPlans };
+  }
+
   // --- Offline Sync Queue ---
   public getSyncQueue(): Array<{ action: string; client?: Client; clientId?: string; timestamp: string }> {
     if (typeof window === 'undefined') return [];

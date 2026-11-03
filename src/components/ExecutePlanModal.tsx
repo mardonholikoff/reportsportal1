@@ -30,6 +30,9 @@ import {
   Coins,
   Printer,
   Percent,
+  Search,
+  RotateCcw,
+  ChevronDown,
 } from 'lucide-react';
 
 interface Props {
@@ -98,6 +101,192 @@ const createEmptyProductRow = (): ProductItem => ({
   warehouseId: '',
 });
 
+export interface ExtraReturnItem {
+  id: string;
+  warehouseId: string;
+  name: string;
+  unit: string;
+  quantity: number | '';
+  unitPrice: number | '';
+  totalPrice: number;
+}
+
+interface WarehouseProductSearchSelectProps {
+  products: WarehouseProduct[];
+  selectedId: string;
+  onSelect: (warehouseId: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}
+
+const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelectProps> = ({
+  products,
+  selectedId,
+  onSelect,
+  disabled,
+  placeholder = "Ombordagi mahsulotni qidiring (3 ta so'z orqali: brend, nom, marka)...",
+}) => {
+  const [query, setQuery] = useState('');
+  const [isOpen, setIsOpen] = useState(false);
+
+  const selectedProduct = useMemo(
+    () => products.find((p) => p.id === selectedId),
+    [products, selectedId]
+  );
+
+  // So'z yozib 3 ta so'z orqali qidirish imkoniyati (multi-word search)
+  const filteredProducts = useMemo(() => {
+    const rawWords = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (rawWords.length === 0) {
+      return products.slice(0, 35);
+    }
+    return products.filter((wh) => {
+      const combined = [
+        wh.brand,
+        wh.name,
+        wh.mark1,
+        wh.mark2,
+        ...(wh.extraMarks || []),
+        wh.packageUnitName,
+        wh.pieceUnitName,
+        wh.baseUnit,
+        wh.notes,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      return rawWords.every((word) => combined.includes(word));
+    });
+  }, [products, query]);
+
+  if (selectedProduct && !isOpen) {
+    const minSellPrice =
+      selectedProduct.minSellingPrice !== undefined
+        ? selectedProduct.minSellingPrice
+        : selectedProduct.price || 0;
+    const minUnitLabel =
+      (selectedProduct.minSellingPricingUnitType || selectedProduct.pricingUnitType) === 'package' &&
+      selectedProduct.packageUnitName
+        ? selectedProduct.packageUnitName
+        : selectedProduct.pieceUnitName || 'dona';
+
+    return (
+      <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-rose-200 bg-rose-50/50">
+        <div className="min-w-0">
+          <div className="font-bold text-xs text-neutral-900 truncate">
+            <span className="text-rose-700 uppercase font-black mr-1">[{selectedProduct.brand}]</span>
+            {selectedProduct.name} {selectedProduct.mark1 ? `(${selectedProduct.mark1})` : ''}
+          </div>
+          <div className="text-[10px] text-neutral-500 flex items-center gap-2 mt-0.5 font-mono">
+            <span>
+              Zaxirada: <strong className="text-neutral-800">{selectedProduct.totalPieces}</strong> {selectedProduct.pieceUnitName || 'dona'}
+            </span>
+            <span>•</span>
+            <span>
+              Eng kam narx: <strong className="text-emerald-800">{minSellPrice} USD</strong> / 1 {minUnitLabel}
+            </span>
+          </div>
+        </div>
+        {!disabled && (
+          <button
+            type="button"
+            onClick={() => {
+              setIsOpen(true);
+              setQuery('');
+            }}
+            className="px-2.5 py-1 text-[11px] font-bold text-rose-700 bg-white hover:bg-rose-100 rounded-lg border border-rose-200 transition shrink-0 cursor-pointer shadow-2xs"
+          >
+            O'zgartirish
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative space-y-1">
+      <div className="relative">
+        <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <input
+          type="text"
+          disabled={disabled}
+          placeholder={placeholder}
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setIsOpen(true);
+          }}
+          onFocus={() => setIsOpen(true)}
+          className="w-full pl-8.5 pr-8 py-2 bg-neutral-50 focus:bg-white rounded-xl border border-neutral-200 focus:border-rose-500 text-xs text-neutral-900 outline-none transition"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery('')}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-700 text-xs cursor-pointer"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
+      {isOpen && (
+        <div className="absolute z-30 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white rounded-xl border border-neutral-200 shadow-xl divide-y divide-neutral-100 text-xs">
+          {filteredProducts.length === 0 ? (
+            <div className="p-3 text-center text-neutral-400 text-xs">
+              "{query}" bo'yicha mahsulot topilmadi
+            </div>
+          ) : (
+            filteredProducts.map((wh) => {
+              const minSellPrice =
+                wh.minSellingPrice !== undefined ? wh.minSellingPrice : wh.price || 0;
+              const minUnitLabel =
+                (wh.minSellingPricingUnitType || wh.pricingUnitType) === 'package' && wh.packageUnitName
+                  ? wh.packageUnitName
+                  : wh.pieceUnitName || 'dona';
+
+              return (
+                <button
+                  type="button"
+                  key={wh.id}
+                  onClick={() => {
+                    onSelect(wh.id);
+                    setIsOpen(false);
+                    setQuery('');
+                  }}
+                  className={`w-full text-left p-2.5 hover:bg-rose-50/70 transition flex items-center justify-between gap-2 cursor-pointer ${
+                    wh.id === selectedId ? 'bg-rose-50 font-semibold' : ''
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="font-bold text-neutral-900 truncate">
+                      <span className="text-rose-700 font-extrabold mr-1">[{wh.brand}]</span>
+                      {wh.name} {wh.mark1 ? `[${wh.mark1}]` : ''}
+                    </div>
+                    <div className="text-[10px] text-neutral-500 truncate font-mono">
+                      Zaxira: {wh.totalPieces} {wh.pieceUnitName || 'dona'}
+                      {wh.packageUnitName
+                        ? ` (${Math.floor(wh.totalPieces / (wh.piecesPerPackage || 1))} ${wh.packageUnitName})`
+                        : ''}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="font-mono font-bold text-neutral-900 text-[11px] block">
+                      {minSellPrice} USD
+                    </span>
+                    <span className="text-[9px] text-neutral-400 block">1 {minUnitLabel}</span>
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const ExecutePlanModal: React.FC<Props> = ({
   planItem,
   isOpen,
@@ -135,6 +324,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
   // Section 4: Products returned state: { [productId]: returnedQuantity }
   const [returnsMap, setReturnsMap] = useState<Record<string, number | ''>>({});
 
+  // Section 4.2: Berilmagan mahsulot qaytarish (Ombordagi tovarlardan qaytarish)
+  const [hasExtraReturns, setHasExtraReturns] = useState(false);
+  const [extraReturns, setExtraReturns] = useState<ExtraReturnItem[]>([]);
+
   // Section 5: General report note
   const [reportNote, setReportNote] = useState('');
 
@@ -159,6 +352,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setDeliveryPaymentType('naqd');
       setDeliveryPaidAmount('');
       setReturnsMap({});
+      setHasExtraReturns(false);
+      setExtraReturns([]);
       setReportNote('');
     }
   }, [isOpen, planItem?.id]);
@@ -435,17 +630,121 @@ export const ExecutePlanModal: React.FC<Props> = ({
     setReturnsMap((prev) => ({ ...prev, [prodId]: maxQty }));
   };
 
-  const totalReturnValue = Object.entries(returnsMap).reduce((sum, [pId, qty]) => {
+  // Section 4.2: Berilmagan mahsulot qaytarish handlers
+  const handleAddExtraReturnRow = () => {
+    setExtraReturns((prev) => [
+      ...prev,
+      {
+        id: `ext_ret_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        warehouseId: '',
+        name: '',
+        unit: 'dona',
+        quantity: 1,
+        unitPrice: 0,
+        totalPrice: 0,
+      },
+    ]);
+  };
+
+  const handleRemoveExtraReturnRow = (id: string) => {
+    setExtraReturns((prev) => prev.filter((r) => r.id !== id));
+  };
+
+  const handleSelectExtraReturnProduct = (id: string, warehouseId: string) => {
+    const wh = actualWarehouseProducts.find((w) => w.id === warehouseId);
+    setExtraReturns((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        if (!wh) {
+          return { ...r, warehouseId: '', name: '', unit: 'dona', unitPrice: 0, totalPrice: 0 };
+        }
+        const defaultUnit = wh.packageUnitName || wh.pieceUnitName || wh.baseUnit || 'dona';
+        const uPrice = getWarehouseSellingPriceForUnit(wh, defaultUnit);
+        const qty = typeof r.quantity === 'number' ? r.quantity : 1;
+        return {
+          ...r,
+          warehouseId: wh.id,
+          name: `${wh.brand} - ${wh.name} ${wh.mark1 ? `[${wh.mark1}]` : ''}`.trim(),
+          unit: defaultUnit,
+          quantity: qty,
+          unitPrice: uPrice,
+          totalPrice: Math.round(qty * uPrice * 100) / 100,
+        };
+      })
+    );
+  };
+
+  const handleExtraReturnUnitChange = (id: string, newUnit: string) => {
+    setExtraReturns((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        const wh = actualWarehouseProducts.find((w) => w.id === r.warehouseId);
+        const uPrice = wh
+          ? getWarehouseSellingPriceForUnit(wh, newUnit)
+          : typeof r.unitPrice === 'number'
+          ? r.unitPrice
+          : 0;
+        const qty = typeof r.quantity === 'number' ? r.quantity : 0;
+        return {
+          ...r,
+          unit: newUnit,
+          unitPrice: uPrice,
+          totalPrice: Math.round(qty * uPrice * 100) / 100,
+        };
+      })
+    );
+  };
+
+  const handleExtraReturnQtyChange = (id: string, qtyVal: number | '') => {
+    setExtraReturns((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        const numQty = qtyVal === '' ? '' : Math.max(0, qtyVal);
+        const uPrice = typeof r.unitPrice === 'number' ? r.unitPrice : 0;
+        const tPrice = numQty === '' ? 0 : Math.round(numQty * uPrice * 100) / 100;
+        return { ...r, quantity: numQty, totalPrice: tPrice };
+      })
+    );
+  };
+
+  const handleExtraReturnPriceChange = (id: string, priceVal: number | '') => {
+    setExtraReturns((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        const numPrice = priceVal === '' ? '' : Math.max(0, priceVal);
+        const qty = typeof r.quantity === 'number' ? r.quantity : 0;
+        const tPrice = numPrice === '' ? 0 : Math.round(qty * numPrice * 100) / 100;
+        return { ...r, unitPrice: numPrice, totalPrice: tPrice };
+      })
+    );
+  };
+
+  const totalDirectReturnValue = Object.entries(returnsMap).reduce((sum, [pId, qty]) => {
     const numQty = typeof qty === 'number' ? qty : Number(qty) || 0;
     if (numQty <= 0) return sum;
     const prod = clientProducts.find((p) => p.id === pId);
     return sum + numQty * (prod?.unitPrice || 0);
   }, 0);
 
-  const totalReturnCount = Object.entries(returnsMap).reduce((sum, [_, qty]) => {
+  const totalExtraReturnValue = hasExtraReturns
+    ? extraReturns.reduce((sum, r) => sum + (r.totalPrice || 0), 0)
+    : 0;
+
+  const totalReturnValue = Math.round((totalDirectReturnValue + totalExtraReturnValue) * 100) / 100;
+
+  const totalDirectReturnCount = Object.entries(returnsMap).reduce((sum, [_, qty]) => {
     const numQty = typeof qty === 'number' ? qty : Number(qty) || 0;
     return sum + (numQty > 0 ? numQty : 0);
   }, 0);
+
+  const totalExtraReturnCount = hasExtraReturns
+    ? extraReturns.reduce((sum, r) => {
+        const q = typeof r.quantity === 'number' ? r.quantity : 0;
+        return sum + (q > 0 ? q : 0);
+      }, 0)
+    : 0;
+
+  const totalReturnCount = totalDirectReturnCount + totalExtraReturnCount;
 
   // Open Nakladnoy Modal for current state (Delivered or Returned products)
   const handleOpenNakladnoy = () => {
@@ -455,7 +754,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       ? products.filter((p) => p.name.trim() !== '')
       : [];
 
-    const validReturned = showReturnSection
+    const directReturned = showReturnSection
       ? Object.entries(returnsMap)
           .filter(([_, qty]) => (typeof qty === 'number' ? qty > 0 : Number(qty) > 0))
           .map(([prodId, qty]) => {
@@ -467,9 +766,30 @@ export const ExecutePlanModal: React.FC<Props> = ({
               unit: original?.unit || 'dona',
               quantity: numQty,
               unitPrice: original?.unitPrice || 0,
+              warehouseId: original?.warehouseId,
             };
           })
       : [];
+
+    const extraReturnedList =
+      showReturnSection && hasExtraReturns
+        ? extraReturns
+            .filter(
+              (r) =>
+                r.name.trim() !== '' &&
+                (typeof r.quantity === 'number' ? r.quantity > 0 : false)
+            )
+            .map((r) => ({
+              productId: r.id,
+              name: r.name,
+              unit: r.unit,
+              quantity: typeof r.quantity === 'number' ? r.quantity : 0,
+              unitPrice: typeof r.unitPrice === 'number' ? r.unitPrice : 0,
+              warehouseId: r.warehouseId || undefined,
+            }))
+        : [];
+
+    const validReturned = [...directReturned, ...extraReturnedList];
 
     const effectivePaid =
       deliveryPaymentType === 'qarzga'
@@ -604,8 +924,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
           }
         : undefined;
 
-    // 3. Products returned (Section 4)
-    const productsReturned = showReturnSection
+    // 3. Products returned (Section 4.1 + 4.2)
+    const directReturned = showReturnSection
       ? Object.entries(returnsMap)
           .filter(([_, qty]) => (typeof qty === 'number' ? qty > 0 : Number(qty) > 0))
           .map(([prodId, qty]) => {
@@ -621,6 +941,26 @@ export const ExecutePlanModal: React.FC<Props> = ({
             };
           })
       : [];
+
+    const extraReturnedList =
+      showReturnSection && hasExtraReturns
+        ? extraReturns
+            .filter(
+              (r) =>
+                r.name.trim() !== '' &&
+                (typeof r.quantity === 'number' ? r.quantity > 0 : false)
+            )
+            .map((r) => ({
+              productId: r.id,
+              name: r.name,
+              unit: r.unit,
+              quantity: typeof r.quantity === 'number' ? r.quantity : 0,
+              unitPrice: typeof r.unitPrice === 'number' ? r.unitPrice : 0,
+              warehouseId: r.warehouseId || undefined,
+            }))
+        : [];
+
+    const productsReturned = [...directReturned, ...extraReturnedList];
 
     onSaveReport(planItem.id, {
       actionDone,
@@ -1052,38 +1392,17 @@ export const ExecutePlanModal: React.FC<Props> = ({
                               )}
                             </div>
 
-                            {/* Ombordagi mahsulotni tanlash */}
+                            {/* Ombordagi mahsulotni tanlash (3 ta so'z orqali qidirish) */}
                             <div>
                               <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
                                 Ombordagi mahsulot <span className="text-rose-600">*</span>
                               </label>
-                              <select
-                                value={p.warehouseId || ''}
+                              <WarehouseProductSearchSelect
+                                products={actualWarehouseProducts}
+                                selectedId={p.warehouseId || ''}
                                 disabled={isClosed}
-                                onChange={(e) => handleSelectWarehouseProduct(idx, e.target.value)}
-                                className="w-full px-3 py-2 bg-neutral-50 focus:bg-white rounded-xl border border-neutral-200 focus:border-rose-500 text-xs font-semibold text-neutral-900 outline-none"
-                              >
-                                <option value="">-- Ombordagi mahsulotni tanlang --</option>
-                                {actualWarehouseProducts.map((wh) => {
-                                  const minSellPrice =
-                                    wh.minSellingPrice !== undefined
-                                      ? wh.minSellingPrice
-                                      : wh.price || 0;
-                                  const minUnitLabel =
-                                    (wh.minSellingPricingUnitType || wh.pricingUnitType) ===
-                                      'package' && wh.packageUnitName
-                                      ? wh.packageUnitName
-                                      : wh.pieceUnitName || 'dona';
-                                  const stockInfo = wh.packageUnitName
-                                    ? `Zaxira: ${wh.totalPieces} dona / ${Math.floor(wh.totalPieces / (wh.piecesPerPackage || 1))} ${wh.packageUnitName}`
-                                    : `Zaxira: ${wh.totalPieces} ${wh.pieceUnitName || 'dona'}`;
-                                  return (
-                                    <option key={wh.id} value={wh.id}>
-                                      {wh.brand} - {wh.name} {wh.mark1 ? `[${wh.mark1}]` : ''} ({stockInfo}) — Eng kam sotilish narxi: {minSellPrice} USD (1 {minUnitLabel})
-                                    </option>
-                                  );
-                                })}
-                              </select>
+                                onSelect={(whId) => handleSelectWarehouseProduct(idx, whId)}
+                              />
                               {selectedWh && (
                                 <div className="mt-1.5 p-2 rounded-lg bg-indigo-50/70 border border-indigo-200/80 flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium">
                                   <span className="text-neutral-700">
@@ -1391,7 +1710,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
             </div>
 
             {/* ========================================================= */}
-            {/* SECTION 4: MAHSULOTLARNI OMBORGA QAYTARISH */}
+            {/* SECTION 4: MAHSULOTLARNI OMBORGA QAYTARISH (4.1 va 4.2) */}
             {/* ========================================================= */}
             {showReturnSection && (
               <div className="space-y-3 pt-3 border-t border-rose-100 animate-in fade-in duration-150">
@@ -1402,10 +1721,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     </div>
                     <div>
                       <label className="text-xs font-bold text-neutral-900 uppercase tracking-wide block">
-                        4. Mijozga berilgan mahsulotlarni omborga qaytarish
+                        4. Mahsulotlarni omborga qaytarish (4.1 va 4.2)
                       </label>
                       <span className="text-[10px] text-neutral-500">
-                        Joyiga borilganda mijoz qaytargan tovarlarni kiritish (majburiy emas)
+                        Joyiga borilganda mijoz qaytargan tovarlarni ombor zaxirasiga qo'shish
                       </span>
                     </div>
                   </div>
@@ -1414,7 +1733,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     {totalReturnCount > 0 && (
                       <>
                         <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200 font-mono">
-                          {totalReturnCount} dona qaytarilmoqda
+                          {totalReturnCount} ta tovar qaytarilmoqda
                         </span>
                         <button
                           type="button"
@@ -1429,44 +1748,46 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   </div>
                 </div>
 
-                {clientProducts.length === 0 ? (
-                  <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 text-neutral-500 text-xs flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 text-neutral-400 shrink-0" />
-                    <span>Ushbu mijozda hozircha qaytarish uchun berilgan mahsulotlar yo'q.</span>
+                {/* 4.1: Berilgan mahsulotlarni omborga qaytarish */}
+                <div className="p-3.5 bg-rose-50/30 rounded-2xl border border-rose-200/80 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-neutral-800">
+                      4.1. Berilgan mahsulotlarni qaytarish
+                    </span>
+                    <span className="text-[10px] text-neutral-500">
+                      Mijozdagi mavjud tovarlar ro'yxatidan
+                    </span>
                   </div>
-                ) : (
-                  <div className="p-3.5 bg-rose-50/30 rounded-2xl border border-rose-200/80 space-y-3">
-                    <div className="text-[11px] text-neutral-600 font-medium">
-                      Mijozdagi mavjud tovarlar ro'yxatidan qaytariladigan miqdorni kiriting:
-                    </div>
 
+                  {clientProducts.length === 0 ? (
+                    <div className="p-2.5 bg-neutral-50 rounded-xl border border-neutral-200 text-neutral-500 text-xs flex items-center gap-2">
+                      <AlertCircle className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                      <span>Ushbu mijozda hozircha oldin berilgan mahsulotlar mavjud emas.</span>
+                    </div>
+                  ) : (
                     <div className="space-y-2">
                       {clientProducts.map((p) => {
                         const curVal = returnsMap[p.id];
-
                         return (
                           <div
                             key={p.id}
-                            className="p-3 bg-white rounded-xl border border-neutral-200 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                            className="p-2.5 bg-white rounded-xl border border-neutral-200 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                           >
                             <div className="flex-1">
                               <div className="font-bold text-xs text-neutral-900">{p.name}</div>
-                              <div className="text-[11px] text-neutral-500 mt-0.5 flex items-center gap-2">
+                              <div className="text-[10px] text-neutral-500 mt-0.5 flex items-center gap-2">
                                 <span>
-                                  Mijozda mavjud:{' '}
-                                  <strong className="text-neutral-800 font-mono">
-                                    {p.quantity} {p.unit}
-                                  </strong>
+                                  Mijozda: <strong className="text-neutral-800 font-mono">{p.quantity} {p.unit}</strong>
                                 </span>
                                 {p.unitPrice > 0 && (
-                                  <span>• Birlik narxi: {formatMoney(p.unitPrice)}</span>
+                                  <span>• Narx: {formatMoney(p.unitPrice)}</span>
                                 )}
                               </div>
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
                               <div className="flex items-center gap-1.5">
-                                <label className="text-[11px] font-semibold text-neutral-600">
+                                <label className="text-[10px] font-semibold text-neutral-600">
                                   Qaytarish:
                                 </label>
                                 <input
@@ -1482,7 +1803,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                   }
                                   className="w-20 px-2 py-1 bg-neutral-50 border border-neutral-300 rounded-lg text-xs font-mono font-bold text-neutral-900 text-center outline-none focus:bg-white focus:border-rose-500"
                                 />
-                                <span className="text-[11px] text-neutral-500 font-medium">
+                                <span className="text-[10px] text-neutral-500 font-medium">
                                   {p.unit}
                                 </span>
                               </div>
@@ -1500,20 +1821,196 @@ export const ExecutePlanModal: React.FC<Props> = ({
                         );
                       })}
                     </div>
+                  )}
+                </div>
 
-                    {totalReturnCount > 0 && (
-                      <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-900 flex items-center justify-between flex-wrap gap-2 animate-in fade-in">
-                        <div className="flex items-center gap-1.5">
-                          <Check className="w-4 h-4 text-emerald-700 shrink-0" />
-                          <span>
-                            <strong>{totalReturnCount} dona</strong> tovar to'g'ridan-to'g'ri omborga qo'shiladi.
-                          </span>
-                        </div>
-                        {totalReturnValue > 0 && (
-                          <div className="font-bold text-emerald-950 font-mono">
-                            Mijoz qarzi {formatMoney(totalReturnValue)} ga kamayadi
+                {/* 4.2: Berilmagan mahsulot qaytarish (Ombordagi tovarlardan qaytarish) */}
+                <div className="p-3.5 bg-indigo-50/40 rounded-2xl border border-indigo-200/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="hasExtraReturnsCheck"
+                        disabled={isClosed}
+                        checked={hasExtraReturns}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setHasExtraReturns(checked);
+                          if (checked && extraReturns.length === 0) {
+                            handleAddExtraReturnRow();
+                          }
+                        }}
+                        className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
+                      />
+                      <label
+                        htmlFor="hasExtraReturnsCheck"
+                        className="text-xs font-bold text-indigo-950 uppercase tracking-wide cursor-pointer flex items-center gap-1.5"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-indigo-700" />
+                        <span>4.2. Berilmagan mahsulot qaytarish</span>
+                      </label>
+                    </div>
+
+                    {hasExtraReturns && (
+                      <button
+                        type="button"
+                        disabled={isClosed}
+                        onClick={handleAddExtraReturnRow}
+                        className="flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-white px-2.5 py-1 rounded-lg border border-indigo-200 hover:bg-indigo-50 cursor-pointer shadow-2xs"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Tovar qo'shish</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <p className="text-[10px] text-neutral-500">
+                    Mijoz oldin o'ziga berilmagan boshqa mahsulotni qaytarganda ombordagi tovar nomlari bo'yicha qidirib kiritiladi va unga mos o'lcham turi (litr, dona, kanistr, korobka) belgilanadi.
+                  </p>
+
+                  {hasExtraReturns && (
+                    <div className="space-y-3 pt-1">
+                      {extraReturns.map((retItem, rIdx) => {
+                        const whObj = actualWarehouseProducts.find((w) => w.id === retItem.warehouseId);
+                        const availableUnits = Array.from(
+                          new Set(
+                            [
+                              whObj?.packageUnitName,
+                              whObj?.pieceUnitName,
+                              whObj?.baseUnit,
+                              'litr',
+                              'dona',
+                              'kanistr',
+                              'korobka',
+                              'kg',
+                            ].filter(Boolean) as string[]
+                          )
+                        );
+
+                        return (
+                          <div
+                            key={retItem.id}
+                            className="p-3 bg-white rounded-xl border border-neutral-200 shadow-2xs space-y-2.5"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-bold text-neutral-700">
+                                Berilmagan qaytarish #{rIdx + 1}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={isClosed}
+                                onClick={() => handleRemoveExtraReturnRow(retItem.id)}
+                                className="p-1 text-neutral-400 hover:text-rose-600 cursor-pointer"
+                                title="O'chirish"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+
+                            {/* Ombordagi mahsulot qidirish va tanlash (multi-word search) */}
+                            <div>
+                              <label className="block text-[10px] font-semibold text-neutral-600 mb-1">
+                                Ombordagi mahsulot turi <span className="text-rose-600">*</span>
+                              </label>
+                              <WarehouseProductSearchSelect
+                                products={actualWarehouseProducts}
+                                selectedId={retItem.warehouseId}
+                                disabled={isClosed}
+                                placeholder="Ombordagi tovar nomini qidiring (3 ta so'z orqali)..."
+                                onSelect={(whId) => handleSelectExtraReturnProduct(retItem.id, whId)}
+                              />
+                            </div>
+
+                            {/* O'lcham turi (litr, dona, kanistr, korobka), Miqdor, Birlik narx, Jami */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              <div>
+                                <label className="block text-[10px] font-semibold text-neutral-600 mb-1">
+                                  O'lcham turi <span className="text-rose-600">*</span>
+                                </label>
+                                <select
+                                  disabled={isClosed}
+                                  value={retItem.unit}
+                                  onChange={(e) => handleExtraReturnUnitChange(retItem.id, e.target.value)}
+                                  className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-white text-xs font-medium text-neutral-900 outline-none h-[34px]"
+                                >
+                                  {availableUnits.map((u) => (
+                                    <option key={u} value={u}>
+                                      {u}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="block text-[10px] font-semibold text-neutral-600 mb-1">
+                                  Qaytarish miqdori <span className="text-rose-600">*</span>
+                                </label>
+                                <input
+                                  type="number"
+                                  disabled={isClosed}
+                                  min="0.01"
+                                  step="any"
+                                  placeholder="1"
+                                  value={retItem.quantity}
+                                  onChange={(e) =>
+                                    handleExtraReturnQtyChange(
+                                      retItem.id,
+                                      e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                                    )
+                                  }
+                                  className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-white text-xs font-mono font-bold text-neutral-900 outline-none focus:border-indigo-500 h-[34px]"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-[10px] font-semibold text-neutral-600 mb-1">
+                                  Birlik narxi (USD)
+                                </label>
+                                <input
+                                  type="number"
+                                  disabled={isClosed}
+                                  min="0"
+                                  step="any"
+                                  placeholder="0"
+                                  value={retItem.unitPrice}
+                                  onChange={(e) =>
+                                    handleExtraReturnPriceChange(
+                                      retItem.id,
+                                      e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                                    )
+                                  }
+                                  className="w-full px-2 py-1.5 rounded-lg border border-neutral-200 bg-white text-xs font-mono text-neutral-900 outline-none focus:border-indigo-500 h-[34px]"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="block text-[10px] font-semibold text-neutral-600 mb-1">
+                                  Qaytarish summasi
+                                </label>
+                                <div className="px-2 py-1.5 bg-neutral-100 rounded-lg text-xs font-mono font-bold text-neutral-800 flex items-center h-[34px] truncate">
+                                  {formatMoney(retItem.totalPrice || 0)}
+                                </div>
+                              </div>
+                            </div>
                           </div>
-                        )}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Jami qaytarish xabarnomasi */}
+                {totalReturnCount > 0 && (
+                  <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-900 flex items-center justify-between flex-wrap gap-2 animate-in fade-in">
+                    <div className="flex items-center gap-1.5">
+                      <Check className="w-4 h-4 text-emerald-700 shrink-0" />
+                      <span>
+                        Jami <strong>{totalReturnCount} ta</strong> tovar (4.1 va 4.2 bo'yicha) to'g'ridan-to'g'ri ombor zaxirasiga qo'shiladi.
+                      </span>
+                    </div>
+                    {totalReturnValue > 0 && (
+                      <div className="font-bold text-emerald-950 font-mono">
+                        Mijoz qarzi {formatMoney(totalReturnValue)} ga kamaytiriladi
                       </div>
                     )}
                   </div>

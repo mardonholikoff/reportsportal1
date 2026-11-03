@@ -306,7 +306,8 @@ export async function addSystemLog(entry: {
     | 'ombor_kirimi'
     | 'ombor_ochirish'
     | 'oylik_arxivlash'
-    | 'reja_yopish';
+    | 'reja_yopish'
+    | 'reja_ochirish';
   actionTitle: string;
   details: string;
   metadata?: Record<string, any>;

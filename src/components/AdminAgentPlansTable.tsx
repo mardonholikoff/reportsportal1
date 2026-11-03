@@ -29,18 +29,43 @@ import {
   PackageMinus,
   Calendar,
   Printer,
+  Trash2,
 } from 'lucide-react';
 
 interface Props {
   plans: DailyPlanItem[];
   clients?: Client[];
+  onRemovePlanItems?: (planItemIds: string[], reason: string) => void;
 }
 
-export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
+const PRESET_REMOVE_REASONS = [
+  "Mijoz buyurtmani bekor qildi",
+  "Reja xato kiritilgan",
+  "Mijoz vaqtincha faoliyatini to'xtatgan",
+  "Reja boshqa kunga ko'chirildi",
+  "Mijoz bilan aloqa o'rnatib bo'lmadi",
+];
+
+export const AdminAgentPlansTable: React.FC<Props> = ({
+  plans,
+  clients,
+  onRemovePlanItems,
+}) => {
   const [searchTerm, setSearchTerm] = useState('');
   // Admin kirganda birinchi bo'lib hali bajarilib yopilmaganlar ('jarayonda') ko'rinadi, yopilganlar faqat 'bajarildi'da turadi
   const [statusFilter, setStatusFilter] = useState<'jarayonda' | 'bajarildi' | 'all'>('jarayonda');
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
+
+  // Date filter state: 'all' | 'today' | 'yesterday' | 'custom'
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
+  const [customDate, setCustomDate] = useState<string>('');
+
+  // Selection & Removal from plan modal state (mandatory reason)
+  const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
+  const [removeModalTargetIds, setRemoveModalTargetIds] = useState<string[] | null>(null);
+  const [removeReason, setRemoveReason] = useState<string>('');
+  const [selectedRemovePreset, setSelectedRemovePreset] = useState<string>('');
+
   const [inspectedPlan, setInspectedPlan] = useState<DailyPlanItem | null>(null);
   const [isAdminPdfModalOpen, setIsAdminPdfModalOpen] = useState<boolean>(false);
 
@@ -284,7 +309,17 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
       if (statusFilter === 'bajarildi' && !completedOrClosed) return false;
       if (statusFilter === 'jarayonda' && completedOrClosed) return false;
 
-      // 3. Agent filter
+      // 3. Date filter: 'all' | 'today' | 'yesterday' | 'custom'
+      if (dateFilter !== 'all') {
+        const planDateStr = (p.planDate || p.createdAt || '').slice(0, 10);
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+        if (dateFilter === 'today' && planDateStr !== todayStr) return false;
+        if (dateFilter === 'yesterday' && planDateStr !== yesterdayStr) return false;
+        if (dateFilter === 'custom' && customDate && planDateStr !== customDate) return false;
+      }
+
+      // 4. Agent filter
       if (selectedAgent !== 'all' && p.agentUsername !== selectedAgent) {
         return false;
       }
@@ -297,7 +332,54 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
       if (aDone !== bDone) return aDone - bDone;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [uniquePlans, searchTerm, statusFilter, selectedAgent]);
+  }, [uniquePlans, searchTerm, statusFilter, selectedAgent, dateFilter, customDate]);
+
+  const toggleSelectPlanItem = (id: string, e?: React.MouseEvent | React.ChangeEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedPlanIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAllFiltered = () => {
+    const allIds = filteredPlans.map((p) => p.id);
+    const allSelected = allIds.length > 0 && allIds.every((id) => selectedPlanIds.includes(id));
+    if (allSelected) {
+      setSelectedPlanIds((prev) => prev.filter((id) => !allIds.includes(id)));
+    } else {
+      setSelectedPlanIds((prev) => Array.from(new Set([...prev, ...allIds])));
+    }
+  };
+
+  const handleOpenRemoveSingle = (item: DailyPlanItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setRemoveModalTargetIds([item.id]);
+    setRemoveReason('');
+    setSelectedRemovePreset('');
+  };
+
+  const handleOpenRemoveBulk = () => {
+    const validSelected = selectedPlanIds.filter((id) =>
+      filteredPlans.some((p) => p.id === id)
+    );
+    if (validSelected.length === 0) return;
+    setRemoveModalTargetIds(validSelected);
+    setRemoveReason('');
+    setSelectedRemovePreset('');
+  };
+
+  const handleExecuteRemove = () => {
+    if (!removeModalTargetIds || removeModalTargetIds.length === 0) return;
+    const finalReason = (removeReason.trim() || selectedRemovePreset).trim();
+    if (!finalReason) return;
+    if (onRemovePlanItems) {
+      onRemovePlanItems(removeModalTargetIds, finalReason);
+    }
+    setSelectedPlanIds((prev) => prev.filter((id) => !removeModalTargetIds.includes(id)));
+    setRemoveModalTargetIds(null);
+    setRemoveReason('');
+    setSelectedRemovePreset('');
+  };
 
   return (
     <div className="space-y-5">
@@ -549,6 +631,106 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
         </div>
       </div>
 
+      {/* Sana bo'yicha filtr paneli */}
+      <div className="px-4 py-2.5 rounded-2xl bg-rose-50/40 border border-rose-100 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-bold text-neutral-700 flex items-center gap-1">
+            <Calendar className="w-3.5 h-3.5 text-rose-600" />
+            <span>Sana bo'yicha filtr:</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setDateFilter('all')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'all'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Barcha sanalar
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateFilter('today')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'today'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Bugun
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateFilter('yesterday')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'yesterday'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Kecha
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateFilter('custom')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'custom'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Maxsus sana
+          </button>
+          {dateFilter === 'custom' && (
+            <input
+              type="date"
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+              className="px-2 py-1 rounded-lg border border-neutral-300 text-xs font-mono font-medium outline-none focus:border-rose-500 bg-white"
+            />
+          )}
+        </div>
+        <div className="text-[11px] font-medium text-neutral-500">
+          Ko'rsatilmoqda: <strong className="text-neutral-800">{filteredPlans.length} ta</strong> rejadagi mijoz
+        </div>
+      </div>
+
+      {/* Multi-Selection & Bulk Actions Bar */}
+      {filteredPlans.length > 0 && (
+        <div className="px-4 py-2.5 rounded-2xl bg-neutral-50 border border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <label className="inline-flex items-center gap-2 font-bold text-neutral-800 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={
+                filteredPlans.length > 0 &&
+                filteredPlans.every((p) => selectedPlanIds.includes(p.id))
+              }
+              onChange={toggleSelectAllFiltered}
+              className="w-4 h-4 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
+            />
+            <span>
+              Mijozlarni tanlash ({selectedPlanIds.filter((id) => filteredPlans.some((p) => p.id === id)).length} / {filteredPlans.length} ta tanlandi)
+            </span>
+          </label>
+
+          <div className="flex items-center gap-2">
+            {selectedPlanIds.filter((id) => filteredPlans.some((p) => p.id === id)).length > 0 && (
+              <button
+                type="button"
+                onClick={handleOpenRemoveBulk}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>
+                  Rejadan olib tashlash ({selectedPlanIds.filter((id) => filteredPlans.some((p) => p.id === id)).length} ta)
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ========================================================= */}
       {/* JADVAL QISMI */}
       {/* ========================================================= */}
@@ -627,7 +809,14 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                 >
                   {/* Top Bar: #, Agent, Status */}
                   <div className="flex items-center justify-between gap-2 border-b border-neutral-100 pb-2">
-                    <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={selectedPlanIds.includes(item.id)}
+                        onChange={(e) => toggleSelectPlanItem(item.id, e)}
+                        className="w-4 h-4 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
+                        title="Tanlash"
+                      />
                       <span className="font-mono text-xs font-bold text-neutral-400">
                         #{idx + 1}
                       </span>
@@ -778,14 +967,25 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                       {item.completedAt ? `Bajarildi: ${formatDateDMY(item.completedAt)}` : 'Bajarilmagan'}
                     </span>
 
-                    <button
-                      type="button"
-                      onClick={() => setInspectedPlan(item)}
-                      className="px-3 py-1 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-800 font-bold text-xs transition flex items-center gap-1 cursor-pointer border border-rose-200"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Batafsil</span>
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenRemoveSingle(item, e)}
+                        className="px-2.5 py-1 rounded-xl bg-neutral-100 hover:bg-rose-100 text-rose-700 font-bold text-xs transition flex items-center gap-1 cursor-pointer border border-neutral-200"
+                        title="Rejadan olib tashlash"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                        <span>O'chirish</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setInspectedPlan(item)}
+                        className="px-3 py-1 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-800 font-bold text-xs transition flex items-center gap-1 cursor-pointer border border-rose-200"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Batafsil</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               );
@@ -797,7 +997,20 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
             <table className="w-full text-left text-xs">
             <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider">
               <tr>
-                <th className="py-3 px-3">#</th>
+                <th className="py-3 px-3 w-[4%] text-center">
+                  <div className="flex items-center justify-center">
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredPlans.length > 0 &&
+                        filteredPlans.every((p) => selectedPlanIds.includes(p.id))
+                      }
+                      onChange={toggleSelectAllFiltered}
+                      className="w-4 h-4 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
+                      title="Barchasini tanlash"
+                    />
+                  </div>
+                </th>
                 <th className="py-3 px-3">Qaysi agent orqali qo'shilgan</th>
                 <th className="py-3 px-3">Mijoz & Telefon</th>
                 <th className="py-3 px-3">Manzili</th>
@@ -809,13 +1022,14 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                 <th className="py-3 px-3 text-right">Tushumlar</th>
                 <th className="py-3 px-3 text-right">Tovar berilishi / qaytishi</th>
                 <th className="py-3 px-3">Bajarilgan vaqt</th>
-                <th className="py-3 px-3 text-center">Batafsil</th>
+                <th className="py-3 px-3 text-center">Amallar</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-rose-100/60">
               {filteredPlans.map((item, idx) => {
                 const isClosed = item.isClosed || item.status === 'yopildi';
                 const isCompleted = isPlanCompleted(item);
+                const isSelected = selectedPlanIds.includes(item.id);
                 const actions = getPlanActions(item);
                 const hasActions = actions.length > 0;
 
@@ -869,9 +1083,25 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                 );
 
                 return (
-                  <tr key={item.id} className="hover:bg-rose-50/30 transition-colors">
-                    {/* Index */}
-                    <td className="py-3 px-3 font-mono text-neutral-400">{idx + 1}</td>
+                  <tr
+                    key={item.id}
+                    className={`transition-colors ${
+                      isSelected ? 'bg-rose-50/60' : 'hover:bg-rose-50/30'
+                    }`}
+                  >
+                    {/* Index + Selection Checkbox */}
+                    <td className="py-3 px-3 font-mono text-neutral-400 text-center">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(e) => toggleSelectPlanItem(item.id, e)}
+                          className="w-4 h-4 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
+                          title="Tanlash"
+                        />
+                        <span>{idx + 1}</span>
+                      </div>
+                    </td>
 
                     {/* Qaysi agent orqali qo'shilgan (Alohida ustun) */}
                     <td className="py-3 px-3">
@@ -1209,16 +1439,26 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                       )}
                     </td>
 
-                    {/* Batafsil ko'rish tugmasi */}
+                    {/* Amallar: Batafsil ko'rish + Rejadan olib tashlash */}
                     <td className="py-3 px-3.5 text-center whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() => setInspectedPlan(item)}
-                        className="p-1.5 rounded-xl bg-neutral-100 hover:bg-rose-100 text-neutral-700 hover:text-rose-900 transition cursor-pointer"
-                        title="Batafsil ma'lumotlarni ko'rish"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setInspectedPlan(item)}
+                          className="p-1.5 rounded-xl bg-neutral-100 hover:bg-rose-100 text-neutral-700 hover:text-rose-900 transition cursor-pointer"
+                          title="Batafsil ma'lumotlarni ko'rish"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenRemoveSingle(item)}
+                          className="p-1.5 rounded-xl bg-neutral-100 hover:bg-rose-100 text-neutral-600 hover:text-rose-700 transition cursor-pointer"
+                          title="Rejadan olib tashlash"
+                        >
+                          <Trash2 className="w-4 h-4 text-rose-600" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1466,6 +1706,105 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                 className="px-5 py-2 rounded-xl bg-neutral-900 text-white text-xs font-bold hover:bg-neutral-800 transition"
               >
                 Yopish
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* REJADAN OLIB TASHLASH MODALI (Majburiy izoh bilan) */}
+      {/* ========================================================= */}
+      {removeModalTargetIds && removeModalTargetIds.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-rose-100 space-y-4">
+            <div className="flex items-center gap-3 text-rose-700">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                <Trash2 className="w-6 h-6 text-rose-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  Rejadan olib tashlash ({removeModalTargetIds.length} ta)
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Mijozlarni agent rejasidan chiqarib tashlash uchun sababini ko'rsating
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-2">
+              <p className="font-semibold text-rose-900">
+                Tanlangan mijozlar soni: <strong>{removeModalTargetIds.length} ta</strong>
+              </p>
+              <p className="text-neutral-600 leading-relaxed">
+                Ushbu mijozlar kunlik rejadan butunlay olib tashlanadi va kiritilgan sabab tizim audit tarixida saqlanadi.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-neutral-700">
+                Olib tashlash sababi (majburiy): <span className="text-rose-600">*</span>
+              </label>
+
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_REMOVE_REASONS.map((preset) => {
+                  const isSelected = selectedRemovePreset === preset;
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => {
+                        setSelectedRemovePreset(preset);
+                        setRemoveReason(preset);
+                      }}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
+                        isSelected
+                          ? 'bg-rose-700 border-rose-700 text-white shadow-xs font-semibold'
+                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <textarea
+                rows={3}
+                value={removeReason}
+                onChange={(e) => {
+                  setRemoveReason(e.target.value);
+                  setSelectedRemovePreset(e.target.value);
+                }}
+                placeholder="Nima sababdan rejadan olib tashlanayotganini yozing..."
+                className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setRemoveModalTargetIds(null);
+                  setRemoveReason('');
+                  setSelectedRemovePreset('');
+                }}
+                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                disabled={!removeReason.trim() && !selectedRemovePreset.trim()}
+                onClick={handleExecuteRemove}
+                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Rejadan olib tashlash ({removeModalTargetIds.length} ta)</span>
               </button>
             </div>
           </div>

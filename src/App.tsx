@@ -592,9 +592,7 @@ export default function App() {
           storageService.saveClients(mergedList);
           setClients(mergedList);
           // Re-evaluate dailyPlans so any plans belonging to removed clients disappear immediately
-          setDailyPlans(
-            storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
-          );
+          setDailyPlans(storageService.getActive24hPlans());
         }
       },
       onPlansChange: (remotePlans) => {
@@ -623,9 +621,7 @@ export default function App() {
           }
 
           storageService.saveDailyPlans(uniquePlans);
-          setDailyPlans(
-            storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
-          );
+          setDailyPlans(storageService.getActive24hPlans());
         }
       },
       onWarehouseChange: (remoteProducts) => {
@@ -1034,9 +1030,11 @@ export default function App() {
       });
 
       showToast(`Hisobot saqlandi: ${report.actionDone}. Mijoz balansi yangilandi.`);
-      setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
+      setDailyPlans(storageService.getActive24hPlans());
       setClients(storageService.getClients());
-      setWarehouseProducts(storageService.getWarehouseProducts());
+      const updatedWh = storageService.getWarehouseProducts();
+      setWarehouseProducts(updatedWh);
+      syncWarehouseProductsBulkToFirestore(updatedWh);
     }
   };
 
@@ -1072,7 +1070,7 @@ export default function App() {
         details: `Reja ID: ${planItemId}. Mijoz: ${updatedPlan?.clientName || ''}. Agent @${currentUsername} tomonidan amallar yakunlandi. Yopilish sababi: ${reason}`,
       });
       showToast(`Mijoz bo'yicha reja yopildi. Sabab: ${reason}`);
-      setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
+      setDailyPlans(storageService.getActive24hPlans());
       setClients(storageService.getClients());
     }
   };
@@ -1087,7 +1085,7 @@ export default function App() {
     );
     if (reopenedItems.length > 0) {
       // 1. Darhol lokal React holatini va localStorage'ni faol rejalarga yangilaymiz
-      setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
+      setDailyPlans(storageService.getActive24hPlans());
       setClients(storageService.getClients());
 
       // 2. Firestore'ga barcha ochilgan rejalarni bitta atomic writeBatch bilan yozamiz
@@ -1113,6 +1111,33 @@ export default function App() {
         reopenedItems.length === 1
           ? `"${reopenedItems[0].clientName}" rejasi qayta ochildi!`
           : `${reopenedItems.length} ta mijoz rejasi qayta ochildi!`
+      );
+    }
+  };
+
+  // Handle Remove Daily Plan Items (Single or Bulk) with mandatory reason
+  const handleRemoveDailyPlanItems = (planItemIds: string[], reason: string) => {
+    const currentUsername = user?.username || 'agentp1';
+    const result = storageService.removeDailyPlanItems(planItemIds, currentUsername, reason);
+    if (result.success && result.removedPlans.length > 0) {
+      result.removedPlans.forEach((rp) => {
+        deletePlanFromFirestore(rp.id);
+      });
+      setDailyPlans(storageService.getActive24hPlans());
+      setClients(storageService.getClients());
+
+      const clientNames = result.removedPlans.map((p) => p.clientName).join(', ');
+      addSystemLog({
+        userId: currentUsername,
+        userRole: user?.role || 'agent',
+        actionType: 'reja_ochirish',
+        actionTitle: `Rejadagi mijoz(lar) olib tashlandi (${result.removedPlans.length} ta)`,
+        details: `Mijozlar: ${clientNames}. Olib tashlash izohi: ${reason}`,
+      });
+      showToast(
+        result.removedPlans.length === 1
+          ? `"${result.removedPlans[0].clientName}" rejadan olib tashlandi.`
+          : `${result.removedPlans.length} ta mijoz rejadan olib tashlandi.`
       );
     }
   };
@@ -1274,6 +1299,7 @@ export default function App() {
                   onUpdatePlanNote={handleUpdatePlanNote}
                   onClosePlanItem={handleClosePlanItem}
                   onReopenPlanItems={handleReopenPlanItems}
+                  onRemovePlanItems={handleRemoveDailyPlanItems}
                 />
               </div>
             )}
@@ -1665,7 +1691,11 @@ export default function App() {
             {isAdminPlansOpen && (
               <div className="p-5 sm:p-6 pt-0 border-t border-rose-100/70 animate-in fade-in duration-150">
                 <div className="pt-4">
-                  <AdminAgentPlansTable plans={dailyPlans} clients={clients} />
+                  <AdminAgentPlansTable
+                    plans={dailyPlans}
+                    clients={clients}
+                    onRemovePlanItems={handleRemoveDailyPlanItems}
+                  />
                 </div>
               </div>
             )}

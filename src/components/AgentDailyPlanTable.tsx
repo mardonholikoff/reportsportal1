@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Client, DailyPlanItem } from '../types';
-import { formatMoney, formatDateDMY } from '../utils/format';
+import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
 import { storageService, isClosedPlanExpired7Days } from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import {
@@ -21,6 +21,8 @@ import {
   Target,
   Printer,
   Clock,
+  Trash2,
+  User,
 } from 'lucide-react';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import { RejaPrintModal } from './RejaPrintModal';
@@ -35,6 +37,7 @@ interface Props {
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
   onClosePlanItem?: (planItemId: string, closeReason?: string) => void;
   onReopenPlanItems?: (planItemIds: string[], reopenReason: string) => void;
+  onRemovePlanItems?: (planItemIds: string[], reason: string) => void;
 }
 
 const PRESET_CLOSE_REASONS = [
@@ -50,6 +53,14 @@ const PRESET_REOPEN_REASONS = [
   "Yangi mahsulot topshirish uchun",
   "Hisob-kitobga tuzatish kiritish uchun",
   "Mijoz qayta aloqaga chiqdi",
+];
+
+const PRESET_REMOVE_REASONS = [
+  "Mijoz buyurtmani bekor qildi",
+  "Reja xato kiritilgan",
+  "Mijoz vaqtincha faoliyatini to'xtatgan",
+  "Reja boshqa kunga ko'chirildi",
+  "Mijoz bilan aloqa o'rnatib bo'lmadi",
 ];
 
 // Calculate paid and debt amounts for a plan item (including historical actions)
@@ -98,6 +109,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   onUpdatePlanNote,
   onClosePlanItem,
   onReopenPlanItems,
+  onRemovePlanItems,
 }) => {
   // State for editing plan note inline
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -106,15 +118,26 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   // Filter tabs: 'active' (default) -> closed plans disappear from active view!
   const [planViewFilter, setPlanViewFilter] = useState<'active' | 'closed' | 'all'>('active');
 
+  // Date filter state: 'all' | 'today' | 'yesterday' | 'custom'
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
+  const [customDate, setCustomDate] = useState<string>('');
+
   // State for confirming closing of plan item (Oxirgi marta yopish)
   const [confirmCloseItem, setConfirmCloseItem] = useState<DailyPlanItem | null>(null);
   const [closeReason, setCloseReason] = useState<string>('');
   const [selectedPresetReason, setSelectedPresetReason] = useState<string>('');
 
-  // State for selecting & reopening closed plan items (single & bulk)
-  const [selectedClosedIds, setSelectedClosedIds] = useState<string[]>([]);
+  // General selection of plan items (can be active or closed)
+  const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
+
+  // Reopen modal state
   const [reopenModalTargetIds, setReopenModalTargetIds] = useState<string[] | null>(null);
   const [reopenReason, setReopenReason] = useState<string>('');
+
+  // Removal from plan modal state (mandatory reason)
+  const [removeModalTargetIds, setRemoveModalTargetIds] = useState<string[] | null>(null);
+  const [removeReason, setRemoveReason] = useState<string>('');
+  const [selectedRemovePreset, setSelectedRemovePreset] = useState<string>('');
 
   const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
   const [isPlanPdfModalOpen, setIsPlanPdfModalOpen] = useState<boolean>(false);
@@ -178,38 +201,61 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     [plans]
   );
 
-  const activePlans = validPlans.filter((p) => !p.isClosed && p.status !== 'yopildi');
-  const closedPlans = validPlans.filter((p) => p.isClosed || p.status === 'yopildi');
-  const displayedPlans =
-    planViewFilter === 'active'
+  // Date filtering applied first
+  const dateFilteredPlans = useMemo(() => {
+    if (dateFilter === 'all') return validPlans;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+    return validPlans.filter((p) => {
+      const pDate = (p.planDate || p.createdAt || '').slice(0, 10);
+      if (dateFilter === 'today') return pDate === todayStr;
+      if (dateFilter === 'yesterday') return pDate === yesterdayStr;
+      if (dateFilter === 'custom' && customDate) return pDate === customDate;
+      return true;
+    });
+  }, [validPlans, dateFilter, customDate]);
+
+  const activePlans = useMemo(
+    () => dateFilteredPlans.filter((p) => !p.isClosed && p.status !== 'yopildi'),
+    [dateFilteredPlans]
+  );
+  const closedPlans = useMemo(
+    () => dateFilteredPlans.filter((p) => p.isClosed || p.status === 'yopildi'),
+    [dateFilteredPlans]
+  );
+  const displayedPlans = useMemo(() => {
+    return planViewFilter === 'active'
       ? activePlans
       : planViewFilter === 'closed'
       ? closedPlans
-      : validPlans;
+      : dateFilteredPlans;
+  }, [planViewFilter, activePlans, closedPlans, dateFilteredPlans]);
 
   const displayedClosedPlans = useMemo(
     () => displayedPlans.filter((p) => p.isClosed || p.status === 'yopildi'),
     [displayedPlans]
   );
 
-  const toggleSelectClosedItem = (id: string, e?: React.MouseEvent | React.ChangeEvent) => {
+  // Toggle selection for any plan item
+  const toggleSelectPlanItem = (id: string, e?: React.MouseEvent | React.ChangeEvent) => {
     if (e) e.stopPropagation();
-    setSelectedClosedIds((prev) =>
+    setSelectedPlanIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
   };
 
-  const toggleSelectAllClosed = () => {
-    const allClosedIds = displayedClosedPlans.map((p) => p.id);
-    const allSelected =
-      allClosedIds.length > 0 && allClosedIds.every((id) => selectedClosedIds.includes(id));
+  const toggleSelectAllDisplayed = () => {
+    const allIds = displayedPlans.map((p) => p.id);
+    const allSelected = allIds.length > 0 && allIds.every((id) => selectedPlanIds.includes(id));
     if (allSelected) {
-      setSelectedClosedIds((prev) => prev.filter((id) => !allClosedIds.includes(id)));
+      setSelectedPlanIds((prev) => prev.filter((id) => !allIds.includes(id)));
     } else {
-      setSelectedClosedIds((prev) => Array.from(new Set([...prev, ...allClosedIds])));
+      setSelectedPlanIds((prev) => Array.from(new Set([...prev, ...allIds])));
     }
   };
 
+  // Reopen single / bulk handlers
   const handleOpenReopenSingle = (item: DailyPlanItem, e: React.MouseEvent) => {
     e.stopPropagation();
     setReopenModalTargetIds([item.id]);
@@ -217,11 +263,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   };
 
   const handleOpenReopenBulk = () => {
-    const validSelected = selectedClosedIds.filter((id) =>
+    const validClosedSelected = selectedPlanIds.filter((id) =>
       closedPlans.some((p) => p.id === id)
     );
-    if (validSelected.length === 0) return;
-    setReopenModalTargetIds(validSelected);
+    if (validClosedSelected.length === 0) return;
+    setReopenModalTargetIds(validClosedSelected);
     setReopenReason('');
   };
 
@@ -232,10 +278,41 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     if (onReopenPlanItems) {
       onReopenPlanItems(reopenModalTargetIds, trimmed);
     }
-    setSelectedClosedIds((prev) => prev.filter((id) => !reopenModalTargetIds.includes(id)));
+    setSelectedPlanIds((prev) => prev.filter((id) => !reopenModalTargetIds.includes(id)));
     setReopenModalTargetIds(null);
     setReopenReason('');
     setPlanViewFilter('active');
+  };
+
+  // Remove plan items single / bulk handlers (mandatory reason)
+  const handleOpenRemoveSingle = (item: DailyPlanItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRemoveModalTargetIds([item.id]);
+    setRemoveReason('');
+    setSelectedRemovePreset('');
+  };
+
+  const handleOpenRemoveBulk = () => {
+    const validSelected = selectedPlanIds.filter((id) =>
+      displayedPlans.some((p) => p.id === id)
+    );
+    if (validSelected.length === 0) return;
+    setRemoveModalTargetIds(validSelected);
+    setRemoveReason('');
+    setSelectedRemovePreset('');
+  };
+
+  const handleExecuteRemove = () => {
+    if (!removeModalTargetIds || removeModalTargetIds.length === 0) return;
+    const finalReason = (removeReason.trim() || selectedRemovePreset).trim();
+    if (!finalReason) return;
+    if (onRemovePlanItems) {
+      onRemovePlanItems(removeModalTargetIds, finalReason);
+    }
+    setSelectedPlanIds((prev) => prev.filter((id) => !removeModalTargetIds.includes(id)));
+    setRemoveModalTargetIds(null);
+    setRemoveReason('');
+    setSelectedRemovePreset('');
   };
 
   const handleStartEditNote = (item: DailyPlanItem, e: React.MouseEvent) => {
@@ -398,33 +475,115 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Bulk Reopen Bar when viewing closed items */}
-      {displayedClosedPlans.length > 0 && (
-        <div className="px-4 py-2.5 bg-amber-50/70 border-b border-amber-200/80 flex flex-wrap items-center justify-between gap-2">
-          <label className="inline-flex items-center gap-2 text-xs font-bold text-neutral-800 cursor-pointer select-none">
+      {/* Date Filtering Bar */}
+      <div className="px-4 py-2.5 bg-rose-50/40 border-b border-rose-100 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-bold text-neutral-700 flex items-center gap-1">
+            <Calendar className="w-3.5 h-3.5 text-rose-600" />
+            <span>Sana bo'yicha filtr:</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setDateFilter('all')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'all'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Barcha sanalar
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateFilter('today')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'today'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Bugun
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateFilter('yesterday')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'yesterday'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Kecha
+          </button>
+          <button
+            type="button"
+            onClick={() => setDateFilter('custom')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              dateFilter === 'custom'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+            }`}
+          >
+            Maxsus sana
+          </button>
+          {dateFilter === 'custom' && (
+            <input
+              type="date"
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+              className="px-2 py-1 rounded-lg border border-neutral-300 text-xs font-mono font-medium outline-none focus:border-rose-500 bg-white"
+            />
+          )}
+        </div>
+        <div className="text-[11px] font-medium text-neutral-500">
+          Ko'rsatilmoqda: <strong className="text-neutral-800">{displayedPlans.length} ta</strong> rejadagi mijoz
+        </div>
+      </div>
+
+      {/* Multi-Selection & Bulk Actions Bar */}
+      {displayedPlans.length > 0 && (
+        <div className="px-4 py-2.5 bg-neutral-50 border-b border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <label className="inline-flex items-center gap-2 font-bold text-neutral-800 cursor-pointer select-none">
             <input
               type="checkbox"
               checked={
-                displayedClosedPlans.length > 0 &&
-                displayedClosedPlans.every((p) => selectedClosedIds.includes(p.id))
+                displayedPlans.length > 0 &&
+                displayedPlans.every((p) => selectedPlanIds.includes(p.id))
               }
-              onChange={toggleSelectAllClosed}
+              onChange={toggleSelectAllDisplayed}
               className="w-4 h-4 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
             />
             <span>
-              Yopilgan mijozlarni tanlash ({selectedClosedIds.filter((id) => displayedClosedPlans.some((p) => p.id === id)).length} / {displayedClosedPlans.length} ta tanlandi)
+              Mijozlarni tanlash ({selectedPlanIds.filter((id) => displayedPlans.some((p) => p.id === id)).length} / {displayedPlans.length} ta tanlandi)
             </span>
           </label>
 
-          <div className="flex items-center gap-2">
-            {selectedClosedIds.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Reopen button if any closed items are selected */}
+            {selectedPlanIds.some((id) => closedPlans.some((p) => p.id === id)) && (
               <button
                 type="button"
                 onClick={handleOpenReopenBulk}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shadow-xs transition cursor-pointer"
               >
                 <Unlock className="w-3.5 h-3.5" />
-                <span>Tanlanganlarni qayta ochish ({selectedClosedIds.length} ta)</span>
+                <span>
+                  Yopilganlarni qayta ochish ({selectedPlanIds.filter((id) => closedPlans.some((p) => p.id === id)).length} ta)
+                </span>
+              </button>
+            )}
+
+            {/* Remove from plan button if any items are selected */}
+            {selectedPlanIds.filter((id) => displayedPlans.some((p) => p.id === id)).length > 0 && (
+              <button
+                type="button"
+                onClick={handleOpenRemoveBulk}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>
+                  Rejadan olib tashlash ({selectedPlanIds.filter((id) => displayedPlans.some((p) => p.id === id)).length} ta)
+                </span>
               </button>
             )}
           </div>
@@ -482,7 +641,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               <table className="w-full table-fixed text-left text-xs">
                 <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase text-[11px]">
                   <tr>
-                    <th className="py-2.5 px-2 w-[4%] text-center">#</th>
+                    <th className="py-2.5 px-2 w-[4%] text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={
+                            displayedPlans.length > 0 &&
+                            displayedPlans.every((p) => selectedPlanIds.includes(p.id))
+                          }
+                          onChange={toggleSelectAllDisplayed}
+                          className="w-3.5 h-3.5 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
+                          title="Barchasini tanlash"
+                        />
+                      </div>
+                    </th>
                     <th className="py-2.5 px-2 w-[16%]">Mijoz va Manzil</th>
                     <th className="py-2.5 px-2 w-[12%]">Joriy qarz / Haqdorlik</th>
                     <th className="py-2.5 px-2 w-[16%]">Oxirgi pul bergan va mahsulot sanasi</th>
@@ -498,7 +670,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                     const isClosed = item.isClosed || item.status === 'yopildi';
                     const isDone = item.status === 'bajarildi';
                     const isEditingThisNote = editingNoteId === item.id;
-                    const isSelectedForReopen = selectedClosedIds.includes(item.id);
+                    const isSelected = selectedPlanIds.includes(item.id);
                     const { paidAmount, debtAmount } = calcPlanFinancials(item);
                     const lastOps = getClientLastOperations(
                       item.clientId,
@@ -513,35 +685,31 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           if (!isClosed) onOpenExecuteModal(item);
                         }}
                         className={`transition-colors ${
-                          isClosed
-                            ? isSelectedForReopen
-                              ? 'bg-emerald-50/60 cursor-default'
-                              : 'bg-neutral-50/70 opacity-85 cursor-default'
+                          isSelected
+                            ? 'bg-rose-50/60'
+                            : isClosed
+                            ? 'bg-neutral-50/70 opacity-85 cursor-default'
                             : 'hover:bg-rose-50/30 cursor-pointer'
                         }`}
                       >
-                        {/* 1. Index + Checkbox if closed */}
+                        {/* 1. Index + Selection Checkbox */}
                         <td
                           className="py-2.5 px-2 text-center font-mono text-neutral-400 text-[11px]"
-                          onClick={(e) => {
-                            if (isClosed) e.stopPropagation();
-                          }}
+                          onClick={(e) => e.stopPropagation()}
                         >
                           <div className="flex items-center justify-center gap-1">
-                            {isClosed && (
-                              <input
-                                type="checkbox"
-                                checked={isSelectedForReopen}
-                                onChange={(e) => toggleSelectClosedItem(item.id, e)}
-                                className="w-3.5 h-3.5 rounded border-neutral-300 text-emerald-700 focus:ring-emerald-500 cursor-pointer"
-                                title="Qayta ochish uchun tanlash"
-                              />
-                            )}
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => toggleSelectPlanItem(item.id, e)}
+                              className="w-3.5 h-3.5 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
+                              title="Tanlash"
+                            />
                             <span>{idx + 1}</span>
                           </div>
                         </td>
 
-                        {/* 2. Client & Address */}
+                        {/* 2. Client & Address + Creator badge */}
                         <td className="py-2.5 px-2.5">
                           <div className="font-bold text-neutral-900 flex items-center gap-1.5 leading-tight truncate">
                             <span className="truncate">{item.clientName}</span>
@@ -563,9 +731,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                               {item.clientLandmark ? ` (${item.clientLandmark})` : ''}
                             </span>
                           </div>
-                          <div className="flex items-center gap-1 text-neutral-500 text-[10px] font-mono mt-0.5">
-                            <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                            <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
+                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <span className="flex items-center gap-1 text-neutral-500 text-[10px] font-mono">
+                              <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
+                              <span>{formatDateDMY(item.planDate || item.createdAt)}</span>
+                            </span>
+                            <span className="inline-flex items-center gap-0.5 text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                              <User className="w-2.5 h-2.5 text-indigo-600" />
+                              <span>Tuzgan: {getAgentDisplayName(item.agentUsername)}</span>
+                            </span>
                           </div>
                         </td>
 
@@ -896,6 +1070,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                       <Unlock className="w-3 h-3" />
                                       <span>Qayta ochish</span>
                                     </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => handleOpenRemoveSingle(item, e)}
+                                      className="px-1.5 py-1 rounded-lg border border-neutral-300 hover:border-rose-300 hover:bg-rose-50 text-neutral-600 hover:text-rose-700 text-[10px] font-bold transition flex items-center gap-0.5 cursor-pointer shadow-2xs"
+                                      title="Rejadan olib tashlash"
+                                    >
+                                      <Trash2 className="w-3 h-3 text-rose-600" />
+                                      <span>Olib tashlash</span>
+                                    </button>
                                   </div>
                                 </div>
                               );
@@ -946,6 +1129,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                   <Lock className="w-3 h-3 text-rose-700" />
                                   <span>Yopish</span>
                                 </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleOpenRemoveSingle(item, e)}
+                                  className="px-1.5 py-1 rounded-lg border border-neutral-300 hover:border-rose-300 hover:bg-rose-50 text-neutral-600 hover:text-rose-700 text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer shadow-2xs"
+                                  title="Rejadan olib tashlash"
+                                >
+                                  <Trash2 className="w-3 h-3 text-rose-600" />
+                                  <span>Olib tashlash</span>
+                                </button>
                               </div>
                             );
                           })()}
@@ -962,7 +1154,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               {displayedPlans.map((item, idx) => {
                 const isClosed = item.isClosed || item.status === 'yopildi';
                 const isDone = item.status === 'bajarildi';
-                const isSelectedForReopen = selectedClosedIds.includes(item.id);
+                const isSelected = selectedPlanIds.includes(item.id);
                 const { paidAmount, debtAmount } = calcPlanFinancials(item);
 
                 return (
@@ -972,25 +1164,24 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       if (!isClosed) onOpenExecuteModal(item);
                     }}
                     className={`p-3 rounded-2xl border transition-colors ${
-                      isClosed
-                        ? isSelectedForReopen
-                          ? 'bg-emerald-50/70 border-emerald-300'
-                          : 'bg-neutral-50 border-neutral-200 opacity-90'
+                      isSelected
+                        ? 'bg-rose-50/70 border-rose-300 shadow-xs'
+                        : isClosed
+                        ? 'bg-neutral-50 border-neutral-200 opacity-90'
                         : 'bg-white border-rose-100 hover:border-rose-300 cursor-pointer shadow-xs'
                     }`}
                   >
-                    {/* Top Row: #, Client Name, Status */}
+                    {/* Top Row: #, Checkbox, Client Name, Creator, Status */}
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {isClosed && (
-                          <input
-                            type="checkbox"
-                            checked={isSelectedForReopen}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => toggleSelectClosedItem(item.id, e)}
-                            className="w-4 h-4 rounded border-neutral-300 text-emerald-700 focus:ring-emerald-500 cursor-pointer shrink-0"
-                          />
-                        )}
+                      <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => toggleSelectPlanItem(item.id, e)}
+                          className="w-4 h-4 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer shrink-0"
+                          title="Tanlash"
+                        />
                         <span className="font-mono text-[11px] text-neutral-400 font-bold shrink-0">
                           #{idx + 1}
                         </span>
@@ -1003,6 +1194,10 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             <span>Yopiq</span>
                           </span>
                         )}
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
+                          <User className="w-2.5 h-2.5 text-indigo-600" />
+                          <span>Tuzgan: {getAgentDisplayName(item.agentUsername)}</span>
+                        </span>
                       </div>
 
                       <div className="shrink-0">
@@ -1231,6 +1426,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                               <Lock className="w-3 h-3 inline mr-1" />
                               <span>Yopish</span>
                             </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenRemoveSingle(item, e)}
+                              className="px-2.5 py-1.5 rounded-xl border border-neutral-300 hover:border-rose-300 text-neutral-600 hover:text-rose-700 hover:bg-rose-50 text-xs font-bold cursor-pointer flex items-center gap-1"
+                              title="Rejadan olib tashlash"
+                            >
+                              <Trash2 className="w-3 h-3 text-rose-600" />
+                              <span>Olib tashlash</span>
+                            </button>
                           </>
                         ) : (
                           <div className="flex items-center gap-1.5">
@@ -1241,6 +1445,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             >
                               <Unlock className="w-3 h-3" />
                               <span>Qayta ochish</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenRemoveSingle(item, e)}
+                              className="px-2.5 py-1.5 rounded-xl border border-neutral-300 hover:border-rose-300 text-neutral-600 hover:text-rose-700 hover:bg-rose-50 text-xs font-bold cursor-pointer flex items-center gap-1"
+                              title="Rejadan olib tashlash"
+                            >
+                              <Trash2 className="w-3 h-3 text-rose-600" />
+                              <span>Olib tashlash</span>
                             </button>
                           </div>
                         )}
@@ -1343,6 +1556,110 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               >
                 <Unlock className="w-4 h-4" />
                 <span>Qayta ochish ({reopenModalTargetIds.length} ta)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Remove Confirmation Modal: Rejadagi mijozlarni olib tashlash (Izoh majburiy) */}
+      {removeModalTargetIds && removeModalTargetIds.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-rose-100 space-y-4">
+            <div className="flex items-center gap-3 text-rose-700">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                <Trash2 className="w-6 h-6 text-rose-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  Rejadan olib tashlash ({removeModalTargetIds.length} ta)
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Rejadan o'chirish uchun sabab / izoh kiritish majburiy
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-1.5">
+              <div className="font-bold">Olib tashlanayotgan mijozlar:</div>
+              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                {validPlans
+                  .filter((p) => removeModalTargetIds.includes(p.id))
+                  .map((c) => (
+                    <span
+                      key={c.id}
+                      className="px-2 py-0.5 rounded-lg bg-white border border-rose-200 font-semibold text-neutral-800 text-[11px]"
+                    >
+                      {c.clientName}
+                    </span>
+                  ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-neutral-700">
+                Olib tashlash sababi (majburiy): <span className="text-rose-600">*</span>
+              </label>
+
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_REMOVE_REASONS.map((preset) => {
+                  const isSelected = selectedRemovePreset === preset;
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => {
+                        setSelectedRemovePreset(preset);
+                        setRemoveReason(preset);
+                      }}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
+                        isSelected
+                          ? 'bg-rose-700 border-rose-700 text-white shadow-xs font-semibold'
+                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <textarea
+                rows={3}
+                value={removeReason}
+                onChange={(e) => {
+                  setRemoveReason(e.target.value);
+                  setSelectedRemovePreset(e.target.value);
+                }}
+                placeholder="Nima sababdan rejadan olib tashlanayotganini yozing..."
+                className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setRemoveModalTargetIds(null);
+                  setRemoveReason('');
+                  setSelectedRemovePreset('');
+                }}
+                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                disabled={!removeReason.trim() && !selectedRemovePreset.trim()}
+                onClick={handleExecuteRemove}
+                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Rejadan olib tashlash ({removeModalTargetIds.length} ta)</span>
               </button>
             </div>
           </div>
