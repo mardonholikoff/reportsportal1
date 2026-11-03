@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { MonthlyPlan } from '../types';
 import { storageService } from '../services/storage';
+import { formatDate, getAgentDisplayName } from '../utils/format';
 
 interface MonthlyProductPlanProgressCardProps {
   plan: MonthlyPlan | null;
@@ -126,9 +127,9 @@ export const MonthlyProductPlanProgressCard: React.FC<MonthlyProductPlanProgress
               <h3 className="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-indigo-700 transition-colors">
                 1 Oylik (30 Kunlik) Mahsulot Berish Rejasi
               </h3>
-              {agentLabel && (
+              {(agentLabel || plan.agentUsername) && (
                 <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                  Agent: @{agentLabel}
+                  Agent: {getAgentDisplayName(agentLabel || plan.agentUsername)}
                 </span>
               )}
               <span
@@ -461,10 +462,11 @@ export const MonthlyProductPlanProgressCard: React.FC<MonthlyProductPlanProgress
                   >
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <span className="inline-flex items-center gap-1 font-extrabold text-indigo-700">
-                        <User className="w-3.5 h-3.5" />@{item.editedBy}
+                        <User className="w-3.5 h-3.5" />
+                        {getAgentDisplayName(item.editedBy)}
                       </span>
                       <span className="text-[11px] font-semibold text-slate-500">
-                        {new Date(item.editedAt).toLocaleString('uz-UZ')}
+                        {formatDate(item.editedAt)}
                       </span>
                     </div>
                     <p className="font-bold text-slate-800">

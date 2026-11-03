@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AuthUser } from '../types';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { PWAInstallButton } from './PWAInstallButton';
+import { getAgentDisplayName } from '../utils/format';
 import {
   LogOut,
   Plus,
@@ -38,6 +39,7 @@ export const Navbar: React.FC<Props> = ({
 }) => {
   const isOnline = useOnlineStatus();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const displayName = getAgentDisplayName(user.username);
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-rose-100 w-full">
@@ -130,10 +132,10 @@ export const Navbar: React.FC<Props> = ({
               aria-label="Foydalanuvchi menyusi"
             >
               <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-rose-100 text-rose-900 border border-rose-200 flex items-center justify-center font-bold text-xs shrink-0 uppercase shadow-2xs">
-                {user.username.slice(0, 2).toUpperCase()}
+                {displayName.slice(0, 2).toUpperCase()}
               </div>
               <span className="hidden md:inline font-semibold text-neutral-900">
-                {user.username}
+                {displayName}
               </span>
             </button>
 
@@ -150,7 +152,7 @@ export const Navbar: React.FC<Props> = ({
                   <div className="p-2.5 rounded-xl bg-neutral-50 border border-neutral-200/70">
                     <div className="flex items-center justify-between gap-1 mb-1">
                       <span className="text-xs font-bold text-neutral-900 truncate">
-                        {user.name}
+                        {displayName}
                       </span>
                       <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-100 text-rose-900 border border-rose-200 uppercase">
                         {user.role === 'admin' ? 'Admin' : 'Agent'}

@@ -1,10 +1,15 @@
 import { Client, DailyPlanItem } from '../types';
-import { formatDate } from './format';
+import { formatDateDMY, formatMoney } from './format';
 
 export interface ClientLastOperationsInfo {
   lastFinancialTimestamp: string | null;
   lastFinancialFormatted: string | null;
   lastFinancialLabel: string | null;
+  lastPaymentTimestamp: string | null;
+  lastPaymentDateFormatted: string | null;
+  lastPaymentAmount: number | null;
+  lastPaymentMethod: string | null;
+  lastPaymentFormatted: string | null;
   lastProductTimestamp: string | null;
   lastProductFormatted: string | null;
   lastProductType: 'berilgan' | 'qaytarilgan' | null;
@@ -19,6 +24,15 @@ function toTimeMs(iso?: string | null): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+function extractPaymentMethodFromText(text: string): string {
+  const lower = (text || '').toLowerCase();
+  if (lower.includes('karta')) return "Karta o'tkazma";
+  if (lower.includes('bank') || lower.includes('hisob raqam')) return "Bank o'tkazma";
+  if (lower.includes('qr')) return "QR to'lov";
+  if (lower.includes('naqd')) return 'Naqd pul';
+  return "To'lov";
+}
+
 export function getClientLastOperations(
   clientId: string,
   clients: Client[],
@@ -27,6 +41,11 @@ export function getClientLastOperations(
   let latestFinTime = 0;
   let latestFinIso: string | null = null;
   let latestFinLabel: string | null = null;
+
+  let latestPayTime = 0;
+  let latestPayIso: string | null = null;
+  let latestPayAmount: number | null = null;
+  let latestPayMethod: string | null = null;
 
   let latestProdTime = 0;
   let latestProdIso: string | null = null;
@@ -39,6 +58,21 @@ export function getClientLastOperations(
       latestFinTime = ms;
       latestFinIso = iso;
       latestFinLabel = label;
+    }
+  };
+
+  const updatePayment = (
+    iso: string | undefined | null,
+    amount: number,
+    methodLabel: string
+  ) => {
+    if (!amount || amount <= 0) return;
+    const ms = toTimeMs(iso);
+    if (ms >= latestPayTime && iso) {
+      latestPayTime = ms;
+      latestPayIso = iso;
+      latestPayAmount = amount;
+      latestPayMethod = methodLabel || "To'lov";
     }
   };
 
@@ -64,10 +98,14 @@ export function getClientLastOperations(
       for (const act of plan.actionsHistory) {
         const ts = act.timestamp || plan.completedAt || plan.createdAt;
         if (act.financialAction && act.financialAction.amount > 0) {
-          updateFin(ts, `To'lov (${act.financialAction.methodLabel || 'kirim'})`);
+          const method = act.financialAction.methodLabel || 'Naqd pul';
+          updateFin(ts, `${formatMoney(act.financialAction.amount)} (${method})`);
+          updatePayment(ts, act.financialAction.amount, method);
         }
         if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
-          updateFin(ts, `Mahsulot to'lovi (${act.deliveryPayment.paymentLabel || 'kirim'})`);
+          const method = act.deliveryPayment.paymentLabel || 'Naqd pul';
+          updateFin(ts, `${formatMoney(act.deliveryPayment.paidAmount)} (${method})`);
+          updatePayment(ts, act.deliveryPayment.paidAmount, method);
         } else if (act.deliveryPayment && act.deliveryPayment.debtAmount > 0) {
           updateFin(ts, `Qarzga yozildi`);
         }
@@ -84,10 +122,14 @@ export function getClientLastOperations(
     // Also inspect top-level plan fields
     const topTs = plan.completedAt || plan.createdAt;
     if (plan.financialAction && plan.financialAction.amount > 0) {
-      updateFin(topTs, `To'lov (${plan.financialAction.methodLabel || 'kirim'})`);
+      const method = plan.financialAction.methodLabel || 'Naqd pul';
+      updateFin(topTs, `${formatMoney(plan.financialAction.amount)} (${method})`);
+      updatePayment(topTs, plan.financialAction.amount, method);
     }
     if (plan.deliveryPayment && plan.deliveryPayment.paidAmount > 0) {
-      updateFin(topTs, `Mahsulot to'lovi (${plan.deliveryPayment.paymentLabel || 'kirim'})`);
+      const method = plan.deliveryPayment.paymentLabel || 'Naqd pul';
+      updateFin(topTs, `${formatMoney(plan.deliveryPayment.paidAmount)} (${method})`);
+      updatePayment(topTs, plan.deliveryPayment.paidAmount, method);
     } else if (plan.deliveryPayment && plan.deliveryPayment.debtAmount > 0) {
       updateFin(topTs, `Qarzga yozildi`);
     }
@@ -109,15 +151,29 @@ export function getClientLastOperations(
         const titleLower = (log.title || '').toLowerCase();
         const detailsLower = (log.details || '').toLowerCase();
 
-        // Financial logs
+        // Actual payment logs
         if (
           log.type === 'payment' ||
           titleLower.includes("to'lov") ||
           titleLower.includes('tolov') ||
           titleLower.includes('tushum') ||
-          titleLower.includes('qarz') ||
           detailsLower.includes("to'lov qabul")
         ) {
+          let amt = typeof log.amountChanged === 'number' && log.amountChanged > 0 ? log.amountChanged : 0;
+          if (!amt) {
+            const match = (log.details || '').match(/(\d+(?:[.,]\d+)?)\s*USD/i);
+            if (match) {
+              amt = parseFloat(match[1].replace(',', '.')) || 0;
+            }
+          }
+          const method = extractPaymentMethodFromText(`${log.title || ''} ${log.details || ''}`);
+          if (amt > 0) {
+            updatePayment(ts, amt, method);
+            updateFin(ts, `${formatMoney(amt)} (${method})`);
+          } else {
+            updateFin(ts, log.title || "To'lov");
+          }
+        } else if (titleLower.includes('qarz')) {
           updateFin(ts, log.title || 'Moliyaviy amaliyot');
         }
 
@@ -148,12 +204,30 @@ export function getClientLastOperations(
     }
   }
 
+  const lastPaymentDateFormatted = latestPayIso ? formatDateDMY(latestPayIso) : null;
+  const lastPaymentFormatted =
+    latestPayIso && latestPayAmount && latestPayAmount > 0
+      ? `${formatDateDMY(latestPayIso)} — ${formatMoney(latestPayAmount)} (${latestPayMethod || "To'lov"})`
+      : null;
+
   return {
-    lastFinancialTimestamp: latestFinIso,
-    lastFinancialFormatted: latestFinIso ? formatDate(latestFinIso) : null,
-    lastFinancialLabel: latestFinLabel,
+    lastFinancialTimestamp: latestPayIso || latestFinIso,
+    lastFinancialFormatted: latestPayIso
+      ? formatDateDMY(latestPayIso)
+      : latestFinIso
+      ? formatDateDMY(latestFinIso)
+      : null,
+    lastFinancialLabel:
+      latestPayIso && latestPayAmount
+        ? `${formatMoney(latestPayAmount)} (${latestPayMethod || "To'lov"})`
+        : latestFinLabel,
+    lastPaymentTimestamp: latestPayIso,
+    lastPaymentDateFormatted,
+    lastPaymentAmount: latestPayAmount,
+    lastPaymentMethod: latestPayMethod,
+    lastPaymentFormatted,
     lastProductTimestamp: latestProdIso,
-    lastProductFormatted: latestProdIso ? formatDate(latestProdIso) : null,
+    lastProductFormatted: latestProdIso ? formatDateDMY(latestProdIso) : null,
     lastProductType: latestProdType,
     lastProductLabel: latestProdLabel,
     currentDebt: client?.currentDebt || 0,

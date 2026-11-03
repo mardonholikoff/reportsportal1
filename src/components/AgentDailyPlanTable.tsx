@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Client, DailyPlanItem } from '../types';
-import { formatMoney, formatDate } from '../utils/format';
+import { formatMoney, formatDateDMY } from '../utils/format';
 import { storageService, isClosedPlanExpired7Days } from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import {
@@ -14,6 +14,7 @@ import {
   Check,
   X,
   Lock,
+  Unlock,
   AlertTriangle,
   Package,
   RotateCcw,
@@ -33,6 +34,7 @@ interface Props {
   onMarkPlannedActionDone?: (item: DailyPlanItem) => void;
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
   onClosePlanItem?: (planItemId: string, closeReason?: string) => void;
+  onReopenPlanItems?: (planItemIds: string[], reopenReason: string) => void;
 }
 
 const PRESET_CLOSE_REASONS = [
@@ -41,6 +43,13 @@ const PRESET_CLOSE_REASONS = [
   "Tovarlar muvaffaqiyatli topshirildi",
   "Do'kon yopiq / Mijoz joyida yo'q",
   "Keyingi kunga qoldirildi",
+];
+
+const PRESET_REOPEN_REASONS = [
+  "Qo'shimcha to'lov qabul qilish uchun",
+  "Yangi mahsulot topshirish uchun",
+  "Hisob-kitobga tuzatish kiritish uchun",
+  "Mijoz qayta aloqaga chiqdi",
 ];
 
 // Calculate paid and debt amounts for a plan item (including historical actions)
@@ -88,6 +97,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   onMarkPlannedActionDone,
   onUpdatePlanNote,
   onClosePlanItem,
+  onReopenPlanItems,
 }) => {
   // State for editing plan note inline
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -100,6 +110,12 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   const [confirmCloseItem, setConfirmCloseItem] = useState<DailyPlanItem | null>(null);
   const [closeReason, setCloseReason] = useState<string>('');
   const [selectedPresetReason, setSelectedPresetReason] = useState<string>('');
+
+  // State for selecting & reopening closed plan items (single & bulk)
+  const [selectedClosedIds, setSelectedClosedIds] = useState<string[]>([]);
+  const [reopenModalTargetIds, setReopenModalTargetIds] = useState<string[] | null>(null);
+  const [reopenReason, setReopenReason] = useState<string>('');
+
   const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
   const [isPlanPdfModalOpen, setIsPlanPdfModalOpen] = useState<boolean>(false);
 
@@ -171,6 +187,57 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
       ? closedPlans
       : validPlans;
 
+  const displayedClosedPlans = useMemo(
+    () => displayedPlans.filter((p) => p.isClosed || p.status === 'yopildi'),
+    [displayedPlans]
+  );
+
+  const toggleSelectClosedItem = (id: string, e?: React.MouseEvent | React.ChangeEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedClosedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAllClosed = () => {
+    const allClosedIds = displayedClosedPlans.map((p) => p.id);
+    const allSelected =
+      allClosedIds.length > 0 && allClosedIds.every((id) => selectedClosedIds.includes(id));
+    if (allSelected) {
+      setSelectedClosedIds((prev) => prev.filter((id) => !allClosedIds.includes(id)));
+    } else {
+      setSelectedClosedIds((prev) => Array.from(new Set([...prev, ...allClosedIds])));
+    }
+  };
+
+  const handleOpenReopenSingle = (item: DailyPlanItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setReopenModalTargetIds([item.id]);
+    setReopenReason('');
+  };
+
+  const handleOpenReopenBulk = () => {
+    const validSelected = selectedClosedIds.filter((id) =>
+      closedPlans.some((p) => p.id === id)
+    );
+    if (validSelected.length === 0) return;
+    setReopenModalTargetIds(validSelected);
+    setReopenReason('');
+  };
+
+  const handleExecuteReopen = () => {
+    if (!reopenModalTargetIds || reopenModalTargetIds.length === 0) return;
+    const trimmed = reopenReason.trim();
+    if (!trimmed) return;
+    if (onReopenPlanItems) {
+      onReopenPlanItems(reopenModalTargetIds, trimmed);
+    }
+    setSelectedClosedIds((prev) => prev.filter((id) => !reopenModalTargetIds.includes(id)));
+    setReopenModalTargetIds(null);
+    setReopenReason('');
+    setPlanViewFilter('active');
+  };
+
   const handleStartEditNote = (item: DailyPlanItem, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingNoteId(item.id);
@@ -207,6 +274,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
       setSelectedPresetReason('');
     }
   };
+
+  const reopenModalClients = useMemo(() => {
+    if (!reopenModalTargetIds) return [];
+    return validPlans.filter((p) => reopenModalTargetIds.includes(p.id));
+  }, [reopenModalTargetIds, validPlans]);
 
   return (
     <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
@@ -326,6 +398,39 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* Bulk Reopen Bar when viewing closed items */}
+      {displayedClosedPlans.length > 0 && (
+        <div className="px-4 py-2.5 bg-amber-50/70 border-b border-amber-200/80 flex flex-wrap items-center justify-between gap-2">
+          <label className="inline-flex items-center gap-2 text-xs font-bold text-neutral-800 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={
+                displayedClosedPlans.length > 0 &&
+                displayedClosedPlans.every((p) => selectedClosedIds.includes(p.id))
+              }
+              onChange={toggleSelectAllClosed}
+              className="w-4 h-4 rounded border-neutral-300 text-rose-700 focus:ring-rose-500 cursor-pointer"
+            />
+            <span>
+              Yopilgan mijozlarni tanlash ({selectedClosedIds.filter((id) => displayedClosedPlans.some((p) => p.id === id)).length} / {displayedClosedPlans.length} ta tanlandi)
+            </span>
+          </label>
+
+          <div className="flex items-center gap-2">
+            {selectedClosedIds.length > 0 && (
+              <button
+                type="button"
+                onClick={handleOpenReopenBulk}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+              >
+                <Unlock className="w-3.5 h-3.5" />
+                <span>Tanlanganlarni qayta ochish ({selectedClosedIds.length} ta)</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Plan List */}
       <div className="p-3 sm:p-4">
         {displayedPlans.length === 0 ? (
@@ -348,7 +453,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-900 text-white text-xs font-bold transition shadow-xs cursor-pointer"
                 >
                   <Lock className="w-4 h-4" />
-                  <span>Yopilganlarni ko'rish ({closedPlans.length})</span>
+                  <span>Yopilganlarni ko'rish va qayta ochish ({closedPlans.length})</span>
                 </button>
                 <button
                   type="button"
@@ -377,15 +482,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               <table className="w-full table-fixed text-left text-xs">
                 <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase text-[11px]">
                   <tr>
-                    <th className="py-2.5 px-2 w-[3%] text-center">#</th>
-                    <th className="py-2.5 px-2 w-[17%]">Mijoz va Manzil</th>
+                    <th className="py-2.5 px-2 w-[4%] text-center">#</th>
+                    <th className="py-2.5 px-2 w-[16%]">Mijoz va Manzil</th>
                     <th className="py-2.5 px-2 w-[12%]">Joriy qarz / Haqdorlik</th>
-                    <th className="py-2.5 px-2 w-[16%]">Oxirgi moliya va mahsulot amaliyoti sanasi</th>
+                    <th className="py-2.5 px-2 w-[16%]">Oxirgi pul bergan va mahsulot sanasi</th>
                     <th className="py-2.5 px-2 w-[11%]">Reja izohi</th>
                     <th className="py-2.5 px-2 w-[8%]">Holati</th>
                     <th className="py-2.5 px-2 w-[15%]">Qilingan amal va Mahsulot</th>
-                    <th className="py-2.5 px-2 w-[9%] text-right">To'lov / Qarz</th>
-                    <th className="py-2.5 px-2 w-[9%] text-center">Amallar</th>
+                    <th className="py-2.5 px-2 w-[8%] text-right">To'lov / Qarz</th>
+                    <th className="py-2.5 px-2 w-[10%] text-center">Amallar</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-rose-100/60">
@@ -393,6 +498,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                     const isClosed = item.isClosed || item.status === 'yopildi';
                     const isDone = item.status === 'bajarildi';
                     const isEditingThisNote = editingNoteId === item.id;
+                    const isSelectedForReopen = selectedClosedIds.includes(item.id);
                     const { paidAmount, debtAmount } = calcPlanFinancials(item);
                     const lastOps = getClientLastOperations(
                       item.clientId,
@@ -408,13 +514,31 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         }}
                         className={`transition-colors ${
                           isClosed
-                            ? 'bg-neutral-50/70 opacity-75 cursor-default'
+                            ? isSelectedForReopen
+                              ? 'bg-emerald-50/60 cursor-default'
+                              : 'bg-neutral-50/70 opacity-85 cursor-default'
                             : 'hover:bg-rose-50/30 cursor-pointer'
                         }`}
                       >
-                        {/* 1. Index */}
-                        <td className="py-2.5 px-2.5 text-center font-mono text-neutral-400 text-[11px]">
-                          {idx + 1}
+                        {/* 1. Index + Checkbox if closed */}
+                        <td
+                          className="py-2.5 px-2 text-center font-mono text-neutral-400 text-[11px]"
+                          onClick={(e) => {
+                            if (isClosed) e.stopPropagation();
+                          }}
+                        >
+                          <div className="flex items-center justify-center gap-1">
+                            {isClosed && (
+                              <input
+                                type="checkbox"
+                                checked={isSelectedForReopen}
+                                onChange={(e) => toggleSelectClosedItem(item.id, e)}
+                                className="w-3.5 h-3.5 rounded border-neutral-300 text-emerald-700 focus:ring-emerald-500 cursor-pointer"
+                                title="Qayta ochish uchun tanlash"
+                              />
+                            )}
+                            <span>{idx + 1}</span>
+                          </div>
                         </td>
 
                         {/* 2. Client & Address */}
@@ -441,7 +565,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           </div>
                           <div className="flex items-center gap-1 text-neutral-500 text-[10px] font-mono mt-0.5">
                             <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                            <span>Qo'shilgan: {formatDate(item.createdAt)}</span>
+                            <span>Qo'shilgan: {formatDateDMY(item.createdAt)}</span>
                           </div>
                         </td>
 
@@ -476,20 +600,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           </div>
                         </td>
 
-                        {/* 2.5. Last Financial & Product Operation Dates */}
+                        {/* 2.5. Last Payment & Product Operation Dates (d/m/y without hours) */}
                         <td className="py-2.5 px-2">
                           <div className="space-y-1.5 text-[10.5px]">
                             <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-lg px-2 py-1">
                               <div className="font-bold text-emerald-950 flex items-center gap-1">
                                 <Clock className="w-2.5 h-2.5 text-emerald-700 shrink-0" />
-                                <span>Oxirgi moliya:</span>
+                                <span>Oxirgi pul bergan:</span>
                               </div>
-                              {lastOps.lastFinancialFormatted ? (
+                              {lastOps.lastPaymentFormatted ? (
                                 <div className="font-mono font-semibold text-emerald-900 mt-0.5">
-                                  {lastOps.lastFinancialFormatted}
+                                  {lastOps.lastPaymentFormatted}
                                 </div>
                               ) : (
-                                <div className="text-neutral-400 italic mt-0.5">Amaliyot yo'q</div>
+                                <div className="text-neutral-400 italic mt-0.5">To'lov yo'q</div>
                               )}
                             </div>
 
@@ -570,7 +694,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           )}
                         </td>
 
-                        {/* 4. Status */}
+                        {/* 4. Status (NOTE: reopenReason is NEVER shown to agents, only to admins!) */}
                         <td className="py-2.5 px-2.5">
                           {isClosed ? (
                             <div className="space-y-0.5">
@@ -736,9 +860,9 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           )}
                         </td>
 
-                        {/* 7. Actions & Close (Yuk xati Print only when 2, 3, or 4 exists) */}
+                        {/* 7. Actions & Close / Reopen */}
                         <td
-                          className="py-2.5 px-2.5 text-center"
+                          className="py-2.5 px-2 text-center"
                           onClick={(e) => e.stopPropagation()}
                         >
                           {(() => {
@@ -750,21 +874,28 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
                             if (isClosed) {
                               return (
-                                <div className="flex items-center justify-center gap-1">
-                                  {has234 && (
+                                <div className="flex flex-col items-center justify-center gap-1">
+                                  <div className="flex items-center justify-center gap-1 flex-wrap">
+                                    {has234 && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => handleOpenNakladnoy(item, e)}
+                                        className="px-2 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
+                                        title="Yuk xati (PDF) chiqarish"
+                                      >
+                                        <Printer className="w-3 h-3" />
+                                        <span>Yuk xati</span>
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
-                                      onClick={(e) => handleOpenNakladnoy(item, e)}
-                                      className="px-2 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer"
-                                      title="Yuk xati (PDF) chiqarish"
+                                      onClick={(e) => handleOpenReopenSingle(item, e)}
+                                      className="px-2 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                                      title="Yopilgan mijozni izoh bilan qayta ochish"
                                     >
-                                      <Printer className="w-3 h-3" />
-                                      <span>Yuk xati</span>
+                                      <Unlock className="w-3 h-3" />
+                                      <span>Qayta ochish</span>
                                     </button>
-                                  )}
-                                  <div className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-neutral-100 text-neutral-500 text-[11px] font-semibold border border-neutral-200">
-                                    <Lock className="w-3 h-3 text-neutral-500" />
-                                    <span>Yopilgan</span>
                                   </div>
                                 </div>
                               );
@@ -831,6 +962,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               {displayedPlans.map((item, idx) => {
                 const isClosed = item.isClosed || item.status === 'yopildi';
                 const isDone = item.status === 'bajarildi';
+                const isSelectedForReopen = selectedClosedIds.includes(item.id);
                 const { paidAmount, debtAmount } = calcPlanFinancials(item);
 
                 return (
@@ -841,13 +973,24 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                     }}
                     className={`p-3 rounded-2xl border transition-colors ${
                       isClosed
-                        ? 'bg-neutral-50 border-neutral-200 opacity-80'
+                        ? isSelectedForReopen
+                          ? 'bg-emerald-50/70 border-emerald-300'
+                          : 'bg-neutral-50 border-neutral-200 opacity-90'
                         : 'bg-white border-rose-100 hover:border-rose-300 cursor-pointer shadow-xs'
                     }`}
                   >
                     {/* Top Row: #, Client Name, Status */}
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
+                        {isClosed && (
+                          <input
+                            type="checkbox"
+                            checked={isSelectedForReopen}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => toggleSelectClosedItem(item.id, e)}
+                            className="w-4 h-4 rounded border-neutral-300 text-emerald-700 focus:ring-emerald-500 cursor-pointer shrink-0"
+                          />
+                        )}
                         <span className="font-mono text-[11px] text-neutral-400 font-bold shrink-0">
                           #{idx + 1}
                         </span>
@@ -897,7 +1040,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       )}
                     </div>
 
-                    {/* Added Date & Last Financial / Product Dates */}
+                    {/* Added Date & Last Payment / Product Dates */}
                     {(() => {
                       const mobileLastOps = getClientLastOperations(
                         item.clientId,
@@ -908,7 +1051,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         <div className="mt-1.5 space-y-1">
                           <div className="flex items-center gap-1 text-[10px] text-neutral-500 font-mono">
                             <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                            <span>Rejaga qo'shilgan: {formatDate(item.createdAt)}</span>
+                            <span>Rejaga qo'shilgan: {formatDateDMY(item.createdAt)}</span>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
                             {mobileLastOps.currentDebt > 0 && (
@@ -929,9 +1072,9 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[10px] bg-neutral-50 border border-neutral-200 rounded-lg p-1.5">
                             <div>
-                              <span className="font-bold text-emerald-900">Oxirgi moliya: </span>
+                              <span className="font-bold text-emerald-900">Oxirgi pul bergan: </span>
                               <span className="font-mono text-neutral-800">
-                                {mobileLastOps.lastFinancialFormatted || "Amaliyot yo'q"}
+                                {mobileLastOps.lastPaymentFormatted || "To'lov yo'q"}
                               </span>
                             </div>
                             <div>
@@ -1090,15 +1233,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             </button>
                           </>
                         ) : (
-                          <div className="flex flex-col items-end">
-                            <span className="text-[11px] text-neutral-500 font-semibold flex items-center gap-1">
-                              <Lock className="w-3 h-3 text-neutral-400" /> Yopilgan
-                            </span>
-                            {item.closeReason && (
-                              <span className="text-[10px] text-rose-800 font-medium italic max-w-[150px] truncate" title={item.closeReason}>
-                                "{item.closeReason}"
-                              </span>
-                            )}
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenReopenSingle(item, e)}
+                              className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold cursor-pointer flex items-center gap-1 shadow-xs"
+                            >
+                              <Unlock className="w-3 h-3" />
+                              <span>Qayta ochish</span>
+                            </button>
                           </div>
                         )}
                       </div>
@@ -1110,6 +1253,101 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
           </>
         )}
       </div>
+
+      {/* Reopen Modal: Yopilgan rejadagi mijozlarni qayta ochish (Bittalab yoki Ko'plab) */}
+      {reopenModalTargetIds && reopenModalTargetIds.length > 0 && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-emerald-100 space-y-4">
+            <div className="flex items-center gap-3 text-emerald-700">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center border border-emerald-200 shrink-0">
+                <Unlock className="w-6 h-6 text-emerald-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  Yopilgan mijozlarni qayta ochish ({reopenModalTargetIds.length} ta)
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Qayta ochish uchun sabab / izoh kiritish majburiy
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-950 space-y-1.5">
+              <div className="font-bold">Tanlangan mijozlar:</div>
+              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                {reopenModalClients.map((c) => (
+                  <span
+                    key={c.id}
+                    className="px-2 py-0.5 rounded-lg bg-white border border-emerald-200 font-semibold text-neutral-800 text-[11px]"
+                  >
+                    {c.clientName}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-neutral-700">
+                Qayta ochish izohi (majburiy): <span className="text-rose-600">*</span>
+              </label>
+
+              <div className="flex flex-wrap gap-1.5">
+                {PRESET_REOPEN_REASONS.map((preset) => {
+                  const isSelected = reopenReason === preset;
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setReopenReason(preset)}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-700 border-emerald-700 text-white shadow-xs font-semibold'
+                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <textarea
+                rows={3}
+                value={reopenReason}
+                onChange={(e) => setReopenReason(e.target.value)}
+                placeholder="Nima sababdan qayta ochilayotganini yozing..."
+                className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setReopenModalTargetIds(null);
+                  setReopenReason('');
+                }}
+                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                disabled={!reopenReason.trim()}
+                onClick={handleExecuteReopen}
+                className="px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Unlock className="w-4 h-4" />
+                <span>Qayta ochish ({reopenModalTargetIds.length} ta)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirmation Modal: Oxirgi marta yopish & Sabab kiritish */}
       {confirmCloseItem && (
@@ -1142,7 +1380,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               </p>
               <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>Yopilgandan so'ng bugungi reja bo'yicha yangi amal qo'shib bo'lmaydi!</span>
+                <span>Yopilgandan so'ng kerak bo'lsa "Yopilganlar" bo'limidan izoh kiritib qayta ochishingiz mumkin.</span>
               </div>
             </div>
 
@@ -1230,3 +1468,4 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     </div>
   );
 };
+

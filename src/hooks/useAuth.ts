@@ -9,7 +9,13 @@ export function useAuth() {
     const session = localStorage.getItem(AUTH_STORAGE_KEY);
     if (session) {
       try {
-        return JSON.parse(session);
+        const parsed = JSON.parse(session) as AuthUser;
+        if (parsed && parsed.username === 'agentc1') {
+          parsed.name = 'Eldorbek';
+        } else if (parsed && parsed.username === 'agentp1') {
+          parsed.name = 'Mirsaid';
+        }
+        return parsed;
       } catch {
         return null;
       }
@@ -81,7 +87,7 @@ export function useAuth() {
     ) {
       const authUser: AuthUser = {
         username: u,
-        name: u === 'agentc1' ? 'Savdo Agenti (agentc1)' : '1-Savdo Agenti',
+        name: u === 'agentc1' ? 'Eldorbek' : u === 'agentp1' ? 'Mirsaid' : 'Savdo Agenti',
         role: 'agent',
         token: 'auth_' + Date.now(),
       };

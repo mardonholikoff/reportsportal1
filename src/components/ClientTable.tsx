@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { Client } from '../types';
-import { formatMoney, formatNumber, formatDate } from '../utils/format';
+import { formatMoney, formatNumber, formatDate, getAgentDisplayName } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import { storageService } from '../services/storage';
 import { exportClientsToXLSX } from '../utils/excelExport';
@@ -554,7 +554,7 @@ export const ClientTable: React.FC<Props> = ({
                     <option value="all">Barcha kirituvchilar</option>
                     {uniqueCreators.map((cr) => (
                       <option key={cr} value={cr}>
-                        Kiritgan: {cr}
+                        Kiritgan: {getAgentDisplayName(cr)}
                       </option>
                     ))}
                   </select>
@@ -1165,7 +1165,7 @@ export const ClientTable: React.FC<Props> = ({
                                 : 'bg-rose-100 text-rose-900 border border-rose-200'
                             }`}
                           >
-                            {client.createdBy || 'adminc'}
+                            {getAgentDisplayName(client.createdBy || 'adminc')}
                           </span>
                         </div>
                         <div className="text-[10px] text-neutral-500 font-mono mt-0.5">
@@ -1366,7 +1366,7 @@ export const ClientTable: React.FC<Props> = ({
                           : 'bg-rose-100 text-rose-900 border border-rose-200'
                       }`}
                     >
-                      {client.createdBy || 'adminc'}
+                      {getAgentDisplayName(client.createdBy || 'adminc')}
                     </span>
                   </span>
                   <span className="font-mono text-[10px]">{formatDate(client.createdAt)}</span>

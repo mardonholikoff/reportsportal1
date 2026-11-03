@@ -28,6 +28,7 @@ import {
 } from '../types';
 import { exportSystemLogsToExcel } from '../utils/exportSystemLogsExcel';
 import { getPeriodArchives } from '../services/firebase';
+import { formatDate, getAgentDisplayName } from '../utils/format';
 
 interface Props {
   logs: SystemLog[];
@@ -712,7 +713,7 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
               <option value="all">Barcha foydalanuvchilar</option>
               {uniqueUsers.map((u) => (
                 <option key={u} value={u}>
-                  {u} {u.startsWith('admin') ? '(Admin)' : '(Agent)'}
+                  {getAgentDisplayName(u)} {u.startsWith('admin') ? '(Admin)' : '(Agent)'}
                 </option>
               ))}
             </select>
@@ -828,14 +829,7 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
               </thead>
               <tbody className="divide-y divide-neutral-100">
                 {filteredLogs.map((log, index) => {
-                  const formattedDate = new Date(log.timestamp).toLocaleString('uz-UZ', {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                  });
+                  const formattedDate = formatDate(log.timestamp);
 
                   return (
                     <tr
@@ -863,7 +857,9 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
                               log.userRole === 'admin' ? 'bg-indigo-500' : 'bg-emerald-500'
                             }`}
                           />
-                          <span className="font-bold text-neutral-900">{log.userId}</span>
+                          <span className="font-bold text-neutral-900">
+                            {getAgentDisplayName(log.userId)}
+                          </span>
                           <span
                             className={`text-[10px] px-1.5 py-0.2 rounded-md font-semibold ${
                               log.userRole === 'admin'

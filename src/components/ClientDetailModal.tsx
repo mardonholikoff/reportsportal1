@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Client } from '../types';
-import { formatMoney, formatDate, formatNumber } from '../utils/format';
+import { formatMoney, formatDate, formatNumber, getAgentDisplayName } from '../utils/format';
 import { storageService } from '../services/storage';
 import {
   X,
@@ -416,7 +416,7 @@ export const ClientDetailModal: React.FC<Props> = ({
                               : 'bg-rose-100 text-rose-900 border border-rose-200'
                           }`}
                         >
-                          {log.author}
+                          {getAgentDisplayName(log.author)}
                         </span>
                         <span className="font-bold text-neutral-900">{log.title}</span>
                       </div>
@@ -446,7 +446,7 @@ export const ClientDetailModal: React.FC<Props> = ({
                 {latestAgentNote && (
                   <div className="text-[11px] font-mono text-neutral-600 flex items-center gap-2 flex-wrap">
                     <span className="font-semibold text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
-                      Kiritdi: {latestAgentNote.author}
+                      Kiritdi: {getAgentDisplayName(latestAgentNote.author)}
                     </span>
                     <span>Sana: {formatDate(latestAgentNote.date)}</span>
                   </div>
@@ -466,7 +466,7 @@ export const ClientDetailModal: React.FC<Props> = ({
                   </span>
                   {latestAgentNote && (
                     <span className="text-[11px] font-mono text-neutral-500">
-                      Kiritdi: {latestAgentNote.author} · {formatDate(latestAgentNote.date)}
+                      Kiritdi: {getAgentDisplayName(latestAgentNote.author)} · {formatDate(latestAgentNote.date)}
                     </span>
                   )}
                 </div>
@@ -480,7 +480,7 @@ export const ClientDetailModal: React.FC<Props> = ({
           <div className="text-[11px] text-neutral-500 flex items-center justify-between border-t border-neutral-100 pt-3">
             <span className="flex items-center gap-1">
               <Calendar className="w-3.5 h-3.5" />
-              Qo'shilgan: {formatDate(client.createdAt)} ({client.createdBy || 'adminc'})
+              Qo'shilgan: {formatDate(client.createdAt)} ({getAgentDisplayName(client.createdBy || 'adminc')})
             </span>
             <span>Yangilangan: {formatDate(client.updatedAt)}</span>
           </div>

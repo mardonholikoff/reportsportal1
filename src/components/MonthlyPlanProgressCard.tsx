@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { MonthlyPlan } from '../types';
 import { storageService } from '../services/storage';
-import { formatMoney, formatDate } from '../utils/format';
+import { formatMoney, formatDate, getAgentDisplayName } from '../utils/format';
 import {
   Target,
   Calendar,
@@ -90,7 +90,7 @@ export const MonthlyPlanProgressCard: React.FC<Props> = ({
                 1 oylik qarz undirish rejasi ko'rsatkichi
               </h2>
               <span className="text-[11px] font-bold bg-emerald-500/20 text-emerald-200 border border-emerald-400/30 px-2.5 py-0.5 rounded-full">
-                Faol reja (@{plan.agentUsername})
+                Faol reja ({getAgentDisplayName(plan.agentUsername)})
               </span>
               {!progress.isExpired && (
                 <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/30 px-2 py-0.5 rounded-full">
@@ -635,8 +635,8 @@ export const MonthlyPlanProgressCard: React.FC<Props> = ({
 
             {editLogs.length === 0 ? (
               <p className="text-xs text-neutral-500 italic py-1">
-                Ushbu reja yaratilganidan beri hali tahrirlanmagan (Dastlabki yaratuvchi: @
-                {plan.createdBy}, {formatDate(plan.createdAt)}).
+                Ushbu reja yaratilganidan beri hali tahrirlanmagan (Dastlabki yaratuvchi:{' '}
+                {getAgentDisplayName(plan.createdBy)}, {formatDate(plan.createdAt)}).
               </p>
             ) : (
               <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
@@ -648,7 +648,8 @@ export const MonthlyPlanProgressCard: React.FC<Props> = ({
                     <div className="space-y-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-100 text-rose-900 font-bold text-[11px]">
-                          <User className="w-3 h-3" />@{log.editedBy}
+                          <User className="w-3 h-3" />
+                          {getAgentDisplayName(log.editedBy)}
                         </span>
                         <span className="inline-flex items-center gap-1 font-mono text-[11px] text-neutral-500">
                           <Clock className="w-3 h-3 text-neutral-400" />

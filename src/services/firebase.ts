@@ -440,7 +440,14 @@ export async function deleteClientFromFirestore(
 // Sync Daily Plans
 export async function syncPlanToFirestore(plan: DailyPlanItem): Promise<void> {
   try {
-    await setDoc(doc(db, 'dailyPlans', plan.id), cleanFirestoreData(plan));
+    const payload: any = cleanFirestoreData(plan);
+    if (!plan.isClosed && plan.status !== 'yopildi') {
+      payload.isClosed = false;
+      payload.closedAt = null;
+      payload.closedBy = null;
+      payload.closeReason = null;
+    }
+    await setDoc(doc(db, 'dailyPlans', plan.id), payload);
   } catch (e) {
     console.warn('Deferred plan sync to Firestore (offline queue)', e);
   }

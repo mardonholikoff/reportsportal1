@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Client, DailyPlanItem } from '../types';
-import { formatDate, formatMoney } from '../utils/format';
+import { formatDateDMY, formatMoney, getAgentDisplayName } from '../utils/format';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import { Printer, X, Download, CheckCircle2 } from 'lucide-react';
 
@@ -60,7 +60,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
   if (!isOpen) return null;
 
   const totalPlannedAmount = plans.reduce((acc, p) => acc + (p.plannedAmount || 0), 0);
-  const printedAtStr = formatDate(new Date().toISOString());
+  const printedAtStr = formatDateDMY(new Date().toISOString());
 
   const handleDownloadAndPrintPdf = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -104,7 +104,8 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
         const plannedLabel = formatPlannedActionLabel(item.plannedAction || item.actionDone);
         const lastOps = getClientLastOperations(item.clientId, clients, allSystemPlans);
 
-        const agentCell = `@${item.agentUsername}\nQo'shdi: ${formatDate(item.createdAt)}`;
+        const agentName = getAgentDisplayName(item.agentUsername);
+        const agentCell = `${agentName}\nQo'shdi: ${formatDateDMY(item.createdAt)}`;
         const clientCell = item.clientName || '-';
         const phoneCell = item.clientPhone || '-';
         const addressCell =
@@ -124,7 +125,11 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
         }
         const debtAdvanceCell = debtLines.length > 0 ? debtLines.join('\n') : '0 USD';
 
-        const finLine = `Oxirgi moliya: ${lastOps.lastFinancialFormatted || "Amaliyot yo'q"}`;
+        const payDetail =
+          lastOps.lastPaymentDateFormatted && lastOps.lastPaymentAmount && lastOps.lastPaymentAmount > 0
+            ? `${lastOps.lastPaymentDateFormatted} — ${formatMoney(lastOps.lastPaymentAmount)} (${lastOps.lastPaymentMethod || "To'lov"})`
+            : "To'lov yo'q";
+        const finLine = `Oxirgi pul bergan: ${payDetail}`;
         const prodPrefix =
           lastOps.lastProductType === 'qaytarilgan'
             ? 'Mahsulot qaytarilgan'
@@ -175,7 +180,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
             'Telefon',
             'Manzil',
             'Joriy qarz / Haqdorlik',
-            'Oxirgi moliya va mahsulot amaliyoti sanasi',
+            "Oxirgi marta pul bergan va mahsulot amaliyoti (d/m/y)",
             'Tanlangan amal va Undirish',
             'Holati / Izoh',
           ],
@@ -393,7 +398,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
                 width: '19%',
               }}
             >
-              Oxirgi moliya va mahsulot amaliyoti sanasi
+              Oxirgi marta pul bergan va mahsulot amaliyoti (d/m/y)
             </th>
             <th
               style={{
@@ -425,6 +430,10 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
               item.plannedAction || item.actionDone
             );
             const lastOps = getClientLastOperations(item.clientId, clients, allSystemPlans);
+            const payDetail =
+              lastOps.lastPaymentDateFormatted && lastOps.lastPaymentAmount && lastOps.lastPaymentAmount > 0
+                ? `${lastOps.lastPaymentDateFormatted} — ${formatMoney(lastOps.lastPaymentAmount)} (${lastOps.lastPaymentMethod || "To'lov"})`
+                : "To'lov yo'q";
             return (
               <tr
                 key={item.id}
@@ -453,11 +462,11 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
                     wordBreak: 'break-word',
                   }}
                 >
-                  <div style={{ fontWeight: 800, fontFamily: 'monospace' }}>
-                    @{item.agentUsername}
+                  <div style={{ fontWeight: 800 }}>
+                    {getAgentDisplayName(item.agentUsername)}
                   </div>
                   <div style={{ fontSize: '9px', marginTop: '2px', fontFamily: 'monospace' }}>
-                    {formatDate(item.createdAt)}
+                    {formatDateDMY(item.createdAt)}
                   </div>
                 </td>
                 <td
@@ -529,9 +538,9 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
                   }}
                 >
                   <div>
-                    <strong>Oxirgi moliya: </strong>
-                    <span style={{ fontFamily: 'monospace' }}>
-                      {lastOps.lastFinancialFormatted || "Amaliyot yo'q"}
+                    <strong>Oxirgi pul bergan: </strong>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                      {payDetail}
                     </span>
                   </div>
                   <div style={{ marginTop: '3px' }}>

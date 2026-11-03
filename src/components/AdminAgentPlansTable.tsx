@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Client, DailyPlanItem } from '../types';
-import { formatMoney, formatDate } from '../utils/format';
+import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
 import { storageService, isClosedPlanExpired7Days } from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import { RejaPrintModal } from './RejaPrintModal';
@@ -18,6 +18,7 @@ import {
   Coins,
   Undo2,
   Lock,
+  Unlock,
   MinusCircle,
   Eye,
   X,
@@ -107,9 +108,16 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
       if (!existing) {
         byClient.set(p.clientId, p);
       } else {
-        const eDone = Boolean(existing.status === 'bajarildi' || existing.actionDone || existing.isClosed || existing.status === 'yopildi');
-        const cDone = Boolean(p.status === 'bajarildi' || p.actionDone || p.isClosed || p.status === 'yopildi');
-        if (cDone && !eDone) {
+        const eReopenFresh = Boolean(existing.reopenedAt && !existing.isClosed && existing.status !== 'yopildi');
+        const cReopenFresh = Boolean(p.reopenedAt && !p.isClosed && p.status !== 'yopildi');
+        const eTime = new Date(existing.reopenedAt || existing.closedAt || existing.completedAt || existing.createdAt || 0).getTime();
+        const cTime = new Date(p.reopenedAt || p.closedAt || p.completedAt || p.createdAt || 0).getTime();
+
+        if (cReopenFresh && !eReopenFresh) {
+          byClient.set(p.clientId, p);
+        } else if (eReopenFresh && !cReopenFresh) {
+          // keep existing
+        } else if (cTime >= eTime) {
           byClient.set(p.clientId, p);
         }
       }
@@ -117,15 +125,9 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
     return Array.from(byClient.values());
   }, [plans]);
 
-  // Mijoz bo'yicha amal bajarilganligini tekshirish (agent Bajarildi deb belgilagan bo'lsa -> Bajarildi, aks holda -> Jarayonda)
+  // Mijoz bo'yicha reja yopilganligini tekshirish (yopilganlar Bajarildi ichida, ochiqlari Jarayonda)
   const isPlanCompleted = (p: DailyPlanItem): boolean => {
-    return Boolean(
-      p.status === 'bajarildi' ||
-        p.actionDone ||
-        (p.actionsHistory && p.actionsHistory.length > 0) ||
-        p.isClosed ||
-        p.status === 'yopildi'
-    );
+    return Boolean(p.isClosed || p.status === 'yopildi');
   };
 
   // Unique agents list
@@ -141,7 +143,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
   const analytics = useMemo(() => {
     let totalClients = uniquePlans.length;
     let completedClients = 0; // Agent amal bajargan ("Bajarildi") yoki yopilgan
-    let inProgressClients = 0; // Amal hali bajarilmagan ("Jarayonda")
+    let inProgressClients = 0; // Amal hali bajarilmagan ("Jarayonda") yoki qayta ochilgan
 
     let totalReceipts = 0; // Jami tushumlar
     const receiptsByType = {
@@ -259,8 +261,12 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
         const matchesClient = p.clientName.toLowerCase().includes(q);
         const matchesPhone = p.clientPhone.toLowerCase().includes(q);
         const matchesAddress = (p.clientAddress || '').toLowerCase().includes(q);
-        const matchesAgent = p.agentUsername.toLowerCase().includes(q);
-        const matchesNote = (p.planNote || '').toLowerCase().includes(q);
+        const matchesAgent =
+          p.agentUsername.toLowerCase().includes(q) ||
+          getAgentDisplayName(p.agentUsername).toLowerCase().includes(q);
+        const matchesNote =
+          (p.planNote || '').toLowerCase().includes(q) ||
+          (p.reopenReason || '').toLowerCase().includes(q);
         if (!matchesClient && !matchesPhone && !matchesAddress && !matchesAgent && !matchesNote) {
           return false;
         }
@@ -292,26 +298,30 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
       {/* 4 TA TAHLILIY STATISTIKA KARTALARI (Admin uchun) */}
       {/* ========================================================= */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
-        {/* KARTA 1: Jami rejadagi bugungi mijozlar */}
-        <div className="p-4 sm:p-5 rounded-3xl bg-neutral-900 text-white shadow-xs relative overflow-hidden flex flex-col justify-between min-h-[140px]">
+        {/* KARTA 1: Jami rejadagi mijozlar (Faqat ochiqlari) */}
+        <div
+          onClick={() => setStatusFilter('jarayonda')}
+          className="p-4 sm:p-5 rounded-3xl bg-neutral-900 text-white shadow-xs relative overflow-hidden flex flex-col justify-between min-h-[140px] cursor-pointer hover:bg-neutral-800 transition"
+          title="Faqat ochiq rejadagi mijozlarni ko'rish"
+        >
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-xs font-bold text-neutral-300 uppercase tracking-wide">
-                Jami rejadagi mijozlar
+                Jami rejadagi mijozlar (Ochiq)
               </span>
               <Users className="w-4 h-4 text-rose-400" />
             </div>
             <div className="text-2xl sm:text-3xl font-extrabold font-display tabular-nums">
-              {analytics.totalClients} ta mijoz
+              {analytics.inProgressClients} ta mijoz
             </div>
           </div>
           <div className="text-[11px] text-neutral-400 flex items-center gap-2 pt-2 border-t border-neutral-800">
-            <span className="text-emerald-400 font-semibold">
-              ● {analytics.completedClients} ta bajarildi
+            <span className="text-amber-300 font-semibold">
+              ● {analytics.inProgressClients} ta ochiq reja
             </span>
             <span className="text-neutral-500">·</span>
-            <span className="text-amber-300 font-semibold">
-              ● {analytics.inProgressClients} ta jarayonda
+            <span className="text-emerald-400 font-semibold">
+              ● {analytics.completedClients} ta yopilgan
             </span>
           </div>
         </div>
@@ -474,13 +484,13 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
               <option value="all">Barcha agentlar ({uniqueAgents.length})</option>
               {uniqueAgents.map((ag) => (
                 <option key={ag} value={ag}>
-                  Agent: {ag}
+                  Agent: {getAgentDisplayName(ag)}
                 </option>
               ))}
             </select>
           )}
 
-          {/* Holat filtri: Birinchi bo'lib hali bajarilib yopilmaganlar, yopilganlar esa Bajarildi ichida */}
+          {/* Holat filtri: adminc orqali kirganda birinchi bo'lib jami rejadagi mijozlarda faqat ochiqlari ko'rinadi */}
           <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl">
             <button
               type="button"
@@ -491,7 +501,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                   : 'text-neutral-600 hover:text-neutral-900'
               }`}
             >
-              Jarayonda / Yopilmagan ({analytics.inProgressClients})
+              Jami rejadagi mijozlar (Faqat ochiqlari: {analytics.inProgressClients})
             </button>
             <button
               type="button"
@@ -559,7 +569,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                 <th className="py-3 px-3">Mijoz & Telefon</th>
                 <th className="py-3 px-3">Manzili</th>
                 <th className="py-3 px-3">Joriy qarz / Haqdorlik</th>
-                <th className="py-3 px-3">Oxirgi moliya va mahsulot amaliyoti sanasi</th>
+                <th className="py-3 px-3">Oxirgi pul bergan va mahsulot sanasi</th>
                 <th className="py-3 px-3">Reja izohi</th>
                 <th className="py-3 px-3">Holati</th>
                 <th className="py-3 px-3">Qilingan amallar</th>
@@ -633,12 +643,12 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                     {/* Qaysi agent orqali qo'shilgan (Alohida ustun) */}
                     <td className="py-3 px-3">
                       <div className="space-y-1">
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg font-mono font-bold text-xs bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
-                          @{item.agentUsername}
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg font-bold text-xs bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                          {getAgentDisplayName(item.agentUsername)}
                         </span>
                         <div className="text-[10px] font-mono text-neutral-500 flex items-center gap-1">
                           <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                          <span>Qo'shdi: {formatDate(item.createdAt)}</span>
+                          <span>Qo'shdi: {formatDateDMY(item.createdAt)}</span>
                         </div>
                       </div>
                     </td>
@@ -702,20 +712,20 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                       </div>
                     </td>
 
-                    {/* Oxirgi moliya va mahsulot amaliyoti sanasi (Alohida ustun) */}
+                    {/* Oxirgi pul bergan va mahsulot amaliyoti sanasi (d/m/y soatlarsiz) */}
                     <td className="py-3 px-3 min-w-[190px]">
                       <div className="space-y-1.5 text-[10.5px]">
                         <div className="bg-emerald-50/70 border border-emerald-200/80 rounded-lg px-2 py-1">
                           <div className="font-bold text-emerald-950 flex items-center gap-1">
                             <Clock className="w-2.5 h-2.5 text-emerald-700 shrink-0" />
-                            <span>Oxirgi moliya:</span>
+                            <span>Oxirgi pul bergan:</span>
                           </div>
-                          {lastOps.lastFinancialFormatted ? (
+                          {lastOps.lastPaymentFormatted ? (
                             <div className="font-mono font-semibold text-emerald-900 mt-0.5">
-                              {lastOps.lastFinancialFormatted}
+                              {lastOps.lastPaymentFormatted}
                             </div>
                           ) : (
-                            <div className="text-neutral-400 italic mt-0.5">Amaliyot yo'q</div>
+                            <div className="text-neutral-400 italic mt-0.5">To'lov yo'q</div>
                           )}
                         </div>
 
@@ -767,7 +777,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                       </div>
                     </td>
 
-                    {/* HOLATI: Agent amal bajargan ("Bajarildi") bo'lsa Bajarildi, aks holda Jarayonda turadi */}
+                    {/* HOLATI + QAYTA OCHISH IZOHI (Faqat admin panelda ko'rinadi) */}
                     <td className="py-3 px-3.5 whitespace-nowrap">
                       {isCompleted ? (
                         <div className="space-y-1">
@@ -792,16 +802,51 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                           )}
                           {isClosed && item.closedBy && (
                             <span className="text-[9px] text-neutral-400 block font-mono">
-                              @{item.closedBy} tomonidan
+                              {getAgentDisplayName(item.closedBy)} tomonidan
                             </span>
+                          )}
+                          {item.reopenReason && (
+                            <div
+                              className="mt-1 p-1.5 rounded-lg bg-purple-50 border border-purple-200 text-[10px] text-purple-950 max-w-[210px] whitespace-normal"
+                              title={`Qayta ochish izohi: ${item.reopenReason}`}
+                            >
+                              <div className="font-bold flex items-center gap-1 text-purple-900">
+                                <Unlock className="w-2.5 h-2.5 shrink-0" />
+                                <span>Qayta ochilgan ({formatDateDMY(item.reopenedAt)})</span>
+                              </div>
+                              <div className="font-medium mt-0.5">
+                                Izoh: "{item.reopenReason}"
+                              </div>
+                            </div>
                           )}
                         </div>
                       ) : (
-                        <div>
+                        <div className="space-y-1">
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
                             <Clock className="w-3.5 h-3.5 text-amber-700" />
                             <span>Jarayonda</span>
                           </span>
+                          {item.reopenReason && (
+                            <div
+                              className="p-1.5 rounded-lg bg-purple-50 border border-purple-200 text-[10px] text-purple-950 max-w-[210px] whitespace-normal"
+                              title={`Qayta ochish izohi: ${item.reopenReason}`}
+                            >
+                              <div className="font-bold flex items-center gap-1 text-purple-900">
+                                <Unlock className="w-2.5 h-2.5 shrink-0" />
+                                <span>
+                                  Qayta ochildi ({getAgentDisplayName(item.reopenedBy || item.agentUsername)})
+                                </span>
+                              </div>
+                              <div className="font-semibold mt-0.5">
+                                Izoh: "{item.reopenReason}"
+                              </div>
+                              {item.reopenedAt && (
+                                <div className="text-[9px] font-mono text-purple-700 mt-0.5">
+                                  Sana: {formatDateDMY(item.reopenedAt)}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <span className="text-[10px] text-neutral-500 block mt-0.5 font-medium">
                             {item.plannedAction
                               ? `Rejada: ${formatActionLabel(item.plannedAction)}`
@@ -814,7 +859,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                       )}
                     </td>
 
-                    {/* QILINGAN AMALLAR: joyiga borish va boshqalardan tashqari to'lov, mahsulot berish, qaytarib olish hammasi to'liq ko'rinsin */}
+                    {/* QILINGAN AMALLAR */}
                     <td className="py-3 px-3.5 max-w-[240px]">
                       {!hasActions ? (
                         <div className="space-y-1">
@@ -925,7 +970,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                     {/* Bajarilgan vaqt */}
                     <td className="py-3 px-3.5 whitespace-nowrap text-[11px] text-neutral-600">
                       {item.completedAt ? (
-                        formatDate(item.completedAt)
+                        formatDateDMY(item.completedAt)
                       ) : (
                         <span className="text-neutral-400 italic">Hali bajarilmadi</span>
                       )}
@@ -963,8 +1008,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                   <span className="text-xs font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded-md">
                     Agent rejasi tafsilotlari
                   </span>
-                  <span className="text-xs font-mono font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200">
-                    Agent: {inspectedPlan.agentUsername}
+                  <span className="text-xs font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200">
+                    Agent: {getAgentDisplayName(inspectedPlan.agentUsername)}
                   </span>
                 </div>
                 <h3 className="text-lg font-bold font-display text-neutral-900 mt-1">
@@ -1008,17 +1053,34 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                         : 'Jarayonda (Hali bajarilmagan)'}
                     </span>
                     <span className="text-[11px] opacity-80">
-                      Tuzilgan sana: {formatDate(inspectedPlan.createdAt)} · {getRemainingTimeStr(inspectedPlan.createdAt)}
+                      Tuzilgan sana: {formatDateDMY(inspectedPlan.createdAt)} · {getRemainingTimeStr(inspectedPlan.createdAt)}
                     </span>
                   </div>
                 </div>
 
                 {inspectedPlan.closedAt && (
                   <span className="text-[10px] font-mono text-emerald-800 bg-white/70 px-2 py-1 rounded border border-emerald-200">
-                    Yopildi: {formatDate(inspectedPlan.closedAt)}
+                    Yopildi: {formatDateDMY(inspectedPlan.closedAt)}
                   </span>
                 )}
               </div>
+
+              {/* Qayta ochilganlik izohi (Faqat admin uchun ko'rinadi) */}
+              {inspectedPlan.reopenReason && (
+                <div className="p-3.5 bg-purple-50/90 rounded-2xl border border-purple-200 text-xs space-y-1.5">
+                  <div className="flex items-center gap-1.5 font-bold text-purple-900">
+                    <Unlock className="w-4 h-4 text-purple-700 shrink-0" />
+                    <span>Qayta ochilganlik izohi (Faqat admin uchun):</span>
+                  </div>
+                  <div className="text-neutral-900 font-semibold pl-5 text-[13px]">
+                    "{inspectedPlan.reopenReason}"
+                  </div>
+                  <div className="text-[10px] text-purple-800 font-mono pl-5">
+                    Qayta ochgan agent: {getAgentDisplayName(inspectedPlan.reopenedBy || inspectedPlan.agentUsername)}{' '}
+                    {inspectedPlan.reopenedAt ? `(${formatDateDMY(inspectedPlan.reopenedAt)})` : ''}
+                  </div>
+                </div>
+              )}
 
               {/* Yopilish sababi */}
               {inspectedPlan.closeReason && (
@@ -1032,7 +1094,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                   </div>
                   {inspectedPlan.closedBy && (
                     <div className="text-[10px] text-neutral-500 font-mono pl-5 pt-0.5">
-                      Yopgan mas'ul: @{inspectedPlan.closedBy} {inspectedPlan.closedAt ? `(${formatDate(inspectedPlan.closedAt)})` : ''}
+                      Yopgan mas'ul: {getAgentDisplayName(inspectedPlan.closedBy)} {inspectedPlan.closedAt ? `(${formatDateDMY(inspectedPlan.closedAt)})` : ''}
                     </div>
                   )}
                 </div>
@@ -1087,7 +1149,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                             Amal #{actIdx + 1}: {act.actionDone}
                           </span>
                           <span className="text-[10px] text-neutral-500 font-mono">
-                            {formatDate(act.timestamp)} ({act.author})
+                            {formatDateDMY(act.timestamp)} ({getAgentDisplayName(act.author)})
                           </span>
                         </div>
 
@@ -1183,7 +1245,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
         isOpen={isAdminPdfModalOpen}
         onClose={() => setIsAdminPdfModalOpen(false)}
         title="AGENTLAR REJASIDAGI MIJOZLAR RO'YXATI"
-        subtitle={`Agent filtri: ${selectedAgent === 'all' ? 'Barcha agentlar' : `@${selectedAgent}`}`}
+        subtitle={`Agent filtri: ${selectedAgent === 'all' ? 'Barcha agentlar' : getAgentDisplayName(selectedAgent)}`}
         plans={filteredPlans}
         clients={resolvedClients}
         allSystemPlans={allSystemPlans}
@@ -1191,3 +1253,4 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
     </div>
   );
 };
+

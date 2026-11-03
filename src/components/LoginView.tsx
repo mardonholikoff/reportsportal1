@@ -130,7 +130,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
                 >
-                  agentc1
+                  Eldorbek (agentc1)
                 </button>
                 <button
                   type="button"
@@ -140,7 +140,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
                 >
-                  agentp1
+                  Mirsaid (agentp1)
                 </button>
                 <button
                   type="button"

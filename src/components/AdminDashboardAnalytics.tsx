@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { WarehouseProduct, Client, DailyPlanItem } from '../types';
 import { storageService } from '../services/storage';
-import { formatNumber, formatMoney, formatDate } from '../utils/format';
+import { formatNumber, formatMoney, formatDate, getAgentDisplayName } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import { exportWarehouseToExcel } from '../utils/exportWarehouseExcel';
 import {
@@ -2988,7 +2988,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                                   key={ag}
                                   className="inline-block bg-neutral-100 border border-neutral-200 text-neutral-800 font-bold px-1.5 py-0.5 rounded text-[10px]"
                                 >
-                                  @{ag}
+                                  {getAgentDisplayName(ag)}
                                 </span>
                               ))}
                             </div>
@@ -3243,7 +3243,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                                               : '-'}
                                           </td>
                                           <td className="py-2 px-2.5 font-bold text-neutral-800">
-                                            @{actItem.agentUsername}
+                                            {getAgentDisplayName(actItem.agentUsername)}
                                           </td>
                                           <td className="py-2 px-2.5 font-semibold text-neutral-800">
                                             <span className="inline-block px-2 py-0.5 rounded bg-neutral-100 border border-neutral-200">
@@ -3372,7 +3372,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                         </td>
 
                         <td className="py-2.5 px-3 font-bold text-neutral-800">
-                          @{item.agentUsername}
+                          {getAgentDisplayName(item.agentUsername)}
                         </td>
 
                         <td className="py-2.5 px-3.5">

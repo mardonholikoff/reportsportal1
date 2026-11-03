@@ -733,7 +733,13 @@ class StorageService {
 
     const scorePlan = (p: DailyPlanItem): number => {
       let score = 0;
-      if (p.isClosed || p.status === 'yopildi') score += 1000;
+      const isFreshReopen = Boolean(p.reopenedAt && !p.isClosed && p.status !== 'yopildi');
+      if (isFreshReopen) {
+        // Qayta ochilgan va hali faol reja eng yuqori ustuvorlikka ega!
+        score += 2000;
+      } else if (p.isClosed || p.status === 'yopildi') {
+        score += 1000;
+      }
       if (p.status === 'bajarildi' || p.actionDone) score += 500;
       score += (p.actionsCount || (p.actionsHistory ? p.actionsHistory.length : 0)) * 50;
       return score;
@@ -749,15 +755,25 @@ class StorageService {
         const existingScore = scorePlan(existing);
         const currentScore = scorePlan(plan);
         const existingTime = new Date(
-          existing.completedAt || existing.closedAt || existing.createdAt || 0
+          existing.reopenedAt || existing.completedAt || existing.closedAt || existing.createdAt || 0
         ).getTime();
         const currentTime = new Date(
-          plan.completedAt || plan.closedAt || plan.createdAt || 0
+          plan.reopenedAt || plan.completedAt || plan.closedAt || plan.createdAt || 0
         ).getTime();
 
-        const pickCurrent =
-          currentScore > existingScore ||
-          (currentScore === existingScore && currentTime > existingTime);
+        const planFreshReopen = Boolean(plan.reopenedAt && !plan.isClosed && plan.status !== 'yopildi');
+        const existingFreshReopen = Boolean(existing.reopenedAt && !existing.isClosed && existing.status !== 'yopildi');
+
+        let pickCurrent = false;
+        if (planFreshReopen && !existingFreshReopen) {
+          pickCurrent = true;
+        } else if (!planFreshReopen && existingFreshReopen) {
+          pickCurrent = false;
+        } else {
+          pickCurrent =
+            currentScore > existingScore ||
+            (currentScore === existingScore && currentTime >= existingTime);
+        }
 
         if (pickCurrent) {
           if (existing.id !== plan.id) duplicateIds.push(existing.id);
@@ -1221,6 +1237,76 @@ class StorageService {
     }
 
     return true;
+  }
+
+  // Yopilgan rejadagi mijozlarni bittalab yoki ko'plab (bulk) qayta ochish (majburiy izoh bilan)
+  public reopenDailyPlanItems(
+    planItemIds: string[],
+    author: string,
+    reopenReason: string
+  ): DailyPlanItem[] {
+    if (!Array.isArray(planItemIds) || planItemIds.length === 0) return [];
+    const finalReason = reopenReason.trim();
+    if (!finalReason) return [];
+
+    const idSet = new Set(planItemIds);
+    const plans = this.getDailyPlans();
+    const nowStr = new Date().toISOString();
+    const reopenedItems: DailyPlanItem[] = [];
+
+    for (let i = 0; i < plans.length; i++) {
+      const plan = plans[i];
+      if (!idSet.has(plan.id)) continue;
+
+      plan.isClosed = false;
+      plan.status = 'rejalashtirilgan';
+      plan.reopenedAt = nowStr;
+      plan.reopenedBy = author;
+      plan.reopenReason = finalReason;
+      delete plan.closedAt;
+      delete plan.closedBy;
+      delete plan.closeReason;
+
+      if (!Array.isArray(plan.reopenHistory)) {
+        plan.reopenHistory = [];
+      }
+      plan.reopenHistory.unshift({
+        reopenedAt: nowStr,
+        reopenedBy: author,
+        reopenReason: finalReason,
+      });
+
+      plans[i] = plan;
+      reopenedItems.push(plan);
+
+      // Audit log & clear lastPlanCloseReason on client
+      const client = this.getClients().find((c) => c.id === plan.clientId);
+      if (client) {
+        const clientLogs = client.logs || [];
+        clientLogs.unshift({
+          id: 'log_' + Date.now() + '_reopen',
+          clientId: client.id,
+          author,
+          timestamp: nowStr,
+          type: 'visit_action',
+          title: 'Reja qayta ochildi',
+          details: `${author} tomonidan mijoz rejasi qayta ochildi. Izoh: ${finalReason}`,
+        });
+        this.updateClient(client.id, {
+          logs: clientLogs,
+          lastPlanClosedAt: undefined,
+          lastPlanCloseReason: undefined,
+          lastPlanClosedBy: undefined,
+          updatedAt: nowStr,
+        });
+      }
+    }
+
+    if (reopenedItems.length > 0) {
+      this.saveDailyPlans(plans);
+    }
+
+    return reopenedItems;
   }
 
   // --- Offline Sync Queue ---

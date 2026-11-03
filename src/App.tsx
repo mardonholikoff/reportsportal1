@@ -670,19 +670,29 @@ export default function App() {
               const rClosed = rp.isClosed || rp.status === 'yopildi';
               const lClosed = existing.isClosed || existing.status === 'yopildi';
 
-              if (rClosed && !lClosed) {
+              const rReopenedTime = rp.reopenedAt ? new Date(rp.reopenedAt).getTime() : 0;
+              const lReopenedTime = existing.reopenedAt ? new Date(existing.reopenedAt).getTime() : 0;
+              const rClosedTime = rp.closedAt ? new Date(rp.closedAt).getTime() : 0;
+              const lClosedTime = existing.closedAt ? new Date(existing.closedAt).getTime() : 0;
+
+              // If local was reopened AFTER remote was closed -> local wins and syncs to Firestore
+              if (!lClosed && rClosed && lReopenedTime >= rClosedTime) {
+                mergedMap.set(rp.id, existing);
+                syncPlanToFirestore(existing);
+              } else if (lClosed && !rClosed && rReopenedTime >= lClosedTime) {
+                // Remote was reopened -> remote wins
                 mergedMap.set(rp.id, rp);
-              } else if (lClosed && !rClosed) {
+              } else if (rClosed && !lClosed && rClosedTime > lReopenedTime) {
+                mergedMap.set(rp.id, rp);
+              } else if (lClosed && !rClosed && lClosedTime > rReopenedTime) {
                 syncPlanToFirestore(existing);
               } else if (rCount > lCount) {
                 mergedMap.set(rp.id, rp);
               } else if (lCount > rCount) {
                 syncPlanToFirestore(existing);
               } else {
-                const rTime = new Date(rp.completedAt || rp.closedAt || rp.createdAt || 0).getTime();
-                const lTime = new Date(
-                  existing.completedAt || existing.closedAt || existing.createdAt || 0
-                ).getTime();
+                const rTime = Math.max(rReopenedTime, rClosedTime, new Date(rp.completedAt || rp.createdAt || 0).getTime());
+                const lTime = Math.max(lReopenedTime, lClosedTime, new Date(existing.completedAt || existing.createdAt || 0).getTime());
                 if (rTime >= lTime) {
                   mergedMap.set(rp.id, rp);
                 } else {
@@ -1159,6 +1169,40 @@ export default function App() {
     }
   };
 
+  // Reopen closed plan item(s) with mandatory reason (reason visible only to Admin)
+  const handleReopenPlanItems = (planItemIds: string[], reopenReason: string) => {
+    const currentUsername = user?.username || 'agentc1';
+    const reopenedItems = storageService.reopenDailyPlanItems(
+      planItemIds,
+      currentUsername,
+      reopenReason
+    );
+    if (reopenedItems.length > 0) {
+      reopenedItems.forEach((p) => {
+        syncPlanToFirestore(p);
+        const updatedClient = storageService.getClientById(p.clientId);
+        if (updatedClient) {
+          syncClientToFirestore(updatedClient);
+        }
+      });
+      const clientNames = reopenedItems.map((p) => p.clientName).join(', ');
+      addSystemLog({
+        userId: currentUsername,
+        userRole: user?.role || 'agent',
+        actionType: 'reja_tuzish',
+        actionTitle: `Yopilgan mijoz reja(lari) qayta ochildi (${reopenedItems.length} ta)`,
+        details: `Mijozlar: ${clientNames}. Qayta ochish izohi: ${reopenReason}`,
+      });
+      showToast(
+        reopenedItems.length === 1
+          ? `"${reopenedItems[0].clientName}" rejasi qayta ochildi!`
+          : `${reopenedItems.length} ta mijoz rejasi qayta ochildi!`
+      );
+      setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
+      setClients(storageService.getClients());
+    }
+  };
+
   // Login handler with audit log
   const handleLogin = async (u: string, p: string) => {
     const ok = await login(u, p);
@@ -1315,6 +1359,7 @@ export default function App() {
                   }
                   onUpdatePlanNote={handleUpdatePlanNote}
                   onClosePlanItem={handleClosePlanItem}
+                  onReopenPlanItems={handleReopenPlanItems}
                 />
               </div>
             )}
@@ -1665,7 +1710,7 @@ export default function App() {
                       3. Agentlar rejasi va hisobotlari
                     </h2>
                     <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
-                      {dailyPlans.length} ta reja
+                      {dailyPlans.filter((p) => !p.isClosed && p.status !== 'yopildi').length} ta ochiq reja
                     </span>
                     <span className="text-[11px] font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
                       Sinxron

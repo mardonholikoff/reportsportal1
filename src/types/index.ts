@@ -103,6 +103,14 @@ export interface DailyPlanItem {
   closedAt?: string;
   closeReason?: string;
   closedBy?: string;
+  reopenedAt?: string;
+  reopenedBy?: string;
+  reopenReason?: string;
+  reopenHistory?: Array<{
+    reopenedAt: string;
+    reopenedBy: string;
+    reopenReason: string;
+  }>;
   plannedAction?: PlanActionType;
   plannedAmount?: number;
   actionDone?: PlanActionType;
