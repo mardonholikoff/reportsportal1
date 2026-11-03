@@ -11,8 +11,11 @@ import {
   Trash2,
   PackagePlus,
   Edit3,
+  TrendingUp,
+  AlertTriangle,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
+import { formatWarehouseStock, calculateProfitMargin, formatNumber, formatMoney } from '../utils/format';
 
 interface Props {
   isOpen: boolean;
@@ -33,6 +36,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('all');
+  const [confirmDeleteProduct, setConfirmDeleteProduct] = useState<WarehouseProduct | null>(null);
 
   const uniqueBrands = useMemo(() => {
     const set = new Set<string>();
@@ -229,60 +233,119 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDeleteProduct(p.id)}
+                        onClick={() => setConfirmDeleteProduct(p)}
                         className="p-2 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
-                        title="O'chirish"
+                        title="Ombordan o'chirish"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
 
-                  {/* Details grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-3 text-xs">
-                    <div>
-                      <span className="text-neutral-500 block text-[11px]">Birlamchi o'lcham:</span>
-                      <span className="font-semibold text-neutral-800">
-                        1 ta {p.pieceUnitName} = {p.volumePerPiece} {p.baseUnit}
-                      </span>
-                    </div>
+                  {/* Details grid with all dimensions & profit margin */}
+                  {(() => {
+                    const stockInfo = formatWarehouseStock(p);
+                    const marginInfo = calculateProfitMargin(p);
 
-                    <div>
-                      <span className="text-neutral-500 block text-[11px]">Katta o'lcham:</span>
-                      <span className="font-semibold text-neutral-800">
-                        {p.packageUnitName
-                          ? `1 ${p.packageUnitName} = ${p.piecesPerPackage} dona`
-                          : "Kiritilmagan (Donalab)"}
-                      </span>
-                    </div>
+                    return (
+                      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 pt-3 text-xs">
+                        {/* 1. Birlamchi o'lcham */}
+                        <div>
+                          <span className="text-neutral-500 block text-[11px]">Birlamchi o'lcham:</span>
+                          <span className="font-semibold text-neutral-800">
+                            1 ta {p.pieceUnitName} = {p.volumePerPiece} {p.baseUnit}
+                          </span>
+                        </div>
 
-                    <div>
-                      <span className="text-neutral-500 block text-[11px]">Ombordagi qoldiq:</span>
-                      <span className="font-bold text-emerald-800">
-                        {p.totalPieces.toLocaleString()} dona ({p.totalVolume.toLocaleString()} {p.baseUnit})
-                      </span>
-                    </div>
+                        {/* 2. Katta o'lcham */}
+                        <div>
+                          <span className="text-neutral-500 block text-[11px]">Katta o'lcham:</span>
+                          <span className="font-semibold text-neutral-800">
+                            {p.packageUnitName
+                              ? `1 ${p.packageUnitName} = ${p.piecesPerPackage} dona`
+                              : "Donalab"}
+                          </span>
+                        </div>
 
-                    <div>
-                      <span className="text-indigo-700 font-semibold block text-[11px]">
-                        Eng kam sotilish narxi:
-                      </span>
-                      <span className="font-bold font-mono text-indigo-900">
-                        {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD{' '}
-                        <span className="text-[10px] font-sans font-normal text-neutral-500">
-                          (1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'})
-                        </span>
-                      </span>
-                    </div>
+                        {/* 3. Ombordagi qoldiq (Barcha o'lchamlarda: korobka va dona, hajm) */}
+                        <div className="col-span-2 sm:col-span-1">
+                          <span className="text-neutral-500 block text-[11px] font-bold">
+                            Ombordagi qoldiq:
+                          </span>
+                          <span className="font-extrabold text-emerald-800 text-xs sm:text-sm block">
+                            {stockInfo.primary}
+                          </span>
+                          <span className="text-[10px] text-neutral-500 font-medium block">
+                            {stockInfo.secondary}
+                          </span>
+                        </div>
 
-                    <div>
-                      <span className="text-neutral-500 block text-[11px]">Kirim sanasi:</span>
-                      <span className="font-mono text-neutral-700 flex items-center gap-1">
-                        <Calendar className="w-3 h-3 text-neutral-400" />
-                        {p.intakeDate}
-                      </span>
-                    </div>
-                  </div>
+                        {/* 4. Sotib olish (kirim) narxi */}
+                        <div>
+                          <span className="text-neutral-500 block text-[11px]">
+                            Sotib olish (kirim):
+                          </span>
+                          {p.price > 0 ? (
+                            <div>
+                              <span className="font-bold font-mono text-neutral-900">
+                                {p.price.toLocaleString()} USD
+                              </span>
+                              <span className="text-[10px] text-neutral-500 block">
+                                (1 {p.pricingUnitType === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'})
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] font-medium text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block">
+                              Narxsiz (o'tkazilgan)
+                            </span>
+                          )}
+                        </div>
+
+                        {/* 5. Eng kam sotilish narxi */}
+                        <div>
+                          <span className="text-indigo-700 font-semibold block text-[11px]">
+                            Eng kam sotilish:
+                          </span>
+                          <span className="font-bold font-mono text-indigo-900">
+                            {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
+                          </span>
+                          <span className="text-[10px] text-neutral-500 block">
+                            (1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'})
+                          </span>
+                        </div>
+
+                        {/* 6. Foyda marjasi */}
+                        <div>
+                          <span className="text-neutral-500 block text-[11px]">Foyda marjasi:</span>
+                          {marginInfo.hasCost ? (
+                            <div className="mt-0.5">
+                              <span
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10.5px] border ${
+                                  marginInfo.marginPercent >= 0
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                    : 'bg-rose-100 text-rose-800 border-rose-300'
+                                }`}
+                              >
+                                <TrendingUp className="w-3 h-3" />
+                                <span>
+                                  {marginInfo.marginPercent >= 0 ? `+` : ``}
+                                  {marginInfo.marginPercent.toFixed(1)}%
+                                </span>
+                              </span>
+                              <span className="text-[10px] font-mono text-emerald-800 block mt-0.5">
+                                {marginInfo.profitPerPiece >= 0 ? `+` : ``}
+                                {marginInfo.profitPerPiece.toFixed(2)} USD/dona
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-[10.5px] text-neutral-400 italic">
+                              Tannarxsiz
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {p.notes && (
                     <div className="mt-2.5 pt-2 border-t border-neutral-100 text-[11px] text-neutral-500 italic">
@@ -304,6 +367,79 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
             Yopish
           </button>
         </div>
+
+        {/* Tasdiqlash modali: Mahsulotni ombordan o'chirish */}
+        {confirmDeleteProduct && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          >
+            <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-rose-100 space-y-4">
+              <div className="flex items-center gap-3 text-rose-700">
+                <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                  <Trash2 className="w-6 h-6 text-rose-700" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold font-display text-neutral-900">
+                    Mahsulotni o'chirish
+                  </h3>
+                  <p className="text-xs text-neutral-500">
+                    Ombor zaxirasi va butun tizimdan o'chirish
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-2">
+                <p className="font-semibold text-neutral-900 text-sm">
+                  Ushbu mahsulotni ombordan o'chirib yuborishga ishonchingiz komilmi?
+                </p>
+                <div className="p-2.5 rounded-xl bg-white border border-rose-200/80 space-y-1">
+                  <div className="font-bold text-neutral-900">
+                    {confirmDeleteProduct.brand} — {confirmDeleteProduct.name}
+                  </div>
+                  <div className="text-neutral-600 flex items-center gap-2">
+                    <span>Ombor qoldig'i:</span>
+                    <strong className="text-emerald-800 font-mono">
+                      {confirmDeleteProduct.totalPieces.toLocaleString()} dona
+                    </strong>
+                    {confirmDeleteProduct.packageUnitName && (confirmDeleteProduct.piecesPerPackage || 1) > 1 && (
+                      <span className="text-neutral-500">
+                        ({Math.floor(confirmDeleteProduct.totalPieces / (confirmDeleteProduct.piecesPerPackage || 1))} {confirmDeleteProduct.packageUnitName})
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>Ushbu amal qaytarilmaydi va mahsulot butun bazadan to'liq o'chiriladi.</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteProduct(null)}
+                  className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+                >
+                  Bekor qilish
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = confirmDeleteProduct.id;
+                    setConfirmDeleteProduct(null);
+                    onDeleteProduct(id);
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Ha, o'chirilsin</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

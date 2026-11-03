@@ -171,11 +171,75 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     return Array.from(set).sort();
   }, [uniquePlans]);
 
-  // Comprehensive analytics calculation across all plans
+  // Reja sanasini aniqlash yordamchisi (YYYY-MM-DD)
+  const getPlanDateKey = (p: DailyPlanItem): string => {
+    if (p.planDate) return p.planDate.slice(0, 10);
+    if (p.createdAt) {
+      try {
+        const d = new Date(p.createdAt);
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleDateString('en-CA');
+        }
+      } catch {
+        // fallback
+      }
+      return p.createdAt.slice(0, 10);
+    }
+    return '';
+  };
+
+  const todayStr = useMemo(() => new Date().toLocaleDateString('en-CA'), []);
+  const yesterdayStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toLocaleDateString('en-CA');
+  }, []);
+
+  const dateScopeLabel = useMemo(() => {
+    if (dateFilter === 'today') return 'Bugun';
+    if (dateFilter === 'yesterday') return 'Kecha';
+    if (dateFilter === 'custom' && customDate) return customDate;
+    return 'Barcha sanalar';
+  }, [dateFilter, customDate]);
+
+  // 4 ta tahliliy bloklar hisobi: sana, tanlangan agent va holat bo'yicha dinamik moslashadi
   const analytics = useMemo(() => {
-    let totalClients = uniquePlans.length;
-    let completedClients = 0; // Agent amal bajargan ("Bajarildi") yoki yopilgan
-    let inProgressClients = 0; // Amal hali bajarilmagan ("Jarayonda") yoki qayta ochilgan
+    // 1. Avval sana va tanlangan agent bo'yicha saralash
+    const dateAndAgentPlans = uniquePlans.filter((p) => {
+      if (selectedAgent !== 'all' && p.agentUsername !== selectedAgent) {
+        return false;
+      }
+      if (dateFilter !== 'all') {
+        const planDateStr = getPlanDateKey(p);
+        if (dateFilter === 'today' && planDateStr !== todayStr) return false;
+        if (dateFilter === 'yesterday' && planDateStr !== yesterdayStr) return false;
+        if (dateFilter === 'custom' && customDate && planDateStr !== customDate) return false;
+      }
+      return true;
+    });
+
+    const totalClients = dateAndAgentPlans.length;
+    let completedClients = 0; // Yopilganlar / Bajarilganlar
+    let inProgressClients = 0; // Hali yopilmagan ochiq rejalar
+
+    dateAndAgentPlans.forEach((p) => {
+      if (isPlanCompleted(p)) {
+        completedClients++;
+      } else {
+        inProgressClients++;
+      }
+    });
+
+    // 2. Tushumlar va mahsulotlar (2, 3 va 4-bloklar) uchun nishon rejalar:
+    // Standart holatda ('jarayonda') faqat HALI YOPILMAGANLAR hisoblanadi.
+    // Agar yopilganlar ham qo'shilsa ('all'), barchasi (ochiq va yopilganlar) hisoblanadi.
+    // Agar 'bajarildi' bo'lsa, faqat yopilganlar hisoblanadi.
+    const metricTargetPlans = dateAndAgentPlans.filter((p) => {
+      const isDone = isPlanCompleted(p);
+      if (statusFilter === 'all') return true; // Yopilganlar ham qo'shilgan
+      if (statusFilter === 'bajarildi') return isDone; // Faqat yopilganlar
+      return !isDone; // Faqat yopilmagan ochiq rejalar ('jarayonda')
+    });
 
     let totalReceipts = 0; // Jami tushumlar
     const receiptsByType = {
@@ -190,13 +254,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     let totalReturnedSum = 0; // Mahsulot qaytishi jami summasi
     let totalReturnedPieces = 0; // Mahsulot qaytishi jami soni
 
-    uniquePlans.forEach((p) => {
-      if (isPlanCompleted(p)) {
-        completedClients++;
-      } else {
-        inProgressClients++;
-      }
-
+    metricTargetPlans.forEach((p) => {
       const actions = getPlanActions(p);
       actions.forEach((act) => {
         // 1. Direct financial action from Section 2
@@ -270,6 +328,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       totalClients,
       completedClients,
       inProgressClients,
+      metricTargetCount: metricTargetPlans.length,
       totalReceipts,
       receiptsByType: {
         naqd: { ...receiptsByType.naqd, percent: getPct(receiptsByType.naqd.amount) },
@@ -282,7 +341,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       totalReturnedSum,
       totalReturnedPieces,
     };
-  }, [uniquePlans]);
+  }, [uniquePlans, selectedAgent, dateFilter, customDate, statusFilter, todayStr, yesterdayStr]);
 
   // Filtered plans list
   const filteredPlans = useMemo(() => {
@@ -311,9 +370,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
       // 3. Date filter: 'all' | 'today' | 'yesterday' | 'custom'
       if (dateFilter !== 'all') {
-        const planDateStr = (p.planDate || p.createdAt || '').slice(0, 10);
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+        const planDateStr = getPlanDateKey(p);
         if (dateFilter === 'today' && planDateStr !== todayStr) return false;
         if (dateFilter === 'yesterday' && planDateStr !== yesterdayStr) return false;
         if (dateFilter === 'custom' && customDate && planDateStr !== customDate) return false;
@@ -332,7 +389,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       if (aDone !== bDone) return aDone - bDone;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [uniquePlans, searchTerm, statusFilter, selectedAgent, dateFilter, customDate]);
+  }, [uniquePlans, searchTerm, statusFilter, selectedAgent, dateFilter, customDate, todayStr, yesterdayStr]);
 
   const toggleSelectPlanItem = (id: string, e?: React.MouseEvent | React.ChangeEvent) => {
     if (e) e.stopPropagation();
@@ -386,31 +443,99 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 4 TA TAHLILIY STATISTIKA KARTALARI (Admin uchun) */}
       {/* ========================================================= */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+        <div className="flex items-center gap-2 text-xs flex-wrap">
+          <span className="font-bold text-neutral-800">
+            📊 Tahliliy ko'rsatkichlar:
+          </span>
+          <span className="px-2 py-0.5 rounded-md bg-neutral-100 font-semibold text-neutral-700">
+            Sana: {dateScopeLabel}
+          </span>
+          <span
+            className={`px-2 py-0.5 rounded-md font-semibold ${
+              statusFilter === 'all'
+                ? 'bg-purple-100 text-purple-800'
+                : statusFilter === 'bajarildi'
+                ? 'bg-emerald-100 text-emerald-800'
+                : 'bg-amber-100 text-amber-800'
+            }`}
+          >
+            {statusFilter === 'all'
+              ? "Holat: Yopilganlar ham qo'shilgan"
+              : statusFilter === 'bajarildi'
+              ? 'Holat: Faqat yopilganlar'
+              : 'Holat: Faqat yopilmaganlar'}
+          </span>
+        </div>
+
+        {/* Tezkor almashtirish tugmasi */}
+        <button
+          type="button"
+          onClick={() => setStatusFilter(statusFilter === 'all' ? 'jarayonda' : 'all')}
+          className="text-xs font-bold text-rose-700 hover:text-rose-800 underline flex items-center gap-1 cursor-pointer"
+        >
+          {statusFilter === 'all'
+            ? "↩ Faqat yopilmaganlarni ko'rsatish"
+            : "+ Yopilganlarni ham hisobga qo'shish"}
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
-        {/* KARTA 1: Jami rejadagi mijozlar (Faqat ochiqlari) */}
+        {/* KARTA 1: Yopilmagan rejadagi mijozlar */}
         <div
-          onClick={() => setStatusFilter('jarayonda')}
-          className="p-4 sm:p-5 rounded-3xl bg-neutral-900 text-white shadow-xs relative overflow-hidden flex flex-col justify-between min-h-[140px] cursor-pointer hover:bg-neutral-800 transition"
-          title="Faqat ochiq rejadagi mijozlarni ko'rish"
+          onClick={() => {
+            if (statusFilter === 'all') {
+              setStatusFilter('jarayonda');
+            } else if (statusFilter === 'jarayonda') {
+              setStatusFilter('all');
+            } else {
+              setStatusFilter('jarayonda');
+            }
+          }}
+          className="p-4 sm:p-5 rounded-3xl bg-neutral-900 text-white shadow-xs relative overflow-hidden flex flex-col justify-between min-h-[140px] cursor-pointer hover:bg-neutral-800 transition group"
+          title={
+            statusFilter === 'all'
+              ? "Yopilganlar qo'shilgan. Bosib faqat yopilmaganlarni ko'rish"
+              : "Yopilmaganlar ko'rsatilmoqda. Bosib yopilganlarni ham qo'shish"
+          }
         >
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-bold text-neutral-300 uppercase tracking-wide">
-                Jami rejadagi mijozlar (Ochiq)
+              <span className="text-xs font-bold text-neutral-300 uppercase tracking-wide truncate">
+                {statusFilter === 'all'
+                  ? 'Rejadagi mijozlar (Yopilganlar bilan)'
+                  : statusFilter === 'bajarildi'
+                  ? 'Yopilgan rejadagi mijozlar'
+                  : 'Yopilmagan rejadagi mijozlar'}
               </span>
-              <Users className="w-4 h-4 text-rose-400" />
+              <Users className="w-4 h-4 text-rose-400 shrink-0" />
             </div>
             <div className="text-2xl sm:text-3xl font-extrabold font-display tabular-nums">
-              {analytics.inProgressClients} ta mijoz
+              {statusFilter === 'all'
+                ? `${analytics.totalClients} ta mijoz`
+                : statusFilter === 'bajarildi'
+                ? `${analytics.completedClients} ta mijoz`
+                : `${analytics.inProgressClients} ta mijoz`}
             </div>
           </div>
-          <div className="text-[11px] text-neutral-400 flex items-center gap-2 pt-2 border-t border-neutral-800">
-            <span className="text-amber-300 font-semibold">
-              ● {analytics.inProgressClients} ta ochiq reja
-            </span>
-            <span className="text-neutral-500">·</span>
-            <span className="text-emerald-400 font-semibold">
-              ● {analytics.completedClients} ta yopilgan
+          <div className="text-[11px] text-neutral-400 flex items-center justify-between pt-2 border-t border-neutral-800">
+            {statusFilter === 'all' ? (
+              <span className="text-neutral-300 font-semibold flex items-center gap-1.5">
+                <span>● {analytics.inProgressClients} ta ochiq</span>
+                <span className="text-neutral-600">·</span>
+                <span className="text-emerald-400">● {analytics.completedClients} ta yopilgan</span>
+              </span>
+            ) : statusFilter === 'bajarildi' ? (
+              <span className="text-emerald-400 font-semibold">
+                ● {analytics.completedClients} ta yopilgan reja
+              </span>
+            ) : (
+              <span className="text-amber-300 font-semibold">
+                ● {analytics.inProgressClients} ta ochiq reja (Hozirgi vaqtda)
+              </span>
+            )}
+            <span className="text-[10px] text-neutral-400 bg-neutral-800 px-2 py-0.5 rounded-md font-mono">
+              {dateScopeLabel}
             </span>
           </div>
         </div>
@@ -419,10 +544,27 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         <div className="p-4 sm:p-5 rounded-3xl bg-white border border-rose-100 shadow-xs flex flex-col justify-between min-h-[140px] space-y-3">
           <div>
             <div className="flex items-center justify-between mb-1">
-              <span className="text-xs font-bold text-neutral-700 uppercase tracking-wide">
-                Tushumlar
-              </span>
-              <Receipt className="w-4 h-4 text-emerald-600" />
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-bold text-neutral-700 uppercase tracking-wide">
+                  Tushumlar
+                </span>
+                <span
+                  className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${
+                    statusFilter === 'all'
+                      ? 'bg-purple-100 text-purple-700'
+                      : statusFilter === 'bajarildi'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}
+                >
+                  {statusFilter === 'all'
+                    ? 'Yopilganlar bilan'
+                    : statusFilter === 'bajarildi'
+                    ? 'Yopilganlar'
+                    : 'Faqat yopilmaganlar'}
+                </span>
+              </div>
+              <Receipt className="w-4 h-4 text-emerald-600 shrink-0" />
             </div>
             <div className="text-xl sm:text-2xl font-extrabold font-display font-mono text-emerald-800 tabular-nums">
               {formatMoney(analytics.totalReceipts)}
@@ -506,10 +648,27 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         <div className="p-4 sm:p-5 rounded-3xl bg-white border border-rose-100 shadow-xs flex flex-col justify-between min-h-[140px]">
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-bold text-neutral-700 uppercase tracking-wide">
-                Mahsulot berilishi
-              </span>
-              <PackageCheck className="w-4 h-4 text-rose-700" />
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-bold text-neutral-700 uppercase tracking-wide">
+                  Mahsulot berilishi
+                </span>
+                <span
+                  className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${
+                    statusFilter === 'all'
+                      ? 'bg-purple-100 text-purple-700'
+                      : statusFilter === 'bajarildi'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}
+                >
+                  {statusFilter === 'all'
+                    ? 'Yopilganlar bilan'
+                    : statusFilter === 'bajarildi'
+                    ? 'Yopilganlar'
+                    : 'Faqat yopilmaganlar'}
+                </span>
+              </div>
+              <PackageCheck className="w-4 h-4 text-rose-700 shrink-0" />
             </div>
             <div className="text-xl sm:text-2xl font-extrabold font-display font-mono text-rose-900 tabular-nums">
               {formatMoney(analytics.totalDeliveredSum)}
@@ -527,10 +686,27 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         <div className="p-4 sm:p-5 rounded-3xl bg-white border border-rose-100 shadow-xs flex flex-col justify-between min-h-[140px]">
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-bold text-neutral-700 uppercase tracking-wide">
-                Mahsulot qaytishi
-              </span>
-              <PackageMinus className="w-4 h-4 text-amber-700" />
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-bold text-neutral-700 uppercase tracking-wide">
+                  Mahsulot qaytishi
+                </span>
+                <span
+                  className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${
+                    statusFilter === 'all'
+                      ? 'bg-purple-100 text-purple-700'
+                      : statusFilter === 'bajarildi'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}
+                >
+                  {statusFilter === 'all'
+                    ? 'Yopilganlar bilan'
+                    : statusFilter === 'bajarildi'
+                    ? 'Yopilganlar'
+                    : 'Faqat yopilmaganlar'}
+                </span>
+              </div>
+              <PackageMinus className="w-4 h-4 text-amber-700 shrink-0" />
             </div>
             <div className="text-xl sm:text-2xl font-extrabold font-display font-mono text-amber-900 tabular-nums">
               {formatMoney(analytics.totalReturnedSum)}
@@ -579,7 +755,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             </select>
           )}
 
-          {/* Holat filtri: adminc orqali kirganda birinchi bo'lib jami rejadagi mijozlarda faqat ochiqlari ko'rinadi */}
+          {/* Holat filtri: adminc orqali kirganda birinchi bo'lib yopilmagan rejadagi mijozlar ko'rinadi */}
           <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl">
             <button
               type="button"
@@ -590,7 +766,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                   : 'text-neutral-600 hover:text-neutral-900'
               }`}
             >
-              Jami rejadagi mijozlar (Faqat ochiqlari: {analytics.inProgressClients})
+              Yopilmagan reja (Ochiq: {analytics.inProgressClients})
             </button>
             <button
               type="button"
@@ -601,7 +777,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                   : 'text-neutral-600 hover:text-neutral-900'
               }`}
             >
-              Bajarildi / Yopilganlar ({analytics.completedClients})
+              Yopilganlar ({analytics.completedClients})
             </button>
             <button
               type="button"
@@ -612,7 +788,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                   : 'text-neutral-600 hover:text-neutral-900'
               }`}
             >
-              Barchasi ({uniquePlans.length})
+              Barchasi (Yopilganlar bilan: {analytics.totalClients})
             </button>
           </div>
 

@@ -327,10 +327,15 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
 
                         {/* Katta o'lcham (Qadoq) */}
                         <td className="py-3 px-3.5 text-center">
-                          {p.packageUnitName ? (
+                          {p.packageUnitName && (p.piecesPerPackage || 1) > 1 ? (
                             <>
                               <span className="font-semibold text-neutral-800">
                                 {Math.floor(p.totalPieces / (p.piecesPerPackage || 1))} {p.packageUnitName}
+                                {p.totalPieces % (p.piecesPerPackage || 1) > 0 && (
+                                  <span className="text-emerald-700 font-bold block text-[10.5px]">
+                                    + {p.totalPieces % (p.piecesPerPackage || 1)} dona
+                                  </span>
+                                )}
                               </span>
                               <div className="text-[10px] text-neutral-400">
                                 (1 {p.packageUnitName} = {p.piecesPerPackage} dona)
@@ -490,10 +495,15 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
 
                       <div>
                         <span className="text-[10px] text-neutral-500 block">Qadoqda</span>
-                        {p.packageUnitName ? (
+                        {p.packageUnitName && (p.piecesPerPackage || 1) > 1 ? (
                           <>
                             <span className="font-semibold text-neutral-800 text-xs">
                               {Math.floor(p.totalPieces / (p.piecesPerPackage || 1))} {p.packageUnitName}
+                              {p.totalPieces % (p.piecesPerPackage || 1) > 0 && (
+                                <span className="text-emerald-700 font-bold">
+                                  {' '}+{p.totalPieces % (p.piecesPerPackage || 1)}
+                                </span>
+                              )}
                             </span>
                             <span className="text-[9px] text-neutral-400 block">
                               (1={p.piecesPerPackage})

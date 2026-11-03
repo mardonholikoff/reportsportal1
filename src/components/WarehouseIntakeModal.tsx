@@ -15,6 +15,7 @@ import {
   HelpCircle,
   Edit3,
   FileSpreadsheet,
+  TrendingUp,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
 import {
@@ -245,6 +246,24 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
     const val = parseFloat(minSellingPrice);
     return minSellingPrice.trim() !== '' && !isNaN(val) && val > 0;
   }, [isBlock5Unlocked, minSellingPrice]);
+
+  // Sotib olish va Sotish narxi bo'yicha birlik tannarxi hamda foyda marjasi hisobi
+  const costPerPiece = useMemo(() => {
+    if (skipPricing || parsedPrice <= 0) return 0;
+    return effectivePricingUnitType === 'package'
+      ? parsedPrice / parsedPiecesPerPkg
+      : parsedPrice;
+  }, [skipPricing, parsedPrice, effectivePricingUnitType, parsedPiecesPerPkg]);
+
+  const sellingPerPiece = useMemo(() => {
+    if (!isBlock5Valid) return 0;
+    return effectiveMinSellingUnitType === 'package'
+      ? parsedMinSellingPrice / parsedPiecesPerPkg
+      : parsedMinSellingPrice;
+  }, [isBlock5Valid, effectiveMinSellingUnitType, parsedMinSellingPrice, parsedPiecesPerPkg]);
+
+  const profitPerPiece = sellingPerPiece - costPerPiece;
+  const marginPercent = costPerPiece > 0 ? ((sellingPerPiece - costPerPiece) / costPerPiece) * 100 : 0;
 
   // Total Pieces and Total Volume
   const calculatedIntakePieces = useMemo(() => {
@@ -936,7 +955,7 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                 </span>
                 <h3 className="text-sm sm:text-base font-bold text-neutral-900 flex items-center gap-2">
                   <DollarSign className="w-4 h-4 text-amber-600" />
-                  <span>3-BLOK: Narx</span>
+                  <span>3-BLOK: Sotib olish narxi (Kirim tannarxi)</span>
                   <span className="text-[11px] font-medium text-neutral-500">(ixtiyoriy)</span>
                   {!isBlock3Unlocked && <Lock className="w-3.5 h-3.5 text-neutral-400" />}
                 </h3>
@@ -1388,28 +1407,120 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
 
             {/* Dynamic Calculation breakdown for Block 5 */}
             {isBlock5Valid && (
-              <div className="mt-3 p-3 bg-white rounded-xl border border-indigo-200/90 text-xs text-indigo-950 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
-                <div>
-                  Agentlarga ko'rinadigan eng kam sotilish narxi:{' '}
-                  <strong>
-                    {effectiveMinSellingUnitType === 'piece'
-                      ? `1 ${pieceUnitName || 'dona'}`
-                      : `1 ${packageUnitName || 'korobka'}`}
-                  </strong>{' '}
-                  ={' '}
-                  <span className="font-extrabold font-mono text-indigo-800">
-                    {parsedMinSellingPrice.toLocaleString()} {currency}
-                  </span>
-                </div>
-                {hasPackageUnit && (
-                  <div className="text-[11px] font-mono text-indigo-700 font-semibold">
-                    {effectiveMinSellingUnitType === 'piece'
-                      ? `(1 ${packageUnitName || 'korobka'} = ${(Math.round(parsedMinSellingPrice * parsedPiecesPerPkg * 100) / 100).toLocaleString()} ${currency})`
-                      : `(1 ${pieceUnitName || 'dona'} = ${(Math.round((parsedMinSellingPrice / parsedPiecesPerPkg) * 100) / 100).toLocaleString()} ${currency})`}
+              <>
+                <div className="mt-3 p-3 bg-white rounded-xl border border-indigo-200/90 text-xs text-indigo-950 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+                  <div>
+                    Agentlarga ko'rinadigan eng kam sotilish narxi:{' '}
+                    <strong>
+                      {effectiveMinSellingUnitType === 'piece'
+                        ? `1 ${pieceUnitName || 'dona'}`
+                        : `1 ${packageUnitName || 'korobka'}`}
+                    </strong>{' '}
+                    ={' '}
+                    <span className="font-extrabold font-mono text-indigo-800">
+                      {parsedMinSellingPrice.toLocaleString()} {currency}
+                    </span>
                   </div>
-                )}
+                  {hasPackageUnit && (
+                    <div className="text-[11px] font-mono text-indigo-700 font-semibold">
+                      {effectiveMinSellingUnitType === 'piece'
+                        ? `(1 ${packageUnitName || 'korobka'} = ${(Math.round(parsedMinSellingPrice * parsedPiecesPerPkg * 100) / 100).toLocaleString()} ${currency})`
+                        : `(1 ${pieceUnitName || 'dona'} = ${(Math.round((parsedMinSellingPrice / parsedPiecesPerPkg) * 100) / 100).toLocaleString()} ${currency})`}
+                    </div>
+                  )}
+                </div>
+
+                {/* Sotib olish va Sotish narxini taqqoslash hamda foyda marjasi */}
+                <div className="mt-3.5 p-3.5 rounded-2xl bg-gradient-to-r from-emerald-50/70 via-white to-indigo-50/60 border border-emerald-200 text-xs space-y-2.5 shadow-2xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200/60 pb-2">
+                  <span className="font-bold text-neutral-800 flex items-center gap-1.5">
+                    <TrendingUp className="w-4 h-4 text-emerald-700" />
+                    <span>Sotib olish va sotish narxini taqqoslash (Foyda marjasi)</span>
+                  </span>
+                  {costPerPiece > 0 ? (
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full font-mono font-extrabold text-[11px] border ${
+                        marginPercent >= 0
+                          ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                          : 'bg-rose-100 text-rose-800 border-rose-300'
+                      }`}
+                    >
+                      {marginPercent >= 0
+                        ? `+${marginPercent.toFixed(1)}% foyda marjasi`
+                        : `${marginPercent.toFixed(1)}% zarar`}
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-md font-semibold text-[10.5px] bg-amber-100 text-amber-900 border border-amber-200">
+                      Kirim (sotib olish) narxi kiritilmagan
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-0.5 text-[11.5px]">
+                  <div className="p-2.5 rounded-xl bg-white border border-neutral-200 shadow-2xs">
+                    <span className="text-neutral-500 block text-[10px] uppercase font-bold tracking-wide">
+                      1. Sotib olish narxi:
+                    </span>
+                    <span className="font-mono font-bold text-neutral-900 text-xs sm:text-sm">
+                      {costPerPiece > 0
+                        ? `${costPerPiece.toFixed(2)} USD / dona`
+                        : "O'tkazib yuborilgan (0 USD)"}
+                    </span>
+                    {hasPackageUnit && costPerPiece > 0 && (
+                      <div className="text-[10px] text-neutral-500 font-mono mt-0.5">
+                        ({(costPerPiece * parsedPiecesPerPkg).toFixed(2)} USD / {packageUnitName})
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-white border border-indigo-200 shadow-2xs">
+                    <span className="text-indigo-800 block text-[10px] uppercase font-bold tracking-wide">
+                      2. Minimal sotish narxi:
+                    </span>
+                    <span className="font-mono font-bold text-indigo-950 text-xs sm:text-sm">
+                      {sellingPerPiece.toFixed(2)} USD / dona
+                    </span>
+                    {hasPackageUnit && (
+                      <div className="text-[10px] text-indigo-700 font-mono mt-0.5">
+                        ({(sellingPerPiece * parsedPiecesPerPkg).toFixed(2)} USD / {packageUnitName})
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-emerald-50/80 border border-emerald-300 shadow-2xs">
+                    <span className="text-emerald-900 block text-[10px] uppercase font-bold tracking-wide">
+                      3. Sof foyda marjasi:
+                    </span>
+                    {costPerPiece > 0 ? (
+                      <div>
+                        <span
+                          className={`font-mono font-extrabold text-xs sm:text-sm ${
+                            profitPerPiece >= 0 ? 'text-emerald-800' : 'text-rose-700'
+                          }`}
+                        >
+                          {profitPerPiece >= 0
+                            ? `+${profitPerPiece.toFixed(2)}`
+                            : profitPerPiece.toFixed(2)}{' '}
+                          USD / dona
+                        </span>
+                        {hasPackageUnit && (
+                          <div className="text-[10px] font-mono text-emerald-800 font-semibold mt-0.5">
+                            ({(profitPerPiece * parsedPiecesPerPkg >= 0 ? '+' : '') +
+                              (profitPerPiece * parsedPiecesPerPkg).toFixed(2)}{' '}
+                            USD / {packageUnitName})
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="font-mono font-semibold text-neutral-600 text-xs">
+                        Tannarxsiz (barchasi daromad)
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
-            )}
+            </>
+          )}
           </div>
 
           {/* Modal Footer */}

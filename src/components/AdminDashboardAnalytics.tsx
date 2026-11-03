@@ -1,7 +1,14 @@
 import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { WarehouseProduct, Client, DailyPlanItem } from '../types';
 import { storageService } from '../services/storage';
-import { formatNumber, formatMoney, formatDate, getAgentDisplayName } from '../utils/format';
+import {
+  formatNumber,
+  formatMoney,
+  formatDate,
+  getAgentDisplayName,
+  formatWarehouseStock,
+  calculateProfitMargin,
+} from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import { exportWarehouseToExcel } from '../utils/exportWarehouseExcel';
 import {
@@ -46,6 +53,7 @@ import {
   ChevronRight,
   Trash2,
   Edit3,
+  TrendingUp,
 } from 'lucide-react';
 
 interface Props {
@@ -122,6 +130,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [isExportingStock, setIsExportingStock] = useState(false);
   const [block1Page, setBlock1Page] = useState<number>(1);
   const [block1PageSize, setBlock1PageSize] = useState<number | 'all'>(50);
+  const [confirmDeleteWarehouseProduct, setConfirmDeleteWarehouseProduct] = useState<WarehouseProduct | null>(null);
 
   const uniqueBrands = useMemo(() => {
     const set = new Set<string>();
@@ -1600,17 +1609,20 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               <table className="w-full text-left text-xs">
                 <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider text-[11px]">
                   <tr>
-                    <th className="py-3 px-3.5 w-12 text-center">#</th>
-                    <th className="py-3 px-3.5">Mahsulot nomi</th>
-                    <th className="py-3 px-3.5">Brendi</th>
-                    <th className="py-3 px-3.5">Birligi</th>
-                    <th className="py-3 px-3.5 text-center">Qadoqdagi dona</th>
-                    <th className="py-3 px-3.5 text-right font-bold">Ombor qoldig'i (Dona)</th>
-                    <th className="py-3 px-3.5 text-right">Qadoqlar soni</th>
-                    <th className="py-3 px-3.5 text-center">Zaxira holati</th>
-                    <th className="py-3 px-3.5 text-right">Kiritilgan sana</th>
+                    <th className="py-3 px-3 w-10 text-center">#</th>
+                    <th className="py-3 px-3">Mahsulot nomi</th>
+                    <th className="py-3 px-3">Brendi</th>
+                    <th className="py-3 px-3 text-center">O'lchamlari</th>
+                    <th className="py-3 px-3.5 text-right font-bold text-emerald-950">
+                      Ombordagi qoldiq (Barcha o'lchamlar)
+                    </th>
+                    <th className="py-3 px-3 text-right">Sotib olish (kirim)</th>
+                    <th className="py-3 px-3 text-right">Minimal sotish</th>
+                    <th className="py-3 px-3 text-center">Foyda marjasi</th>
+                    <th className="py-3 px-3 text-center">Zaxira holati</th>
+                    <th className="py-3 px-3 text-right">Kiritilgan sana</th>
                     {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
-                      <th className="py-3 px-3.5 text-center w-24">Amal</th>
+                      <th className="py-3 px-3 text-center w-20">Amal</th>
                     )}
                   </tr>
                 </thead>
@@ -1619,27 +1631,102 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     const globalIndex =
                       block1PageSize === 'all' ? index : (safeBlock1Page - 1) * block1PageSize + index;
                     const pieces = p.totalPieces || 0;
-                    const piecesPerPkg = p.piecesPerPackage || 1;
-                    const packages = Math.floor(pieces / piecesPerPkg);
-                    const remainderPieces = pieces % piecesPerPkg;
+                    const stockInfo = formatWarehouseStock(p);
+                    const marginInfo = calculateProfitMargin(p);
                     const isOut = pieces <= 0;
                     const isLow = pieces > 0 && pieces <= 10;
 
                     return (
-                      <tr key={p.id} className={index % 2 === 1 ? 'bg-neutral-50/50' : 'bg-white'}>
-                        <td className="py-3 px-3.5 text-center font-mono text-neutral-400">{globalIndex + 1}</td>
-                        <td className="py-3 px-3.5 font-bold text-neutral-900">{p.name}</td>
-                        <td className="py-3 px-3.5 font-semibold text-neutral-700">{p.brand}</td>
-                        <td className="py-3 px-3.5 text-neutral-700">{p.packageUnitName || p.baseUnit || 'Dona'}</td>
-                        <td className="py-3 px-3.5 text-center font-mono">{piecesPerPkg} dona</td>
-                        <td className="py-3 px-3.5 text-right font-mono text-sm font-extrabold text-emerald-700">
-                          {formatNumber(pieces)} dona
+                      <tr key={p.id} className={index % 2 === 1 ? 'bg-neutral-50/50 hover:bg-rose-50/20' : 'bg-white hover:bg-rose-50/20'}>
+                        <td className="py-3 px-3 text-center font-mono text-neutral-400">{globalIndex + 1}</td>
+                        <td className="py-3 px-3 font-bold text-neutral-900">{p.name}</td>
+                        <td className="py-3 px-3 font-semibold text-neutral-700">{p.brand}</td>
+                        <td className="py-3 px-3 text-center text-[11px]">
+                          {p.packageUnitName && (p.piecesPerPackage || 1) > 1 ? (
+                            <div>
+                              <span className="font-semibold text-neutral-800">
+                                1 {p.packageUnitName} = {p.piecesPerPackage} dona
+                              </span>
+                              <div className="text-[10px] text-neutral-500">
+                                (1 dona = {p.volumePerPiece} {p.baseUnit})
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-neutral-700">
+                              1 {p.pieceUnitName || 'dona'} = {p.volumePerPiece} {p.baseUnit}
+                            </span>
+                          )}
                         </td>
-                        <td className="py-3 px-3.5 text-right font-mono text-neutral-700">
-                          {packages > 0 ? `${formatNumber(packages)} ${p.packageUnitName || 'qadoq'}` : '0'}
-                          {remainderPieces > 0 && ` +${remainderPieces} dona`}
+
+                        {/* Ombordagi qoldiq - barcha o'lchamlarda (korobka, dona, litr/kg) */}
+                        <td className="py-3 px-3.5 text-right font-mono">
+                          <span className="text-xs sm:text-sm font-extrabold text-emerald-800 block">
+                            {stockInfo.primary}
+                          </span>
+                          <span className="text-[10.5px] font-medium text-neutral-500 block">
+                            {stockInfo.secondary}
+                          </span>
                         </td>
-                        <td className="py-3 px-3.5 text-center">
+
+                        {/* Sotib olish (kirim) narxi */}
+                        <td className="py-3 px-3 text-right font-mono text-xs">
+                          {p.price > 0 ? (
+                            <div>
+                              <span className="font-bold text-neutral-900">
+                                {formatMoney(p.price)}
+                              </span>
+                              <div className="text-[10px] font-sans text-neutral-500">
+                                1 {p.pricingUnitType === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block font-sans">
+                              Narxsiz
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Minimal sotish narxi */}
+                        <td className="py-3 px-3 text-right font-mono text-xs">
+                          <span className="font-bold text-indigo-950">
+                            {formatMoney(p.minSellingPrice !== undefined && p.minSellingPrice > 0 ? p.minSellingPrice : p.price || 0)}
+                          </span>
+                          <div className="text-[10px] font-sans text-neutral-500">
+                            1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
+                          </div>
+                        </td>
+
+                        {/* Foyda marjasi */}
+                        <td className="py-3 px-3 text-center">
+                          {marginInfo.hasCost ? (
+                            <div className="inline-flex flex-col items-center">
+                              <span
+                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10.5px] font-bold font-mono border ${
+                                  marginInfo.marginPercent >= 0
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                    : 'bg-rose-100 text-rose-800 border-rose-300'
+                                }`}
+                              >
+                                <TrendingUp className="w-2.5 h-2.5" />
+                                <span>
+                                  {marginInfo.marginPercent >= 0 ? '+' : ''}
+                                  {marginInfo.marginPercent.toFixed(1)}%
+                                </span>
+                              </span>
+                              <span className="text-[9.5px] font-mono text-emerald-800 mt-0.5">
+                                {marginInfo.profitPerPiece >= 0 ? '+' : ''}
+                                {marginInfo.profitPerPiece.toFixed(2)} USD/dona
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-neutral-400 italic">
+                              Tannarxsiz
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Zaxira holati */}
+                        <td className="py-3 px-3 text-center">
                           {isOut ? (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800">Tugagan</span>
                           ) : isLow ? (
@@ -1648,9 +1735,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">Yetarli</span>
                           )}
                         </td>
-                        <td className="py-3 px-3.5 text-right font-mono text-neutral-500 text-[11px]">{p.intakeDate || '-'}</td>
+                        <td className="py-3 px-3 text-right font-mono text-neutral-500 text-[11px]">{p.intakeDate || '-'}</td>
                         {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
-                          <td className="py-3 px-3.5 text-center">
+                          <td className="py-3 px-3 text-center">
                             <div className="inline-flex items-center justify-center gap-1">
                               {onEditWarehouseProduct && (
                                 <button
@@ -1665,7 +1752,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                               {onDeleteWarehouseProduct && (
                                 <button
                                   type="button"
-                                  onClick={() => onDeleteWarehouseProduct(p.id)}
+                                  onClick={() => setConfirmDeleteWarehouseProduct(p)}
                                   className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
                                   title="Ombordan va butun bazadan o'chirish"
                                 >
@@ -3507,6 +3594,81 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Tasdiqlash modali: Mahsulotni ombordan o'chirish */}
+      {confirmDeleteWarehouseProduct && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-rose-100 space-y-4">
+            <div className="flex items-center gap-3 text-rose-700">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                <Trash2 className="w-6 h-6 text-rose-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  Mahsulotni o'chirish
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Ombor zaxirasi va butun bazadan o'chirish
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-2">
+              <p className="font-semibold text-neutral-900 text-sm">
+                Ushbu mahsulotni ombordan o'chirib yuborishga ishonchingiz komilmi?
+              </p>
+              <div className="p-2.5 rounded-xl bg-white border border-rose-200/80 space-y-1">
+                <div className="font-bold text-neutral-900">
+                  {confirmDeleteWarehouseProduct.brand} — {confirmDeleteWarehouseProduct.name}
+                </div>
+                <div className="text-neutral-600 flex items-center gap-2">
+                  <span>Ombor qoldig'i:</span>
+                  <strong className="text-emerald-800 font-mono">
+                    {confirmDeleteWarehouseProduct.totalPieces.toLocaleString()} dona
+                  </strong>
+                  {confirmDeleteWarehouseProduct.packageUnitName && (confirmDeleteWarehouseProduct.piecesPerPackage || 1) > 1 && (
+                    <span className="text-neutral-500">
+                      ({Math.floor(confirmDeleteWarehouseProduct.totalPieces / (confirmDeleteWarehouseProduct.piecesPerPackage || 1))} {confirmDeleteWarehouseProduct.packageUnitName})
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>Ushbu amal qaytarilmaydi va mahsulot butun bazadan to'liq o'chiriladi.</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteWarehouseProduct(null)}
+                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = confirmDeleteWarehouseProduct.id;
+                  setConfirmDeleteWarehouseProduct(null);
+                  if (onDeleteWarehouseProduct) {
+                    onDeleteWarehouseProduct(id);
+                  }
+                }}
+                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Ha, o'chirilsin</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
