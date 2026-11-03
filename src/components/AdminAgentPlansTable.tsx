@@ -567,8 +567,234 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-3xl border border-rose-100 bg-white shadow-xs">
-          <table className="w-full text-left text-xs">
+        <>
+          {/* Mobil qurilmalar uchun moslashuvchan ko'rinish (md:hidden) */}
+          <div className="block md:hidden space-y-3">
+            {filteredPlans.map((item, idx) => {
+              const isClosed = item.isClosed || item.status === 'yopildi';
+              const isCompleted = isPlanCompleted(item);
+              const actions = getPlanActions(item);
+              const hasActions = actions.length > 0;
+
+              let planReceipts = 0;
+              let planReceiptMethods: string[] = [];
+              let planDeliveredSum = 0;
+              let planDeliveredCount = 0;
+              let planReturnedSum = 0;
+              let planReturnedCount = 0;
+              let visitActionLabels: string[] = [];
+
+              actions.forEach((act) => {
+                if (act.actionDone && !visitActionLabels.includes(act.actionDone)) {
+                  visitActionLabels.push(act.actionDone);
+                }
+                if (act.financialAction && act.financialAction.amount > 0) {
+                  planReceipts += act.financialAction.amount;
+                  const l = act.financialAction.methodLabel || "To'lov";
+                  if (!planReceiptMethods.includes(l)) planReceiptMethods.push(l);
+                }
+                if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
+                  planReceipts += act.deliveryPayment.paidAmount;
+                  const l = act.deliveryPayment.paymentLabel || "Tovar to'lovi";
+                  if (!planReceiptMethods.includes(l)) planReceiptMethods.push(l);
+                }
+                if (act.productsDelivered && act.productsDelivered.length > 0) {
+                  act.productsDelivered.forEach((p) => {
+                    const v = p.totalPrice || (p.quantity || 0) * (p.unitPrice || 0);
+                    planDeliveredSum += v;
+                    planDeliveredCount += p.quantity || 0;
+                  });
+                }
+                if (act.productsReturned && act.productsReturned.length > 0) {
+                  act.productsReturned.forEach((r) => {
+                    const v = (r.quantity || 0) * (r.unitPrice || 0);
+                    planReturnedSum += v;
+                    planReturnedCount += r.quantity || 0;
+                  });
+                }
+              });
+
+              const lastOps = getClientLastOperations(item.clientId, resolvedClients, plans);
+
+              return (
+                <div
+                  key={item.id}
+                  className={`p-3.5 rounded-2xl border transition-all ${
+                    isClosed
+                      ? 'bg-neutral-50/80 border-neutral-200'
+                      : 'bg-white border-rose-100 shadow-xs hover:border-rose-300'
+                  }`}
+                >
+                  {/* Top Bar: #, Agent, Status */}
+                  <div className="flex items-center justify-between gap-2 border-b border-neutral-100 pb-2">
+                    <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                      <span className="font-mono text-xs font-bold text-neutral-400">
+                        #{idx + 1}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200 truncate">
+                        Agent: {getAgentDisplayName(item.agentUsername)}
+                      </span>
+                    </div>
+
+                    <div className="shrink-0">
+                      {isClosed ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-700">
+                          <Lock className="w-2.5 h-2.5" />
+                          <span>Yopildi</span>
+                        </span>
+                      ) : isCompleted ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                          <CheckCircle2 className="w-2.5 h-2.5" />
+                          <span>Bajarildi</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800">
+                          <Clock className="w-2.5 h-2.5" />
+                          <span>Amal kutilmoqda</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Client Info */}
+                  <div className="mt-2.5">
+                    <h5 className="font-extrabold text-neutral-900 text-sm">
+                      {item.clientName}
+                    </h5>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500 mt-1">
+                      <a
+                        href={`tel:${item.clientPhone}`}
+                        className="inline-flex items-center gap-1 text-rose-700 font-mono hover:underline"
+                      >
+                        <Phone className="w-3 h-3" />
+                        <span>{item.clientPhone}</span>
+                      </a>
+                      <div className="inline-flex items-center gap-1 text-neutral-500 truncate max-w-full">
+                        <MapPin className="w-3 h-3 text-rose-600 shrink-0" />
+                        <span className="truncate">
+                          {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') || item.clientAddress || "Manzil yo'q"}
+                          {item.clientLandmark ? ` (${item.clientLandmark})` : ''}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 text-neutral-500 text-[10.5px] font-mono mt-1">
+                      <Calendar className="w-3 h-3 text-neutral-400 shrink-0" />
+                      <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
+                    </div>
+                  </div>
+
+                  {/* Financial Grid */}
+                  <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-neutral-100 text-[11px]">
+                    <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-2">
+                      <div className="text-[10px] uppercase font-bold text-rose-700">
+                        Joriy qarz / Haqdorlik:
+                      </div>
+                      <div className="mt-0.5 font-mono font-extrabold">
+                        {lastOps.currentDebt > 0 ? (
+                          <span className="text-rose-700">{formatMoney(lastOps.currentDebt)}</span>
+                        ) : lastOps.currentAdvance > 0 ? (
+                          <span className="text-emerald-700">+{formatMoney(lastOps.currentAdvance)} (Haqdor)</span>
+                        ) : (
+                          <span className="text-neutral-500">0 USD</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-2">
+                      <div className="text-[10px] uppercase font-bold text-emerald-800">
+                        Oxirgi pul bergan:
+                      </div>
+                      <div className="mt-0.5 font-mono font-bold text-emerald-900 truncate">
+                        {lastOps.lastPaymentFormatted || <span className="text-neutral-400 italic">To'lov yo'q</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Reja va Amal summary */}
+                  <div className="mt-2.5 bg-neutral-50 rounded-xl p-2 space-y-1.5 text-xs">
+                    {(item.plannedAction || (item.plannedAmount !== undefined && item.plannedAmount > 0)) && (
+                      <div className="flex flex-wrap items-center gap-1 text-[11px]">
+                        {item.plannedAction && (
+                          <span className="font-bold text-amber-950 bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-200">
+                            Rejadagi amal: {formatActionLabel(item.plannedAction)}
+                          </span>
+                        )}
+                        {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
+                          <span className="font-mono font-bold text-emerald-900 bg-emerald-100/70 px-1.5 py-0.5 rounded border border-emerald-200">
+                            Undirish: {formatMoney(item.plannedAmount)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {item.planNote && (
+                      <p className="text-[11px] text-neutral-600 italic">
+                        Izoh: {item.planNote}
+                      </p>
+                    )}
+
+                    {hasActions ? (
+                      <div className="space-y-1 pt-1 border-t border-neutral-200/60">
+                        {visitActionLabels.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {visitActionLabels.map((vLabel, i) => (
+                              <span
+                                key={i}
+                                className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-900 font-bold text-[10px]"
+                              >
+                                Bajardi: {formatActionLabel(vLabel)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+                          {planReceipts > 0 && (
+                            <span className="font-mono font-bold text-emerald-800">
+                              Tushum: +{formatMoney(planReceipts)}
+                            </span>
+                          )}
+                          {planDeliveredSum > 0 && (
+                            <span className="font-mono font-semibold text-rose-800">
+                              Berildi: {formatMoney(planDeliveredSum)} ({planDeliveredCount} dona)
+                            </span>
+                          )}
+                          {planReturnedSum > 0 && (
+                            <span className="font-mono font-semibold text-amber-700">
+                              Qaytdi: {formatMoney(planReturnedSum)} ({planReturnedCount} dona)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-neutral-400 italic">
+                        Hali amal bajarilmagan (Kutilmoqda)
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bottom Bar: Completed Date & Detail button */}
+                  <div className="mt-2.5 pt-2 flex items-center justify-between text-xs border-t border-neutral-100">
+                    <span className="text-[10px] text-neutral-500 font-mono">
+                      {item.completedAt ? `Bajarildi: ${formatDateDMY(item.completedAt)}` : 'Bajarilmagan'}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={() => setInspectedPlan(item)}
+                      className="px-3 py-1 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-800 font-bold text-xs transition flex items-center gap-1 cursor-pointer border border-rose-200"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>Batafsil</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop & Katta ekranlar uchun Jadval ko'rinishi (hidden md:block) */}
+          <div className="hidden md:block overflow-x-auto rounded-3xl border border-rose-100 bg-white shadow-xs">
+            <table className="w-full text-left text-xs">
             <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider">
               <tr>
                 <th className="py-3 px-3">#</th>
@@ -655,7 +881,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
                         </span>
                         <div className="text-[10px] font-mono text-neutral-500 flex items-center gap-1">
                           <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                          <span>Qo'shdi: {formatDateDMY(item.createdAt)}</span>
+                          <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
                         </div>
                       </div>
                     </td>
@@ -1000,7 +1226,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
             </tbody>
           </table>
         </div>
-      )}
+      </>
+    )}
 
       {/* ========================================================= */}
       {/* BATAFSIL MODAL: PLAN ITEM BO'YICHA TO'LIQ AMALLAR TARIXI */}

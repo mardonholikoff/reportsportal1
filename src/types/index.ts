@@ -98,6 +98,7 @@ export interface DailyPlanItem {
   clientDistrict?: string;
   clientLandmark?: string;
   createdAt: string;
+  planDate?: string; // YYYY-MM-DD formatdagi reja sanasi (boshqa kunda tuzilgan bo'lsa)
   status: 'rejalashtirilgan' | 'bajarildi' | 'yopildi';
   isClosed?: boolean;
   closedAt?: string;

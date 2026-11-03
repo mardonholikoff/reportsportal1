@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Client, DailyPlanItem, PlanActionType } from '../types';
-import { formatMoney, formatDate, formatShortDate } from '../utils/format';
+import { formatMoney, formatDate, formatShortDate, formatDateDMY } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import {
   X,
@@ -46,11 +46,37 @@ interface Props {
   onClose: () => void;
   clients: Client[];
   existingPlans?: DailyPlanItem[];
-  onConfirmPlan: (selections: PlanSelectionItem[]) => void;
+  onConfirmPlan: (selections: PlanSelectionItem[], planDate?: string) => void;
 }
 
 type DebtFilterType = 'all' | 'debtors' | 'no_debt';
 type AdvanceFilterType = 'all' | 'creditors' | 'no_advance';
+
+const getTodayDateStr = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getYesterdayDateStr = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getTomorrowDateStr = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 export const CreateDailyPlanModal: React.FC<Props> = ({
   isOpen,
@@ -59,6 +85,15 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
   existingPlans = [],
   onConfirmPlan,
 }) => {
+  // Plan Date State (Bugun yoki boshqa kunda tuzilgan reja sanasi)
+  const [planDate, setPlanDate] = useState<string>(getTodayDateStr);
+
+  useEffect(() => {
+    if (isOpen) {
+      setPlanDate(getTodayDateStr());
+    }
+  }, [isOpen]);
+
   // Search & Filter States
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
@@ -289,7 +324,7 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
       planNote: draft.planNote.trim() || undefined,
     }));
 
-    onConfirmPlan(payload);
+    onConfirmPlan(payload, planDate);
     onClose();
   };
 
@@ -306,6 +341,17 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
               <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 leading-tight">
                 Reja tuzish
               </h2>
+              <div className="flex items-center gap-1.5 text-xs text-neutral-500 mt-0.5">
+                <span>Reja sanasi:</span>
+                <span className="font-mono font-bold text-rose-800">
+                  {formatDateDMY(planDate)}
+                </span>
+                {planDate !== getTodayDateStr() && (
+                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                    Boshqa kunda tuzilgan
+                  </span>
+                )}
+              </div>
             </div>
           </div>
           <button
@@ -315,6 +361,84 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* Sana tanlash bloki (Bugun yoki boshqa kunda tuzilgan sana) */}
+        <div className="px-4 sm:px-6 py-2.5 bg-gradient-to-r from-rose-50/70 via-white to-rose-50/40 border-b border-rose-100 shrink-0">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-neutral-800 flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-rose-700" />
+                <span>Reja sanasini belgilash:</span>
+              </span>
+              {planDate === getTodayDateStr() ? (
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  Bugun
+                </span>
+              ) : planDate === getYesterdayDateStr() ? (
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                  Kecha
+                </span>
+              ) : planDate === getTomorrowDateStr() ? (
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                  Ertaga
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
+                  Maxsus sana
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center bg-white border border-neutral-300 rounded-xl px-2.5 py-1 shadow-2xs focus-within:border-rose-600 focus-within:ring-1 focus-within:ring-rose-200">
+                <input
+                  id="planDateInput"
+                  type="date"
+                  value={planDate}
+                  onChange={(e) => {
+                    if (e.target.value) setPlanDate(e.target.value);
+                  }}
+                  className="text-xs font-mono font-bold text-neutral-800 outline-none bg-transparent cursor-pointer"
+                />
+              </div>
+
+              {/* Tezkor sana tugmalari */}
+              <button
+                type="button"
+                onClick={() => setPlanDate(getTodayDateStr())}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  planDate === getTodayDateStr()
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200'
+                }`}
+              >
+                Bugun
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlanDate(getYesterdayDateStr())}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  planDate === getYesterdayDateStr()
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200'
+                }`}
+              >
+                Kecha
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlanDate(getTomorrowDateStr())}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  planDate === getTomorrowDateStr()
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-200'
+                }`}
+              >
+                Ertaga
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Filters Toolbar */}
@@ -897,9 +1021,19 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
 
         {/* Footer Actions */}
         <div className="px-5 sm:px-6 py-4 bg-neutral-50 border-t border-neutral-200 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
-          <span className="text-xs text-neutral-500 text-center sm:text-left">
-            Tanlangan mijozlar bugungi kunlik reja ro'yxatiga kiritiladi.
-          </span>
+          <div className="text-xs text-neutral-600 text-center sm:text-left">
+            {planDate === getTodayDateStr() ? (
+              <span>Tanlangan mijozlar bugungi kunlik reja ro'yxatiga kiritiladi.</span>
+            ) : (
+              <span className="font-medium text-rose-950">
+                Tanlangan mijozlar{' '}
+                <span className="font-mono font-bold underline text-rose-700">
+                  {formatDateDMY(planDate)}
+                </span>{' '}
+                sanasidagi reja ro'yxatiga kiritiladi.
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
             <button
               type="button"

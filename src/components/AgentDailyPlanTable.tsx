@@ -565,7 +565,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           </div>
                           <div className="flex items-center gap-1 text-neutral-500 text-[10px] font-mono mt-0.5">
                             <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                            <span>Qo'shilgan: {formatDateDMY(item.createdAt)}</span>
+                            <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
                           </div>
                         </td>
 
@@ -1051,7 +1051,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         <div className="mt-1.5 space-y-1">
                           <div className="flex items-center gap-1 text-[10px] text-neutral-500 font-mono">
                             <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                            <span>Rejaga qo'shilgan: {formatDateDMY(item.createdAt)}</span>
+                            <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
                             {mobileLastOps.currentDebt > 0 && (

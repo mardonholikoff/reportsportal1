@@ -547,11 +547,17 @@ export async function deleteMonthlyPlanFromFirestore(planId: string): Promise<vo
   }
 }
 
-// Debounce helper for high-frequency Firestore snapshot bursts (SRE protection)
-function createDebouncedCallback<T>(fn: ((data: T) => void) | undefined, delayMs = 80) {
+// Ultra-responsive snapshot helper (immediate on first emit, 20ms debounce on subsequent rapid bursts)
+function createDebouncedCallback<T>(fn: ((data: T) => void) | undefined, delayMs = 20) {
+  let isFirst = true;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const invoke = (data: T) => {
     if (!fn) return;
+    if (isFirst) {
+      isFirst = false;
+      fn(data);
+      return;
+    }
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
@@ -734,44 +740,41 @@ export async function bootstrapFirestoreData(
   localPlans: DailyPlanItem[],
   localWarehouse: WarehouseProduct[]
 ): Promise<void> {
+  // Agar bu brauzerda allaqachon tekshirilgan bo'lsa, qayta og'ir so'rov yubormaymiz
+  if (typeof window !== 'undefined' && localStorage.getItem(BOOTSTRAP_FLAG_KEY)) {
+    return;
+  }
   try {
     const deletedIds = getDeletedClientIds();
+    const deletedWhIds = getDeletedWarehouseIds();
 
-    // Always ensure any local dailyPlans are pushed to Firestore if missing remotely
-    const toUploadPlans = localPlans.filter((p) => !deletedIds.has(p.clientId));
-    if (toUploadPlans.length > 0) {
-      const plansSnap = await getDocs(collection(db, 'dailyPlans'));
-      const remotePlanIds = new Set(plansSnap.docs.map((d) => d.id));
-      for (const p of toUploadPlans) {
-        if (!remotePlanIds.has(p.id)) {
-          await setDoc(doc(db, 'dailyPlans', p.id), cleanFirestoreData(p));
-        }
-      }
-    }
-
-    // If initial seed already bootstrapped once, skip re-uploading initial clients/warehouse
-    if (localStorage.getItem(BOOTSTRAP_FLAG_KEY)) {
-      return;
-    }
-
-    const toUploadClients = localClients.filter((c) => !deletedIds.has(c.id));
     const clientSnap = await getDocs(collection(db, 'clients'));
-    if (clientSnap.empty && toUploadClients.length > 0) {
+    if (clientSnap.empty) {
+      const toUploadClients = localClients.filter((c) => !deletedIds.has(c.id));
       for (const c of toUploadClients) {
         await setDoc(doc(db, 'clients', c.id), cleanFirestoreData(c));
       }
     }
 
-    const deletedWhIds = getDeletedWarehouseIds();
-    const toUploadWarehouse = localWarehouse.filter((w) => !deletedWhIds.has(w.id));
+    const plansSnap = await getDocs(collection(db, 'dailyPlans'));
+    if (plansSnap.empty) {
+      const toUploadPlans = localPlans.filter((p) => !deletedIds.has(p.clientId));
+      for (const p of toUploadPlans) {
+        await setDoc(doc(db, 'dailyPlans', p.id), cleanFirestoreData(p));
+      }
+    }
+
     const whSnap = await getDocs(collection(db, 'warehouseProducts'));
-    if (whSnap.empty && toUploadWarehouse.length > 0) {
+    if (whSnap.empty) {
+      const toUploadWarehouse = localWarehouse.filter((w) => !deletedWhIds.has(w.id));
       for (const w of toUploadWarehouse) {
         await setDoc(doc(db, 'warehouseProducts', w.id), cleanFirestoreData(w));
       }
     }
 
-    localStorage.setItem(BOOTSTRAP_FLAG_KEY, 'true');
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(BOOTSTRAP_FLAG_KEY, 'true');
+    }
   } catch (err) {
     console.warn('Bootstrap upload deferred to offline persistence queue', err);
   }

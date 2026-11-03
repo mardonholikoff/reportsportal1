@@ -74,6 +74,7 @@ import {
   deleteWarehouseProductFromFirestore,
   syncMonthlyPlanToFirestore,
 } from './services/firebase';
+import { formatDateDMY } from './utils/format';
 import { ImportedClientPayload } from './components/ExcelClientImporter';
 import { ImportedWarehouseProductPayload } from './components/ExcelWarehouseImporter';
 import {
@@ -570,56 +571,22 @@ export default function App() {
         if (remoteClients) {
           const deletedIds = getDeletedClientIds();
           const cleanRemote = remoteClients.filter((c) => !deletedIds.has(c.id));
-          const localClients = storageService.getClients().filter((c) => !deletedIds.has(c.id));
 
-          // O(1) lookup map for localClients instead of O(N^2) .find()
-          const localClientsMap = new Map<string, Client>();
-          for (let i = 0; i < localClients.length; i++) {
-            localClientsMap.set(localClients[i].id, localClients[i]);
-          }
+          // Pending offline creates (hali Firestore'ga chiqmagan oflayn yaratilganlar)
+          const pendingSyncQueue = storageService.getSyncQueue();
+          const pendingLocalCreates = pendingSyncQueue
+            .filter((q) => q.action === 'create' && q.client)
+            .map((q) => q.client as Client);
 
-          // Pending local creates not yet synced to Firestore
-          const pendingLocalCreateIds = new Set(
-            storageService
-              .getSyncQueue()
-              .filter((q) => q.action === 'create' && (q.client?.id || q.clientId))
-              .map((q) => (q.client?.id || q.clientId) as string)
-          );
-
-          const mergedMap = new Map<string, Client>();
-          // If remote has data, only keep local clients that exist in remote or are pending creation
-          if (cleanRemote.length > 0) {
-            localClients.forEach((lc) => {
-              if (pendingLocalCreateIds.has(lc.id)) {
-                mergedMap.set(lc.id, lc);
-              }
-            });
-          } else {
-            localClients.forEach((lc) => mergedMap.set(lc.id, lc));
-          }
-
-          const newerLocalToPush: Client[] = [];
-          cleanRemote.forEach((rc) => {
-            const existing = localClientsMap.get(rc.id);
-            if (!existing) {
-              mergedMap.set(rc.id, rc);
-            } else {
-              const rTime = new Date(rc.updatedAt || rc.createdAt || 0).getTime();
-              const lTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
-              if (rTime >= lTime) {
-                mergedMap.set(rc.id, rc);
-              } else {
-                mergedMap.set(rc.id, existing);
-                newerLocalToPush.push(existing);
-              }
-            }
+          const clientsMap = new Map<string, Client>();
+          // 1. Bulutdagi Firestore bazasi yagona va aktual haqiqat manbai
+          cleanRemote.forEach((rc) => clientsMap.set(rc.id, rc));
+          // 2. Faqat haqiqiy oflayn yangi qo'shilganlar saqlab qolinadi
+          pendingLocalCreates.forEach((lc) => {
+            if (!clientsMap.has(lc.id)) clientsMap.set(lc.id, lc);
           });
 
-          if (newerLocalToPush.length > 0) {
-            syncClientsBulkToFirestore(newerLocalToPush);
-          }
-
-          const mergedList = Array.from(mergedMap.values()).filter(
+          const mergedList = Array.from(clientsMap.values()).filter(
             (c) => !deletedIds.has(c.id)
           );
           storageService.saveClients(mergedList);
@@ -645,78 +612,10 @@ export default function App() {
           const cleanRemote = remotePlans.filter(
             (p) => !deletedIds.has(p.clientId) && activeClientIds.has(p.clientId)
           );
-          const localPlans = storageService
-            .getDailyPlans()
-            .filter((p) => !deletedIds.has(p.clientId) && activeClientIds.has(p.clientId));
-
-          // Merge local & remote plans by id so agentp1 plans in localStorage are never wiped out
-          const mergedMap = new Map<string, DailyPlanItem>();
-          const remoteIds = new Set(cleanRemote.map((r) => r.id));
-
-          localPlans.forEach((lp) => {
-            mergedMap.set(lp.id, lp);
-            if (!remoteIds.has(lp.id)) {
-              // Ensure local plan created by agent is pushed to Firestore
-              syncPlanToFirestore(lp);
-            }
-          });
-
-          cleanRemote.forEach((rp) => {
-            const existing = mergedMap.get(rp.id);
-            if (!existing) {
-              mergedMap.set(rp.id, rp);
-            } else {
-              const rClosed = Boolean(rp.isClosed || rp.status === 'yopildi');
-              const lClosed = Boolean(existing.isClosed || existing.status === 'yopildi');
-              const rReopened = Boolean(rp.reopenedAt && !rClosed);
-              const lReopened = Boolean(existing.reopenedAt && !lClosed);
-
-              const rReopenedTime = rp.reopenedAt ? new Date(rp.reopenedAt).getTime() : 0;
-              const lReopenedTime = existing.reopenedAt ? new Date(existing.reopenedAt).getTime() : 0;
-              const rClosedTime = rp.closedAt ? new Date(rp.closedAt).getTime() : 0;
-              const lClosedTime = existing.closedAt ? new Date(existing.closedAt).getTime() : 0;
-
-              // 1. Agar lokal reja qayta ochilgan bo'lsa va remote hali yopiq bo'lsa -> lokal ochiq qoladi va Firestorega yoziladi
-              if (lReopened && rClosed) {
-                mergedMap.set(rp.id, existing);
-                syncPlanToFirestore(existing);
-              } else if (rReopened && lClosed) {
-                // Remote boshqa joyda qayta ochilgan bo'lsa -> remote ochiq reja g'olib
-                mergedMap.set(rp.id, rp);
-              } else if (!lClosed && rClosed) {
-                // Lokal faol/ochiq reja har doim eski yopilgan holatdan ustun
-                mergedMap.set(rp.id, existing);
-                syncPlanToFirestore(existing);
-              } else if (lClosed && !rClosed) {
-                // Remote ochiq reja bo'lsa -> ochiq holat g'olib
-                mergedMap.set(rp.id, rp);
-              } else {
-                const rCount = rp.actionsCount || (rp.actionDone ? 1 : 0);
-                const lCount = existing.actionsCount || (existing.actionDone ? 1 : 0);
-                if (rCount > lCount) {
-                  mergedMap.set(rp.id, rp);
-                } else if (lCount > rCount) {
-                  mergedMap.set(rp.id, existing);
-                } else {
-                  const rTime = Math.max(rReopenedTime, rClosedTime, new Date(rp.completedAt || rp.createdAt || 0).getTime());
-                  const lTime = Math.max(lReopenedTime, lClosedTime, new Date(existing.completedAt || existing.createdAt || 0).getTime());
-                  if (rTime >= lTime) {
-                    mergedMap.set(rp.id, rp);
-                  } else {
-                    mergedMap.set(rp.id, existing);
-                  }
-                }
-              }
-            }
-          });
-
-          const mergedPlans = Array.from(mergedMap.values()).sort(
-            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
 
           // Deduplicate by clientId so each client appears only once, and remove duplicate docs from Firestore
           const { uniquePlans, duplicateIds } =
-            storageService.deduplicatePlansByClient(mergedPlans);
+            storageService.deduplicatePlansByClient(cleanRemote);
           if (duplicateIds.length > 0) {
             duplicateIds.forEach((dupId) => {
               deletePlanFromFirestore(dupId);
@@ -1051,20 +950,21 @@ export default function App() {
     setIsPaymentModalOpen(false);
   };
 
-  // Handle Create Daily Plan (Agent selects clients with notes - works offline & online)
-  const handleConfirmPlan = (selections: PlanSelectionItem[]) => {
+  // Handle Create Daily Plan (Agent selects clients with notes and optional custom date - works offline & online)
+  const handleConfirmPlan = (selections: PlanSelectionItem[], planDate?: string) => {
     const currentUsername = user?.username || 'agentp1';
-    const newItems = storageService.createDailyPlan(currentUsername, selections);
+    const newItems = storageService.createDailyPlan(currentUsername, selections, planDate);
     setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
     newItems.forEach((item) => syncPlanToFirestore(item));
+    const dateLabel = planDate ? formatDateDMY(planDate) : 'Bugungi';
     addSystemLog({
       userId: currentUsername,
       userRole: 'agent',
       actionType: 'reja_tuzish',
-      actionTitle: `Bugungi kunlik reja tuzildi (${newItems.length} ta mijoz)`,
-      details: `Rejaga kiritilgan mijozlar: ${newItems.map((n) => n.clientName).join(', ')}`,
+      actionTitle: `${dateLabel} kunlik reja tuzildi (${newItems.length} ta mijoz)`,
+      details: `Sana: ${dateLabel}. Rejaga kiritilgan mijozlar: ${newItems.map((n) => n.clientName).join(', ')}`,
     });
-    showToast(`Bugun uchun ${newItems.length} ta mijoz rejalashtirildi.`);
+    showToast(`${dateLabel} uchun ${newItems.length} ta mijoz rejalashtirildi.`);
   };
 
   // Handle Update Plan Note

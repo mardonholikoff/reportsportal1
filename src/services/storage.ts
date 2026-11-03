@@ -862,7 +862,7 @@ class StorageService {
     });
   }
 
-  // Kunlik reja tuzish (agent tomonidan tanlangan mijozlar, amal turi, undirish summasi va izohlar)
+  // Kunlik reja tuzish (agent tomonidan tanlangan mijozlar, amal turi, undirish summasi, izohlar va ixtiyoriy sana)
   // Har bir mijoz faqat bir marta tanlanadi va avtomatik bajarildi bo'lmaydi (status: 'rejalashtirilgan')
   public createDailyPlan(
     agentUsername: string,
@@ -874,11 +874,31 @@ class StorageService {
           planNote?: string;
         }
       | string
-    >
+    >,
+    customDate?: string // YYYY-MM-DD yoki ISO string
   ): DailyPlanItem[] {
     const allClients = this.getClients();
     const existingPlans = this.getDailyPlans();
     const nowStr = new Date().toISOString();
+
+    let targetCreatedAt = nowStr;
+    let targetPlanDate: string | undefined = undefined;
+
+    if (customDate) {
+      const trimmedDate = customDate.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
+        targetPlanDate = trimmedDate;
+        const now = new Date();
+        const [y, m, d] = trimmedDate.split('-').map(Number);
+        if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+          const dt = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds());
+          targetCreatedAt = dt.toISOString();
+        }
+      } else if (trimmedDate.includes('T')) {
+        targetCreatedAt = trimmedDate;
+        targetPlanDate = trimmedDate.slice(0, 10);
+      }
+    }
 
     const touchedItems: DailyPlanItem[] = [];
     const seenClientIds = new Set<string>();
@@ -910,6 +930,8 @@ class StorageService {
             plannedAction,
             plannedAmount,
             planNote: note?.trim() || current.planNote || undefined,
+            createdAt: customDate ? targetCreatedAt : current.createdAt,
+            planDate: targetPlanDate || current.planDate,
           };
           existingPlans[existingIdx] = updatedItem;
           touchedItems.push(updatedItem);
@@ -927,7 +949,8 @@ class StorageService {
         clientRegion: client.region,
         clientDistrict: client.district,
         clientLandmark: client.landmark,
-        createdAt: nowStr,
+        createdAt: targetCreatedAt,
+        planDate: targetPlanDate,
         status: 'rejalashtirilgan',
         plannedAction,
         plannedAmount,
