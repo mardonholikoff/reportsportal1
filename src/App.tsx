@@ -67,6 +67,7 @@ import {
   syncClientsBulkToFirestore,
   deleteClientFromFirestore,
   syncPlanToFirestore,
+  syncPlansBulkToFirestore,
   deletePlanFromFirestore,
   syncWarehouseProductToFirestore,
   syncWarehouseProductsBulkToFirestore,
@@ -665,38 +666,45 @@ export default function App() {
             if (!existing) {
               mergedMap.set(rp.id, rp);
             } else {
-              const rCount = rp.actionsCount || (rp.actionDone ? 1 : 0);
-              const lCount = existing.actionsCount || (existing.actionDone ? 1 : 0);
-              const rClosed = rp.isClosed || rp.status === 'yopildi';
-              const lClosed = existing.isClosed || existing.status === 'yopildi';
+              const rClosed = Boolean(rp.isClosed || rp.status === 'yopildi');
+              const lClosed = Boolean(existing.isClosed || existing.status === 'yopildi');
+              const rReopened = Boolean(rp.reopenedAt && !rClosed);
+              const lReopened = Boolean(existing.reopenedAt && !lClosed);
 
               const rReopenedTime = rp.reopenedAt ? new Date(rp.reopenedAt).getTime() : 0;
               const lReopenedTime = existing.reopenedAt ? new Date(existing.reopenedAt).getTime() : 0;
               const rClosedTime = rp.closedAt ? new Date(rp.closedAt).getTime() : 0;
               const lClosedTime = existing.closedAt ? new Date(existing.closedAt).getTime() : 0;
 
-              // If local was reopened AFTER remote was closed -> local wins and syncs to Firestore
-              if (!lClosed && rClosed && lReopenedTime >= rClosedTime) {
+              // 1. Agar lokal reja qayta ochilgan bo'lsa va remote hali yopiq bo'lsa -> lokal ochiq qoladi va Firestorega yoziladi
+              if (lReopened && rClosed) {
                 mergedMap.set(rp.id, existing);
                 syncPlanToFirestore(existing);
-              } else if (lClosed && !rClosed && rReopenedTime >= lClosedTime) {
-                // Remote was reopened -> remote wins
+              } else if (rReopened && lClosed) {
+                // Remote boshqa joyda qayta ochilgan bo'lsa -> remote ochiq reja g'olib
                 mergedMap.set(rp.id, rp);
-              } else if (rClosed && !lClosed && rClosedTime > lReopenedTime) {
-                mergedMap.set(rp.id, rp);
-              } else if (lClosed && !rClosed && lClosedTime > rReopenedTime) {
+              } else if (!lClosed && rClosed) {
+                // Lokal faol/ochiq reja har doim eski yopilgan holatdan ustun
+                mergedMap.set(rp.id, existing);
                 syncPlanToFirestore(existing);
-              } else if (rCount > lCount) {
+              } else if (lClosed && !rClosed) {
+                // Remote ochiq reja bo'lsa -> ochiq holat g'olib
                 mergedMap.set(rp.id, rp);
-              } else if (lCount > rCount) {
-                syncPlanToFirestore(existing);
               } else {
-                const rTime = Math.max(rReopenedTime, rClosedTime, new Date(rp.completedAt || rp.createdAt || 0).getTime());
-                const lTime = Math.max(lReopenedTime, lClosedTime, new Date(existing.completedAt || existing.createdAt || 0).getTime());
-                if (rTime >= lTime) {
+                const rCount = rp.actionsCount || (rp.actionDone ? 1 : 0);
+                const lCount = existing.actionsCount || (existing.actionDone ? 1 : 0);
+                if (rCount > lCount) {
                   mergedMap.set(rp.id, rp);
+                } else if (lCount > rCount) {
+                  mergedMap.set(rp.id, existing);
                 } else {
-                  syncPlanToFirestore(existing);
+                  const rTime = Math.max(rReopenedTime, rClosedTime, new Date(rp.completedAt || rp.createdAt || 0).getTime());
+                  const lTime = Math.max(lReopenedTime, lClosedTime, new Date(existing.completedAt || existing.createdAt || 0).getTime());
+                  if (rTime >= lTime) {
+                    mergedMap.set(rp.id, rp);
+                  } else {
+                    mergedMap.set(rp.id, existing);
+                  }
                 }
               }
             }
@@ -1170,7 +1178,7 @@ export default function App() {
   };
 
   // Reopen closed plan item(s) with mandatory reason (reason visible only to Admin)
-  const handleReopenPlanItems = (planItemIds: string[], reopenReason: string) => {
+  const handleReopenPlanItems = async (planItemIds: string[], reopenReason: string) => {
     const currentUsername = user?.username || 'agentc1';
     const reopenedItems = storageService.reopenDailyPlanItems(
       planItemIds,
@@ -1178,13 +1186,21 @@ export default function App() {
       reopenReason
     );
     if (reopenedItems.length > 0) {
-      reopenedItems.forEach((p) => {
-        syncPlanToFirestore(p);
-        const updatedClient = storageService.getClientById(p.clientId);
-        if (updatedClient) {
-          syncClientToFirestore(updatedClient);
-        }
-      });
+      // 1. Darhol lokal React holatini va localStorage'ni faol rejalarga yangilaymiz
+      setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
+      setClients(storageService.getClients());
+
+      // 2. Firestore'ga barcha ochilgan rejalarni bitta atomic writeBatch bilan yozamiz
+      await syncPlansBulkToFirestore(reopenedItems);
+
+      // 3. Mijozlar audit loglarini ham bitta atomic writeBatch bilan Firestore'ga yozamiz
+      const updatedClients = reopenedItems
+        .map((p) => storageService.getClientById(p.clientId))
+        .filter((c): c is Client => Boolean(c));
+      if (updatedClients.length > 0) {
+        await syncClientsBulkToFirestore(updatedClients);
+      }
+
       const clientNames = reopenedItems.map((p) => p.clientName).join(', ');
       addSystemLog({
         userId: currentUsername,
@@ -1198,8 +1214,6 @@ export default function App() {
           ? `"${reopenedItems[0].clientName}" rejasi qayta ochildi!`
           : `${reopenedItems.length} ta mijoz rejasi qayta ochildi!`
       );
-      setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
-      setClients(storageService.getClients());
     }
   };
 

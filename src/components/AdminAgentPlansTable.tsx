@@ -108,12 +108,19 @@ export const AdminAgentPlansTable: React.FC<Props> = ({ plans, clients }) => {
       if (!existing) {
         byClient.set(p.clientId, p);
       } else {
-        const eReopenFresh = Boolean(existing.reopenedAt && !existing.isClosed && existing.status !== 'yopildi');
-        const cReopenFresh = Boolean(p.reopenedAt && !p.isClosed && p.status !== 'yopildi');
+        const eOpen = !existing.isClosed && existing.status !== 'yopildi';
+        const cOpen = !p.isClosed && p.status !== 'yopildi';
+        const eReopenFresh = Boolean(existing.reopenedAt && eOpen);
+        const cReopenFresh = Boolean(p.reopenedAt && cOpen);
         const eTime = new Date(existing.reopenedAt || existing.closedAt || existing.completedAt || existing.createdAt || 0).getTime();
         const cTime = new Date(p.reopenedAt || p.closedAt || p.completedAt || p.createdAt || 0).getTime();
 
-        if (cReopenFresh && !eReopenFresh) {
+        if (cOpen && !eOpen) {
+          // Ochiq reja har doim eski yopilgan rejadan ustun
+          byClient.set(p.clientId, p);
+        } else if (eOpen && !cOpen) {
+          // Mavjud ochiq reja eski yopilgan reja bilan almashtirilmaydi
+        } else if (cReopenFresh && !eReopenFresh) {
           byClient.set(p.clientId, p);
         } else if (eReopenFresh && !cReopenFresh) {
           // keep existing

@@ -733,12 +733,15 @@ class StorageService {
 
     const scorePlan = (p: DailyPlanItem): number => {
       let score = 0;
-      const isFreshReopen = Boolean(p.reopenedAt && !p.isClosed && p.status !== 'yopildi');
+      const isOpen = !p.isClosed && p.status !== 'yopildi';
+      const isFreshReopen = Boolean(p.reopenedAt && isOpen);
       if (isFreshReopen) {
         // Qayta ochilgan va hali faol reja eng yuqori ustuvorlikka ega!
-        score += 2000;
-      } else if (p.isClosed || p.status === 'yopildi') {
-        score += 1000;
+        score += 5000;
+      } else if (isOpen) {
+        score += 3000;
+      } else {
+        score += 100;
       }
       if (p.status === 'bajarildi' || p.actionDone) score += 500;
       score += (p.actionsCount || (p.actionsHistory ? p.actionsHistory.length : 0)) * 50;
@@ -761,13 +764,15 @@ class StorageService {
           plan.reopenedAt || plan.completedAt || plan.closedAt || plan.createdAt || 0
         ).getTime();
 
-        const planFreshReopen = Boolean(plan.reopenedAt && !plan.isClosed && plan.status !== 'yopildi');
-        const existingFreshReopen = Boolean(existing.reopenedAt && !existing.isClosed && existing.status !== 'yopildi');
+        const planOpen = !plan.isClosed && plan.status !== 'yopildi';
+        const existingOpen = !existing.isClosed && existing.status !== 'yopildi';
 
         let pickCurrent = false;
-        if (planFreshReopen && !existingFreshReopen) {
+        if (planOpen && !existingOpen) {
+          // Yangi yoki qayta ochilgan ochiq reja eski yopilgan rejadan har doim ustun!
           pickCurrent = true;
-        } else if (!planFreshReopen && existingFreshReopen) {
+        } else if (!planOpen && existingOpen) {
+          // Mavjud ochiq reja eski yopilgan reja bilan almashtirilmaydi!
           pickCurrent = false;
         } else {
           pickCurrent =
@@ -1254,9 +1259,17 @@ class StorageService {
     const nowStr = new Date().toISOString();
     const reopenedItems: DailyPlanItem[] = [];
 
+    // Maqsadli mijozlarning barcha dublikat reja yozuvlari ham to'liq ochiladi
+    const targetedClientIds = new Set<string>();
+    for (const p of plans) {
+      if (idSet.has(p.id) && p.clientId) {
+        targetedClientIds.add(p.clientId);
+      }
+    }
+
     for (let i = 0; i < plans.length; i++) {
       const plan = plans[i];
-      if (!idSet.has(plan.id)) continue;
+      if (!idSet.has(plan.id) && (!plan.clientId || !targetedClientIds.has(plan.clientId))) continue;
 
       plan.isClosed = false;
       plan.status = 'rejalashtirilgan';

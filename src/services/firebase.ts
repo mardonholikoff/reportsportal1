@@ -437,7 +437,7 @@ export async function deleteClientFromFirestore(
   }
 }
 
-// Sync Daily Plans
+// Sync Daily Plans (Single & Batched Bulk)
 export async function syncPlanToFirestore(plan: DailyPlanItem): Promise<void> {
   try {
     const payload: any = cleanFirestoreData(plan);
@@ -446,10 +446,41 @@ export async function syncPlanToFirestore(plan: DailyPlanItem): Promise<void> {
       payload.closedAt = null;
       payload.closedBy = null;
       payload.closeReason = null;
+      if (!payload.status || payload.status === 'yopildi') {
+        payload.status = 'rejalashtirilgan';
+      }
     }
     await setDoc(doc(db, 'dailyPlans', plan.id), payload);
   } catch (e) {
     console.warn('Deferred plan sync to Firestore (offline queue)', e);
+  }
+}
+
+export async function syncPlansBulkToFirestore(plans: DailyPlanItem[]): Promise<void> {
+  if (!plans || plans.length === 0) return;
+  try {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < plans.length; i += CHUNK_SIZE) {
+      const chunk = plans.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (let j = 0; j < chunk.length; j++) {
+        const p = chunk[j];
+        const payload: any = cleanFirestoreData(p);
+        if (!p.isClosed && p.status !== 'yopildi') {
+          payload.isClosed = false;
+          payload.closedAt = null;
+          payload.closedBy = null;
+          payload.closeReason = null;
+          if (!payload.status || payload.status === 'yopildi') {
+            payload.status = 'rejalashtirilgan';
+          }
+        }
+        batch.set(doc(db, 'dailyPlans', p.id), payload);
+      }
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn('Deferred bulk daily plans sync to Firestore', e);
   }
 }
 
