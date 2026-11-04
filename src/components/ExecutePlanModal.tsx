@@ -61,8 +61,10 @@ interface Props {
         warehouseId?: string;
       }>;
       reportNote?: string;
-    }
+    },
+    closeAfterSave?: boolean
   ) => void;
+  onCloseWithoutAction?: (planItemId: string, reason: string) => void;
   client?: Client | null;
   warehouseProducts?: WarehouseProduct[];
 }
@@ -292,6 +294,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   isOpen,
   onClose,
   onSaveReport,
+  onCloseWithoutAction,
   client,
   warehouseProducts,
 }) => {
@@ -857,9 +860,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
     });
   };
 
-  // Submit Handler
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const executeSaveReport = (closeAfterSave: boolean) => {
     if (!planItem) return;
     const isClosed = planItem.isClosed || planItem.status === 'yopildi';
     if (isClosed) return;
@@ -962,16 +963,26 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     const productsReturned = [...directReturned, ...extraReturnedList];
 
-    onSaveReport(planItem.id, {
-      actionDone,
-      financialAction: financialData,
-      productsDelivered: validProducts,
-      deliveryPayment: deliveryPayData,
-      productsReturned: productsReturned.length > 0 ? productsReturned : undefined,
-      reportNote: reportNote.trim(),
-    });
+    onSaveReport(
+      planItem.id,
+      {
+        actionDone,
+        financialAction: financialData,
+        productsDelivered: validProducts,
+        deliveryPayment: deliveryPayData,
+        productsReturned: productsReturned.length > 0 ? productsReturned : undefined,
+        reportNote: reportNote.trim(),
+      },
+      closeAfterSave
+    );
 
     onClose();
+  };
+
+  // Submit Handler
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    executeSaveReport(false);
   };
 
   if (!isOpen || !planItem) return null;
@@ -2034,37 +2045,67 @@ export const ExecutePlanModal: React.FC<Props> = ({
             </div>
 
             {/* Modal Actions: Print Yuk xati ONLY shown when 2, 3, or 4 is active */}
-            <div className="pt-3 border-t border-rose-100 flex flex-wrap items-center justify-between gap-3">
-              {hasPayment || hasProducts || totalReturnCount > 0 ? (
-                <button
-                  type="button"
-                  onClick={handleOpenNakladnoy}
-                  className="px-4 py-2 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs font-bold transition cursor-pointer min-h-[40px] flex items-center gap-1.5 shadow-xs"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>Print / Yuk xati (PDF)</span>
-                </button>
-              ) : (
-                <div />
-              )}
+            <div className="pt-3 border-t border-rose-100 flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                {hasPayment || hasProducts || totalReturnCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenNakladnoy}
+                    className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs font-bold transition cursor-pointer min-h-[40px] flex items-center gap-1.5 shadow-xs"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print / Yuk xati (PDF)</span>
+                  </button>
+                ) : null}
 
-              <div className="flex items-center gap-2">
+                {!isClosed && onCloseWithoutAction && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const reason =
+                        reportNote.trim() ||
+                        "Bajarilmasdan yopildi (Do'kon yopiq / keyingi kunga qoldirildi)";
+                      onCloseWithoutAction(planItem.id, reason);
+                      onClose();
+                    }}
+                    className="px-3.5 py-2 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
+                    title="Amal bajarmasdan to'g'ridan-to'g'ri yopish (Bajarilmasdan yopilgan deb belgilanadi)"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Bajarilmasdan yopish</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={onClose}
-                  className="px-4 py-2 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 cursor-pointer min-h-[40px]"
+                  className="px-3.5 py-2 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 cursor-pointer min-h-[40px]"
                 >
-                  Yopish
+                  Bekor qilish
                 </button>
 
                 {!isClosed && (
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white text-xs font-bold shadow-xs transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
-                  >
-                    <CheckCircle className="w-4 h-4" />
-                    <span>Hisobotni saqlash</span>
-                  </button>
+                  <>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white text-xs font-bold shadow-xs transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      <span>Hisobotni saqlash</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => executeSaveReport(true)}
+                      className="px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white text-xs font-bold shadow-xs transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
+                      title="Hisobotni topshirish va ushbu mijoz rejasini bir vaqtda yakunlab yopish"
+                    >
+                      <Lock className="w-4 h-4" />
+                      <span>Hisobotni yopish va yopish</span>
+                    </button>
+                  </>
                 )}
               </div>
             </div>

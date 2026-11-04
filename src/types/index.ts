@@ -101,6 +101,7 @@ export interface DailyPlanItem {
   planDate?: string; // YYYY-MM-DD formatdagi reja sanasi (boshqa kunda tuzilgan bo'lsa)
   status: 'rejalashtirilgan' | 'bajarildi' | 'yopildi';
   isClosed?: boolean;
+  closedWithoutAction?: boolean;
   closedAt?: string;
   closeReason?: string;
   closedBy?: string;
@@ -133,6 +134,8 @@ export interface DailyPlanItem {
     warehouseId?: string;
   }>;
   completedAt?: string;
+  lastExecutedBy?: string;
+  lastExecutedAt?: string;
   reportNote?: string;
   planNote?: string;
   actionsCount?: number;

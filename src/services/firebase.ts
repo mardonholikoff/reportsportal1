@@ -444,6 +444,7 @@ export async function syncPlanToFirestore(plan: DailyPlanItem): Promise<void> {
     const payload: any = cleanFirestoreData(plan);
     if (!plan.isClosed && plan.status !== 'yopildi') {
       payload.isClosed = false;
+      payload.closedWithoutAction = false;
       payload.closedAt = null;
       payload.closedBy = null;
       payload.closeReason = null;
@@ -469,6 +470,7 @@ export async function syncPlansBulkToFirestore(plans: DailyPlanItem[]): Promise<
         const payload: any = cleanFirestoreData(p);
         if (!p.isClosed && p.status !== 'yopildi') {
           payload.isClosed = false;
+          payload.closedWithoutAction = false;
           payload.closedAt = null;
           payload.closedBy = null;
           payload.closeReason = null;
@@ -548,14 +550,12 @@ export async function deleteMonthlyPlanFromFirestore(planId: string): Promise<vo
   }
 }
 
-// Ultra-responsive snapshot helper (immediate on first emit, 20ms debounce on subsequent rapid bursts)
-function createDebouncedCallback<T>(fn: ((data: T) => void) | undefined, delayMs = 20) {
-  let isFirst = true;
+// Ultra-responsive snapshot helper (immediate emission on every remote snapshot change)
+function createDebouncedCallback<T>(fn: ((data: T) => void) | undefined, delayMs = 0) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const invoke = (data: T) => {
     if (!fn) return;
-    if (isFirst) {
-      isFirst = false;
+    if (delayMs <= 0) {
       fn(data);
       return;
     }
@@ -586,9 +586,10 @@ export function subscribeToFirestoreData(callbacks: {
 
   // Monthly plans listener
   if (callbacks.onMonthlyPlansChange) {
-    const debounced = createDebouncedCallback(callbacks.onMonthlyPlansChange, 80);
+    const debounced = createDebouncedCallback(callbacks.onMonthlyPlansChange, 0);
     const unsub = onSnapshot(
       collection(db, 'monthlyPlans'),
+      { includeMetadataChanges: true },
       (snapshot) => {
         const list: MonthlyPlan[] = [];
         snapshot.forEach((d) => list.push(d.data() as MonthlyPlan));
@@ -606,9 +607,10 @@ export function subscribeToFirestoreData(callbacks: {
 
   // Clients listener
   if (callbacks.onClientsChange) {
-    const debounced = createDebouncedCallback(callbacks.onClientsChange, 80);
+    const debounced = createDebouncedCallback(callbacks.onClientsChange, 0);
     const unsub = onSnapshot(
       collection(db, 'clients'),
+      { includeMetadataChanges: true },
       (snapshot) => {
         const deletedIds = getDeletedClientIds();
         const list: Client[] = [];
@@ -634,9 +636,10 @@ export function subscribeToFirestoreData(callbacks: {
 
   // Daily plans listener
   if (callbacks.onPlansChange) {
-    const debounced = createDebouncedCallback(callbacks.onPlansChange, 80);
+    const debounced = createDebouncedCallback(callbacks.onPlansChange, 0);
     const unsub = onSnapshot(
       collection(db, 'dailyPlans'),
+      { includeMetadataChanges: true },
       (snapshot) => {
         const deletedIds = getDeletedClientIds();
         const list: DailyPlanItem[] = [];
@@ -662,9 +665,10 @@ export function subscribeToFirestoreData(callbacks: {
 
   // Warehouse products listener
   if (callbacks.onWarehouseChange) {
-    const debounced = createDebouncedCallback(callbacks.onWarehouseChange, 80);
+    const debounced = createDebouncedCallback(callbacks.onWarehouseChange, 0);
     const unsub = onSnapshot(
       collection(db, 'warehouseProducts'),
+      { includeMetadataChanges: true },
       (snapshot) => {
         const deletedWhIds = getDeletedWarehouseIds();
         const list: WarehouseProduct[] = [];
@@ -690,9 +694,10 @@ export function subscribeToFirestoreData(callbacks: {
 
   // System logs listener (also propagates deleted client & warehouse IDs across all sessions/agents)
   if (callbacks.onLogsChange) {
-    const debounced = createDebouncedCallback(callbacks.onLogsChange, 100);
+    const debounced = createDebouncedCallback(callbacks.onLogsChange, 0);
     const unsub = onSnapshot(
       collection(db, 'systemLogs'),
+      { includeMetadataChanges: true },
       (snapshot) => {
         const list: SystemLog[] = [];
         snapshot.forEach((d) => {

@@ -60,6 +60,12 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
   const [customDate, setCustomDate] = useState<string>('');
 
+  // Closure type sub-filter: 'all' | 'done_closed' (Bajarib yopilgan) | 'undone_closed' (Bajarilmasdan yopilgan)
+  const [closureTypeFilter, setClosureTypeFilter] = useState<'all' | 'done_closed' | 'undone_closed'>('all');
+
+  // Payment filter & sort: 'all' | 'paid_only' | 'last_paid' | 'most_paid'
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'paid_only' | 'last_paid' | 'most_paid'>('all');
+
   // Selection & Removal from plan modal state (mandatory reason)
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
   const [removeModalTargetIds, setRemoveModalTargetIds] = useState<string[] | null>(null);
@@ -160,6 +166,28 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
   // Mijoz bo'yicha reja yopilganligini tekshirish (yopilganlar Bajarildi ichida, ochiqlari Jarayonda)
   const isPlanCompleted = (p: DailyPlanItem): boolean => {
     return Boolean(p.isClosed || p.status === 'yopildi');
+  };
+
+  // Yopilgan reja bajarilmasdan yopilganligini tekshirish
+  const isPlanClosedWithoutAction = (p: DailyPlanItem): boolean => {
+    if (p.closedWithoutAction !== undefined) return p.closedWithoutAction;
+    const actions = getPlanActions(p);
+    return !p.actionDone && actions.length === 0;
+  };
+
+  // Reja ichidagi jami tushumni hisoblash yordamchisi
+  const getPlanPaidAmount = (p: DailyPlanItem): number => {
+    let sum = 0;
+    const actions = getPlanActions(p);
+    actions.forEach((act) => {
+      if (act.financialAction && act.financialAction.amount > 0) {
+        sum += act.financialAction.amount;
+      }
+      if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
+        sum += act.deliveryPayment.paidAmount;
+      }
+    });
+    return sum;
   };
 
   // Unique agents list
@@ -345,7 +373,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
   // Filtered plans list
   const filteredPlans = useMemo(() => {
-    return uniquePlans.filter((p) => {
+    const baseFiltered = uniquePlans.filter((p) => {
       // 1. Search filter
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase().trim();
@@ -357,7 +385,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           getAgentDisplayName(p.agentUsername).toLowerCase().includes(q);
         const matchesNote =
           (p.planNote || '').toLowerCase().includes(q) ||
-          (p.reopenReason || '').toLowerCase().includes(q);
+          (p.reopenReason || '').toLowerCase().includes(q) ||
+          (p.closeReason || '').toLowerCase().includes(q);
         if (!matchesClient && !matchesPhone && !matchesAddress && !matchesAgent && !matchesNote) {
           return false;
         }
@@ -367,6 +396,14 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       const completedOrClosed = isPlanCompleted(p);
       if (statusFilter === 'bajarildi' && !completedOrClosed) return false;
       if (statusFilter === 'jarayonda' && completedOrClosed) return false;
+
+      // 2.5. Closure sub-filter: Bajarib yopilgan / Bajarilmasdan yopilgan
+      if (closureTypeFilter !== 'all') {
+        if (!completedOrClosed) return false;
+        const withoutAction = isPlanClosedWithoutAction(p);
+        if (closureTypeFilter === 'done_closed' && withoutAction) return false;
+        if (closureTypeFilter === 'undone_closed' && !withoutAction) return false;
+      }
 
       // 3. Date filter: 'all' | 'today' | 'yesterday' | 'custom'
       if (dateFilter !== 'all') {
@@ -381,15 +418,61 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         return false;
       }
 
+      // 5. Payment filter
+      if (paymentFilter !== 'all') {
+        const planPaid = getPlanPaidAmount(p);
+        const lastOps = getClientLastOperations(p.clientId, resolvedClients, allSystemPlans);
+        const hasAnyPayment =
+          planPaid > 0 || Boolean(lastOps.lastPaymentAmount && lastOps.lastPaymentAmount > 0);
+        if (!hasAnyPayment) return false;
+      }
+
       return true;
-    }).sort((a, b) => {
+    });
+
+    if (paymentFilter === 'last_paid') {
+      return [...baseFiltered].sort((a, b) => {
+        const opsA = getClientLastOperations(a.clientId, resolvedClients, allSystemPlans);
+        const opsB = getClientLastOperations(b.clientId, resolvedClients, allSystemPlans);
+        const tA = opsA.lastPaymentTimestamp ? new Date(opsA.lastPaymentTimestamp).getTime() : 0;
+        const tB = opsB.lastPaymentTimestamp ? new Date(opsB.lastPaymentTimestamp).getTime() : 0;
+        return tB - tA;
+      });
+    }
+
+    if (paymentFilter === 'most_paid') {
+      return [...baseFiltered].sort((a, b) => {
+        const paidA = getPlanPaidAmount(a);
+        const paidB = getPlanPaidAmount(b);
+        const opsA = getClientLastOperations(a.clientId, resolvedClients, allSystemPlans);
+        const opsB = getClientLastOperations(b.clientId, resolvedClients, allSystemPlans);
+        const valA = paidA > 0 ? paidA : opsA.lastPaymentAmount || 0;
+        const valB = paidB > 0 ? paidB : opsB.lastPaymentAmount || 0;
+        return valB - valA;
+      });
+    }
+
+    return baseFiltered.sort((a, b) => {
       // Hali bajarilib yopilmaganlar har doim birinchi turadi
       const aDone = isPlanCompleted(a) ? 1 : 0;
       const bDone = isPlanCompleted(b) ? 1 : 0;
       if (aDone !== bDone) return aDone - bDone;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [uniquePlans, searchTerm, statusFilter, selectedAgent, dateFilter, customDate, todayStr, yesterdayStr]);
+  }, [
+    uniquePlans,
+    searchTerm,
+    statusFilter,
+    closureTypeFilter,
+    paymentFilter,
+    selectedAgent,
+    dateFilter,
+    customDate,
+    todayStr,
+    yesterdayStr,
+    resolvedClients,
+    allSystemPlans,
+  ]);
 
   const toggleSelectPlanItem = (id: string, e?: React.MouseEvent | React.ChangeEvent) => {
     if (e) e.stopPropagation();
@@ -872,6 +955,100 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* Yopilish holati (Bajarib / Bajarilmasdan yopilgan) va To'lov bo'yicha saralash / filtr paneli */}
+      <div className="px-4 py-2.5 rounded-2xl bg-white border border-rose-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-bold text-neutral-700">Yopilish holati:</span>
+          <button
+            type="button"
+            onClick={() => setClosureTypeFilter('all')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              closureTypeFilter === 'all'
+                ? 'bg-neutral-800 text-white shadow-2xs'
+                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+            }`}
+          >
+            Barchasi
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (statusFilter === 'jarayonda') setStatusFilter('bajarildi');
+              setClosureTypeFilter('done_closed');
+            }}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              closureTypeFilter === 'done_closed'
+                ? 'bg-emerald-700 text-white shadow-2xs'
+                : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+            }`}
+          >
+            Bajarib yopilgan ({uniquePlans.filter((p) => isPlanCompleted(p) && !isPlanClosedWithoutAction(p)).length})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (statusFilter === 'jarayonda') setStatusFilter('bajarildi');
+              setClosureTypeFilter('undone_closed');
+            }}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              closureTypeFilter === 'undone_closed'
+                ? 'bg-amber-600 text-white shadow-2xs'
+                : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
+            }`}
+          >
+            Bajarilmasdan yopilgan ({uniquePlans.filter((p) => isPlanCompleted(p) && isPlanClosedWithoutAction(p)).length})
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-bold text-neutral-700">To'lov bo'yicha:</span>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('all')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'all'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+            }`}
+          >
+            Barchasi
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('paid_only')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'paid_only'
+                ? 'bg-emerald-700 text-white shadow-2xs'
+                : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+            }`}
+          >
+            Pul berganlar
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('last_paid')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'last_paid'
+                ? 'bg-indigo-700 text-white shadow-2xs'
+                : 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
+            }`}
+          >
+            Oxirgi pul bergani asosida
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('most_paid')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'most_paid'
+                ? 'bg-purple-700 text-white shadow-2xs'
+                : 'bg-purple-50 text-purple-800 border border-purple-200 hover:bg-purple-100'
+            }`}
+          >
+            Ko'p pul bergan asosida
+          </button>
+        </div>
+      </div>
+
       {/* Multi-Selection & Bulk Actions Bar */}
       {filteredPlans.length > 0 && (
         <div className="px-4 py-2.5 rounded-2xl bg-neutral-50 border border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -997,16 +1174,36 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                         #{idx + 1}
                       </span>
                       <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200 truncate">
-                        Agent: {getAgentDisplayName(item.agentUsername)}
+                        Reja tuzdi: {getAgentDisplayName(item.agentUsername)}
                       </span>
+                      {(() => {
+                        const executor =
+                          item.lastExecutedBy ||
+                          (item.actionsHistory && item.actionsHistory.length > 0
+                            ? item.actionsHistory[0].author
+                            : undefined);
+                        if (!executor) return null;
+                        return (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-200 truncate">
+                            Bajardi: {getAgentDisplayName(executor)}
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     <div className="shrink-0">
                       {isClosed ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-700">
-                          <Lock className="w-2.5 h-2.5" />
-                          <span>Yopildi</span>
-                        </span>
+                        isPlanClosedWithoutAction(item) ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                            <Lock className="w-2.5 h-2.5 text-amber-700" />
+                            <span>Bajarilmasdan yopilgan</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                            <CheckCircle2 className="w-2.5 h-2.5 text-emerald-700" />
+                            <span>Bajarib yopilgan</span>
+                          </span>
+                        )
                       ) : isCompleted ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800">
                           <CheckCircle2 className="w-2.5 h-2.5" />
@@ -1279,12 +1476,27 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                       </div>
                     </td>
 
-                    {/* Qaysi agent orqali qo'shilgan (Alohida ustun) */}
+                    {/* Qaysi agent orqali qo'shilgan va kim bajargan (Alohida ustun) */}
                     <td className="py-3 px-3">
                       <div className="space-y-1">
                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg font-bold text-xs bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
-                          {getAgentDisplayName(item.agentUsername)}
+                          Tuzgan: {getAgentDisplayName(item.agentUsername)}
                         </span>
+                        {(() => {
+                          const executor =
+                            item.lastExecutedBy ||
+                            (item.actionsHistory && item.actionsHistory.length > 0
+                              ? item.actionsHistory[0].author
+                              : undefined);
+                          if (!executor) return null;
+                          return (
+                            <div>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg font-bold text-[10.5px] bg-emerald-100 text-emerald-900 border border-emerald-300">
+                                Bajargan: {getAgentDisplayName(executor)}
+                              </span>
+                            </div>
+                          );
+                        })()}
                         <div className="text-[10px] font-mono text-neutral-500 flex items-center gap-1">
                           <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
                           <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
@@ -1420,13 +1632,22 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     <td className="py-3 px-3.5 whitespace-nowrap">
                       {isCompleted ? (
                         <div className="space-y-1">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                            <span>Bajarildi</span>
-                          </span>
+                          {isPlanClosedWithoutAction(item) ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                              <Lock className="w-3.5 h-3.5 text-amber-700" />
+                              <span>Bajarilmasdan yopilgan</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                              <span>Bajarib yopilgan</span>
+                            </span>
+                          )}
                           <span className="text-[10px] text-emerald-800 block font-semibold">
                             {isClosed
-                              ? 'Oxirgi holat: Yopilgan'
+                              ? isPlanClosedWithoutAction(item)
+                                ? 'Amal bajarilmasdan yopilgan'
+                                : `Amal bajarilib yopilgan (${actions.length} ta amal)`
                               : item.actionDone
                               ? `Amal: ${formatActionLabel(item.actionDone)}`
                               : `${actions.length} ta amal bajarilgan`}
@@ -1697,7 +1918,9 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     <span className="font-bold text-xs block">
                       Holat:{' '}
                       {inspectedPlan.isClosed || inspectedPlan.status === 'yopildi'
-                        ? "Bajarildi (To'liq yopilgan)"
+                        ? isPlanClosedWithoutAction(inspectedPlan)
+                          ? 'Bajarilmasdan yopilgan'
+                          : "Bajarib yopilgan (To'liq yakunlangan)"
                         : isPlanCompleted(inspectedPlan)
                         ? 'Bajarildi (Amal bajarilgan)'
                         : 'Jarayonda (Hali bajarilmagan)'}
@@ -1889,7 +2112,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       )}
 
       {/* ========================================================= */}
-      {/* REJADAN OLIB TASHLASH MODALI (Majburiy izoh bilan) */}
+      {/* REJADAN OLIB TASHLASH MODALI (Aniqmi + Majburiy izoh bilan) */}
       {/* ========================================================= */}
       {removeModalTargetIds && removeModalTargetIds.length > 0 && (
         <div
@@ -1904,10 +2127,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
               </div>
               <div>
                 <h3 className="text-base font-bold font-display text-neutral-900">
-                  Rejadan olib tashlash ({removeModalTargetIds.length} ta)
+                  Aniqmi? Rejadan olib tashlashni tasdiqlaysizmi?
                 </h3>
-                <p className="text-xs text-neutral-500">
-                  Mijozlarni agent rejasidan chiqarib tashlash uchun sababini ko'rsating
+                <p className="text-xs text-rose-700 font-semibold">
+                  Haqiqatan ham ushbu mijoz ({removeModalTargetIds.length} ta) ni agent rejasidan olib tashlamoqchimisiz?
                 </p>
               </div>
             </div>
@@ -1971,7 +2194,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                 }}
                 className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
               >
-                Bekor qilish
+                Yo'q, bekor qilish
               </button>
               <button
                 type="button"
@@ -1980,7 +2203,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                 className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
               >
                 <Trash2 className="w-4 h-4" />
-                <span>Rejadan olib tashlash ({removeModalTargetIds.length} ta)</span>
+                <span>Ha, aniq — olib tashlash ({removeModalTargetIds.length} ta)</span>
               </button>
             </div>
           </div>

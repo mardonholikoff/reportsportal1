@@ -106,9 +106,9 @@ export default function App() {
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
-  // Daily plans state (24 soatlik rejalar)
+  // Daily plans state (Barcha agentlar tuzgan rejalar o'zaro umumiy ko'rinadi)
   const [dailyPlans, setDailyPlans] = useState<DailyPlanItem[]>(() =>
-    storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
+    storageService.getActive24hPlans()
   );
 
   // Expandable sections state
@@ -590,25 +590,31 @@ export default function App() {
             (c) => !deletedIds.has(c.id)
           );
           storageService.saveClients(mergedList);
-          setClients(mergedList);
+          setClients([...mergedList]);
+          // Keep open client modals in sync with remote changes
+          setSelectedClient((prev) => (prev ? mergedList.find((c) => c.id === prev.id) || prev : null));
+          setPaymentClient((prev) => (prev ? mergedList.find((c) => c.id === prev.id) || prev : null));
           // Re-evaluate dailyPlans so any plans belonging to removed clients disappear immediately
-          setDailyPlans(storageService.getActive24hPlans());
+          setDailyPlans([...storageService.getActive24hPlans()]);
         }
       },
       onPlansChange: (remotePlans) => {
         if (remotePlans) {
           const deletedIds = getDeletedClientIds();
-          const activeClientIds = new Set(storageService.getClients().map((c) => c.id));
+          const currentClients = storageService.getClients();
+          const activeClientIds = new Set(currentClients.map((c) => c.id));
 
-          // Purge any remote plans that belong to deleted or non-existent clients
+          // Purge remote plans ONLY if they belong to explicitly deleted clients
           remotePlans.forEach((rp) => {
-            if (deletedIds.has(rp.clientId) || !activeClientIds.has(rp.clientId)) {
+            if (deletedIds.has(rp.clientId)) {
               deletePlanFromFirestore(rp.id);
             }
           });
 
           const cleanRemote = remotePlans.filter(
-            (p) => !deletedIds.has(p.clientId) && activeClientIds.has(p.clientId)
+            (p) =>
+              !deletedIds.has(p.clientId) &&
+              (activeClientIds.size === 0 || activeClientIds.has(p.clientId))
           );
 
           // Deduplicate by clientId so each client appears only once, and remove duplicate docs from Firestore
@@ -621,7 +627,11 @@ export default function App() {
           }
 
           storageService.saveDailyPlans(uniquePlans);
-          setDailyPlans(storageService.getActive24hPlans());
+          const freshPlans = storageService.getActive24hPlans();
+          setDailyPlans([...freshPlans]);
+          setExecutingPlanItem((prev) =>
+            prev ? freshPlans.find((p) => p.id === prev.id || p.clientId === prev.clientId) || prev : null
+          );
         }
       },
       onWarehouseChange: (remoteProducts) => {
@@ -629,7 +639,7 @@ export default function App() {
           const deletedWhIds = getDeletedWarehouseIds();
           const cleanRemote = remoteProducts.filter((w) => !deletedWhIds.has(w.id));
           storageService.saveWarehouseProducts(cleanRemote);
-          setWarehouseProducts(cleanRemote);
+          setWarehouseProducts([...cleanRemote]);
         }
       },
       onLogsChange: (remoteLogs) => {
@@ -660,16 +670,14 @@ export default function App() {
             }
           });
           if (anyDeletedFound) {
-            setClients(storageService.getClients());
-            setDailyPlans(
-              storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
-            );
-            setMonthlyPlans(storageService.getMonthlyPlans());
+            setClients([...storageService.getClients()]);
+            setDailyPlans([...storageService.getActive24hPlans()]);
+            setMonthlyPlans([...storageService.getMonthlyPlans()]);
           }
           if (anyWarehouseDeletedFound) {
-            setWarehouseProducts(storageService.getWarehouseProducts());
+            setWarehouseProducts([...storageService.getWarehouseProducts()]);
           }
-          setSystemLogs(remoteLogs);
+          setSystemLogs([...remoteLogs]);
         }
       },
       onMonthlyPlansChange: (remoteMonthlyPlans) => {
@@ -703,27 +711,41 @@ export default function App() {
             (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
           );
           storageService.saveMonthlyPlans(mergedList);
-          setMonthlyPlans(storageService.getMonthlyPlans());
+          setMonthlyPlans([...storageService.getMonthlyPlans()]);
         }
       },
     });
 
     const updateFromStorage = () => {
-      setClients(storageService.getClients());
-      setDailyPlans(
-        storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
-      );
-      setMonthlyPlans(storageService.getMonthlyPlans());
-      setWarehouseProducts(storageService.getWarehouseProducts());
+      const freshClients = storageService.getClients();
+      const freshPlans = storageService.getActive24hPlans();
+      setClients([...freshClients]);
+      setDailyPlans([...freshPlans]);
+      setMonthlyPlans([...storageService.getMonthlyPlans()]);
+      setWarehouseProducts([...storageService.getWarehouseProducts()]);
       setPendingSyncCount(storageService.getSyncQueue().length);
-      setSystemLogs(getLocalSystemLogs());
+      setSystemLogs([...getLocalSystemLogs()]);
+      setSelectedClient((prev) => (prev ? freshClients.find((c) => c.id === prev.id) || prev : null));
     };
 
     updateFromStorage();
     const unsubscribe = storageService.subscribe(updateFromStorage);
+
+    // Sync immediately when tab regains visibility or window focus
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        storageService.invalidateAllCaches();
+        updateFromStorage();
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
     return () => {
       unsubscribe();
       unsubFirestore();
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [user]);
 
@@ -950,7 +972,7 @@ export default function App() {
   const handleConfirmPlan = (selections: PlanSelectionItem[], planDate?: string) => {
     const currentUsername = user?.username || 'agentp1';
     const newItems = storageService.createDailyPlan(currentUsername, selections, planDate);
-    setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
+    setDailyPlans([...storageService.getActive24hPlans()]);
     newItems.forEach((item) => syncPlanToFirestore(item));
     const dateLabel = planDate ? formatDateDMY(planDate) : 'Bugungi';
     addSystemLog({
@@ -968,7 +990,7 @@ export default function App() {
     storageService.updateDailyPlanNote(planItemId, note);
     const updated = storageService.getDailyPlans().find((p) => p.id === planItemId);
     if (updated) syncPlanToFirestore(updated);
-    setDailyPlans(storageService.getActive24hPlans(isAgent ? user?.username : undefined));
+    setDailyPlans([...storageService.getActive24hPlans()]);
     showToast("Reja izohi yangilandi.");
   };
 
@@ -995,12 +1017,19 @@ export default function App() {
         warehouseId?: string;
       }>;
       reportNote?: string;
-    }
+    },
+    closeAfterSave?: boolean
   ) => {
     const currentUsername = user?.username || 'agentp1';
     const targetPlan = dailyPlans.find((p) => p.id === planItemId);
     const result = storageService.executeDailyPlanItem(planItemId, currentUsername, report);
     if (result.success) {
+      if (closeAfterSave) {
+        const autoCloseReason =
+          report.reportNote?.trim() || "Hisobot topshirildi va amallar to'liq yakunlandi";
+        storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false);
+      }
+
       const updatedPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
       if (updatedPlan) syncPlanToFirestore(updatedPlan);
 
@@ -1009,8 +1038,9 @@ export default function App() {
         if (updatedClient) syncClientToFirestore(updatedClient);
       }
 
-      // Add audit log
-      let detailsText = `Mijoz: ${targetPlan?.clientName || ''}. Amal: ${report.actionDone}.`;
+      // Add audit log showing both plan creator and action executor
+      const planCreatorLabel = targetPlan?.agentUsername ? `Reja tuzgan: @${targetPlan.agentUsername}, Amalni bajardi: @${currentUsername}. ` : '';
+      let detailsText = `${planCreatorLabel}Mijoz: ${targetPlan?.clientName || ''}. Amal: ${report.actionDone}.`;
       if (report.financialAction && report.financialAction.amount > 0) {
         detailsText += ` Tushum: ${report.financialAction.amount.toLocaleString('uz-UZ')} USD (${report.financialAction.methodLabel}).`;
       }
@@ -1020,18 +1050,27 @@ export default function App() {
       if (report.productsReturned && report.productsReturned.length > 0) {
         detailsText += ` Qaytarilgan: ${report.productsReturned.map((p) => `${p.name} (${p.quantity} ${p.unit})`).join(', ')}.`;
       }
+      if (closeAfterSave) {
+        detailsText += ` Reja bir vaqtning o'zida yakunlanib yopildi.`;
+      }
 
       addSystemLog({
         userId: currentUsername,
         userRole: 'agent',
-        actionType: 'amal_bajarish',
-        actionTitle: `Mijoz amali bajarildi: ${report.actionDone}`,
+        actionType: closeAfterSave ? 'reja_yopish' : 'amal_bajarish',
+        actionTitle: closeAfterSave
+          ? `Hisobot topshirildi va reja yopildi (@${currentUsername} -> Tuzgan: @${targetPlan?.agentUsername || currentUsername})`
+          : `Mijoz amali bajarildi (@${currentUsername} -> Tuzgan: @${targetPlan?.agentUsername || currentUsername}): ${report.actionDone}`,
         details: detailsText,
       });
 
-      showToast(`Hisobot saqlandi: ${report.actionDone}. Mijoz balansi yangilandi.`);
-      setDailyPlans(storageService.getActive24hPlans());
-      setClients(storageService.getClients());
+      showToast(
+        closeAfterSave
+          ? `Hisobot topshirildi va mijoz rejasi yopildi (@${currentUsername})!`
+          : `Hisobot saqlandi (@${currentUsername}): ${report.actionDone}. Mijoz balansi yangilandi.`
+      );
+      setDailyPlans([...storageService.getActive24hPlans()]);
+      setClients([...storageService.getClients()]);
       const updatedWh = storageService.getWarehouseProducts();
       setWarehouseProducts(updatedWh);
       syncWarehouseProductsBulkToFirestore(updatedWh);
@@ -1047,11 +1086,22 @@ export default function App() {
     setPendingSyncCount(storageService.getSyncQueue().length);
   };
 
-  // Handle Close Plan Item (Permanent lock for agent with reason)
-  const handleClosePlanItem = (planItemId: string, closeReason?: string) => {
+  // Handle Close Plan Item (Permanent lock for agent with reason, can be with or without action)
+  const handleClosePlanItem = (
+    planItemId: string,
+    closeReason?: string,
+    closedWithoutActionOverride?: boolean
+  ) => {
     const currentUsername = user?.username || 'agentp1';
-    const reason = closeReason?.trim() || "Amallar yakunlandi";
-    const success = storageService.closeDailyPlanItem(planItemId, currentUsername, reason);
+    const reason =
+      closeReason?.trim() ||
+      (closedWithoutActionOverride ? 'Bajarilmasdan yopildi' : 'Amallar yakunlandi');
+    const success = storageService.closeDailyPlanItem(
+      planItemId,
+      currentUsername,
+      reason,
+      closedWithoutActionOverride
+    );
     if (success) {
       const updatedPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
       if (updatedPlan) syncPlanToFirestore(updatedPlan);
@@ -1062,16 +1112,25 @@ export default function App() {
         if (updatedClient) syncClientToFirestore(updatedClient);
       }
 
+      const isUnperformed = Boolean(updatedPlan?.closedWithoutAction);
       addSystemLog({
         userId: currentUsername,
         userRole: 'agent',
         actionType: 'reja_yopish',
-        actionTitle: `Mijoz rejasi yopildi`,
-        details: `Reja ID: ${planItemId}. Mijoz: ${updatedPlan?.clientName || ''}. Agent @${currentUsername} tomonidan amallar yakunlandi. Yopilish sababi: ${reason}`,
+        actionTitle: isUnperformed
+          ? `Mijoz rejasi bajarilmasdan yopildi`
+          : `Mijoz rejasi bajarib yopildi`,
+        details: `Reja ID: ${planItemId}. Mijoz: ${updatedPlan?.clientName || ''}. Holati: ${
+          isUnperformed ? 'Bajarilmasdan yopilgan' : 'Bajarib yopilgan'
+        }. Agent @${currentUsername} tomonidan yopildi. Yopilish sababi: ${reason}`,
       });
-      showToast(`Mijoz bo'yicha reja yopildi. Sabab: ${reason}`);
-      setDailyPlans(storageService.getActive24hPlans());
-      setClients(storageService.getClients());
+      showToast(
+        isUnperformed
+          ? `Mijoz rejasi bajarilmasdan yopildi. Sabab: ${reason}`
+          : `Mijoz bo'yicha reja bajarib yopildi. Sabab: ${reason}`
+      );
+      setDailyPlans([...storageService.getActive24hPlans()]);
+      setClients([...storageService.getClients()]);
     }
   };
 
@@ -1903,6 +1962,7 @@ export default function App() {
         isOpen={!!executingPlanItem}
         onClose={() => setExecutingPlanItem(null)}
         onSaveReport={handleSavePlanReport}
+        onCloseWithoutAction={(planId, reason) => handleClosePlanItem(planId, reason, true)}
         client={executingPlanItem ? clients.find((c) => c.id === executingPlanItem.clientId) : null}
         warehouseProducts={warehouseProducts}
       />

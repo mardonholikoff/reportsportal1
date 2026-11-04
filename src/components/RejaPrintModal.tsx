@@ -5,7 +5,7 @@ import autoTable from 'jspdf-autotable';
 import { Client, DailyPlanItem } from '../types';
 import { formatDateDMY, formatMoney, getAgentDisplayName } from '../utils/format';
 import { getClientLastOperations } from '../utils/clientActivityDates';
-import { Printer, X, Download, CheckCircle2 } from 'lucide-react';
+import { Printer, X, Download, CheckCircle2, Image as ImageIcon, Share2 } from 'lucide-react';
 
 interface RejaPrintModalProps {
   isOpen: boolean;
@@ -24,6 +24,22 @@ const formatPlannedActionLabel = (action?: string) => {
   return action || '';
 };
 
+const isPlanClosedWithoutAction = (item: DailyPlanItem): boolean => {
+  if (item.closedWithoutAction !== undefined) return item.closedWithoutAction;
+  const hasAnyAction =
+    Boolean(item.actionDone) || Boolean(item.actionsHistory && item.actionsHistory.length > 0);
+  return !hasAnyAction;
+};
+
+const getPlanStatusLabel = (item: DailyPlanItem): string => {
+  const isClosed = Boolean(item.isClosed || item.status === 'yopildi');
+  if (isClosed) {
+    return isPlanClosedWithoutAction(item) ? 'Bajarilmasdan yopilgan' : 'Bajarib yopilgan';
+  }
+  if (item.status === 'bajarildi') return 'Bajarildi';
+  return 'Rejada (Ochiq)';
+};
+
 function sanitizePdfText(input: string | undefined | null): string {
   if (!input) return '';
   return String(input)
@@ -31,6 +47,36 @@ function sanitizePdfText(input: string | undefined | null): string {
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/\u2116/g, '#')
     .replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ');
+}
+
+function wrapCanvasText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number
+): string[] {
+  const paragraphs = (text || '').split('\n');
+  const lines: string[] = [];
+
+  for (const para of paragraphs) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      lines.push('');
+      continue;
+    }
+    let currentLine = words[0];
+    for (let i = 1; i < words.length; i++) {
+      const word = words[i];
+      const testLine = `${currentLine} ${word}`;
+      if (ctx.measureText(testLine).width <= maxWidth) {
+        currentLine = testLine;
+      } else {
+        lines.push(currentLine);
+        currentLine = word;
+      }
+    }
+    lines.push(currentLine);
+  }
+  return lines;
 }
 
 export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
@@ -43,14 +89,15 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
   allSystemPlans,
 }) => {
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
-  const [pdfSuccessMessage, setPdfSuccessMessage] = useState(false);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       document.body.classList.add('reja-print-active');
     } else {
       document.body.classList.remove('reja-print-active');
-      setPdfSuccessMessage(false);
+      setStatusMessage(null);
     }
     return () => {
       document.body.classList.remove('reja-print-active');
@@ -61,6 +108,377 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
 
   const totalPlannedAmount = plans.reduce((acc, p) => acc + (p.plannedAmount || 0), 0);
   const printedAtStr = formatDateDMY(new Date().toISOString());
+
+  const showTempMessage = (msg: string) => {
+    setStatusMessage(msg);
+    setTimeout(() => setStatusMessage(null), 4000);
+  };
+
+  const buildRowsData = () => {
+    return plans.map((item, index) => {
+      const plannedLabel = formatPlannedActionLabel(item.plannedAction || item.actionDone);
+      const lastOps = getClientLastOperations(item.clientId, clients, allSystemPlans);
+
+      const agentName = getAgentDisplayName(item.agentUsername);
+      const executor =
+        item.lastExecutedBy ||
+        (item.actionsHistory && item.actionsHistory.length > 0
+          ? item.actionsHistory[0].author
+          : undefined);
+      const agentCell = executor
+        ? `Tuzdi: ${agentName}\nBajardi: ${getAgentDisplayName(executor)}\nSana: ${formatDateDMY(item.planDate || item.createdAt)}`
+        : `Tuzdi: ${agentName}\nSana: ${formatDateDMY(item.planDate || item.createdAt)}`;
+      const clientCell = item.clientName || '-';
+      const phoneCell = item.clientPhone || '-';
+      const addressCell =
+        [item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') ||
+        item.clientAddress ||
+        '-';
+      const fullAddress = item.clientLandmark
+        ? `${addressCell} (${item.clientLandmark})`
+        : addressCell;
+
+      const debtLines: string[] = [];
+      if (lastOps.currentDebt > 0) {
+        debtLines.push(`Qarzdorlik: ${formatMoney(lastOps.currentDebt)}`);
+      }
+      if (lastOps.currentAdvance > 0) {
+        debtLines.push(`Haqdorlik: ${formatMoney(lastOps.currentAdvance)}`);
+      }
+      const debtAdvanceCell = debtLines.length > 0 ? debtLines.join('\n') : '0 USD';
+
+      const payDetail =
+        lastOps.lastPaymentDateFormatted && lastOps.lastPaymentAmount && lastOps.lastPaymentAmount > 0
+          ? `${lastOps.lastPaymentDateFormatted} — ${formatMoney(lastOps.lastPaymentAmount)} (${lastOps.lastPaymentMethod || "To'lov"})`
+          : "To'lov yo'q";
+      const finLine = `Oxirgi pul bergan: ${payDetail}`;
+      const prodPrefix =
+        lastOps.lastProductType === 'qaytarilgan'
+          ? 'Mahsulot qaytarilgan'
+          : 'Mahsulot berilgan';
+      const prodLine = `${prodPrefix}: ${lastOps.lastProductFormatted || "Amaliyot yo'q"}`;
+      const opsCell = `${finLine}\n${prodLine}`;
+
+      const actionAndAmount = [
+        plannedLabel || '-',
+        item.plannedAmount && item.plannedAmount > 0
+          ? `Undirish: ${formatMoney(item.plannedAmount)}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      const statusStr = getPlanStatusLabel(item);
+      const noteStr = item.closeReason || item.planNote || item.reportNote || '';
+      const statusCell = noteStr ? `${statusStr}\n${noteStr}` : statusStr;
+
+      return [
+        String(index + 1),
+        agentCell,
+        clientCell,
+        phoneCell,
+        fullAddress,
+        debtAdvanceCell,
+        opsCell,
+        actionAndAmount,
+        statusCell,
+      ];
+    });
+  };
+
+  // Generates a super-crisp 3x Retina PNG Canvas of the entire plan table
+  const generateHighResImageCanvas = (): HTMLCanvasElement => {
+    const scale = 3; // 3x DPI for ultra-sharp zoomable text on Telegram/WhatsApp/Mobile
+    const logicalWidth = 1480;
+    const padX = 24;
+    const padY = 24;
+    const innerWidth = logicalWidth - padX * 2;
+
+    const colRatios = [0.035, 0.115, 0.125, 0.095, 0.135, 0.11, 0.185, 0.11, 0.09];
+    const colWidths = colRatios.map((r) => Math.floor(innerWidth * r));
+    // Adjust last column to match exact innerWidth
+    const usedWidth = colWidths.slice(0, -1).reduce((a, b) => a + b, 0);
+    colWidths[colWidths.length - 1] = innerWidth - usedWidth;
+
+    const headers = [
+      '№',
+      "Qaysi agent orqali qo'shilgan",
+      'Mijoz F.I.Sh',
+      'Telefon',
+      'Manzil',
+      'Joriy qarz / Haqdorlik',
+      'Oxirgi marta pul bergan va mahsulot amaliyoti (d/m/y)',
+      'Tanlangan amal va Undirish',
+      'Holati / Izoh',
+    ];
+
+    const rawRows = buildRowsData();
+
+    // Measure canvas
+    const measureCanvas = document.createElement('canvas');
+    const mCtx = measureCanvas.getContext('2d')!;
+    const fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+    const cellPadX = 8;
+    const cellPadY = 8;
+    const lineHeight = 16;
+
+    // Measure header height
+    mCtx.font = `800 12px ${fontFamily}`;
+    const wrappedHeaders = headers.map((h, cIdx) =>
+      wrapCanvasText(mCtx, h, colWidths[cIdx] - cellPadX * 2)
+    );
+    const maxHeaderLines = Math.max(...wrappedHeaders.map((lines) => lines.length), 1);
+    const headerRowHeight = maxHeaderLines * lineHeight + cellPadY * 2;
+
+    // Measure body rows height
+    mCtx.font = `600 11.5px ${fontFamily}`;
+    const wrappedBodyRows = rawRows.map((row) =>
+      row.map((cellText, cIdx) =>
+        wrapCanvasText(mCtx, cellText, colWidths[cIdx] - cellPadX * 2)
+      )
+    );
+    const rowHeights = wrappedBodyRows.map((rowLines) => {
+      const maxLines = Math.max(...rowLines.map((l) => l.length), 1);
+      return maxLines * lineHeight + cellPadY * 2;
+    });
+
+    const topHeaderBoxHeight = 68;
+    const gapBetweenHeaderAndTable = 14;
+    const totalTableHeight =
+      headerRowHeight + rowHeights.reduce((acc, h) => acc + h, 0);
+    const logicalHeight =
+      padY * 2 + topHeaderBoxHeight + gapBetweenHeaderAndTable + totalTableHeight + 16;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = logicalWidth * scale;
+    canvas.height = logicalHeight * scale;
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(scale, scale);
+
+    // White background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, logicalWidth, logicalHeight);
+
+    // Outer border
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(10, 10, logicalWidth - 20, logicalHeight - 20);
+
+    // Header Box
+    const headerBottomY = padY + topHeaderBoxHeight;
+    ctx.beginPath();
+    ctx.moveTo(padX, headerBottomY);
+    ctx.lineTo(logicalWidth - padX, headerBottomY);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Title
+    ctx.fillStyle = '#000000';
+    ctx.font = `800 20px ${fontFamily}`;
+    ctx.textBaseline = 'top';
+    ctx.fillText(title.toUpperCase(), padX, padY + 6);
+
+    // Subtitle
+    ctx.font = `600 13px ${fontFamily}`;
+    const subText = `Chop etilgan sana: ${printedAtStr} | Jami mijozlar: ${plans.length} ta${
+      subtitle ? ` | ${subtitle}` : ''
+    }`;
+    ctx.fillText(subText, padX, padY + 36);
+
+    // Right summary box
+    const totalStr = `Undirish rejasi jami: ${formatMoney(totalPlannedAmount)}`;
+    ctx.font = `800 13.5px monospace`;
+    const totalBoxW = ctx.measureText(totalStr).width + 24;
+    const totalBoxH = 34;
+    const totalBoxX = logicalWidth - padX - totalBoxW;
+    const totalBoxY = padY + 10;
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(totalBoxX, totalBoxY, totalBoxW, totalBoxH);
+    ctx.fillText(totalStr, totalBoxX + 12, totalBoxY + 9);
+
+    // Draw Table Header
+    let curY = headerBottomY + gapBetweenHeaderAndTable;
+    ctx.fillStyle = '#f3f4f6';
+    ctx.fillRect(padX, curY, innerWidth, headerRowHeight);
+
+    let curX = padX;
+    for (let cIdx = 0; cIdx < headers.length; cIdx++) {
+      const colW = colWidths[cIdx];
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(curX, curY, colW, headerRowHeight);
+
+      ctx.fillStyle = '#000000';
+      ctx.font = `800 12px ${fontFamily}`;
+      const lines = wrappedHeaders[cIdx];
+      lines.forEach((line, lIdx) => {
+        if (cIdx === 0) {
+          const tw = ctx.measureText(line).width;
+          ctx.fillText(line, curX + (colW - tw) / 2, curY + cellPadY + lIdx * lineHeight);
+        } else {
+          ctx.fillText(line, curX + cellPadX, curY + cellPadY + lIdx * lineHeight);
+        }
+      });
+      curX += colW;
+    }
+
+    curY += headerRowHeight;
+
+    // Draw Body Rows
+    for (let rIdx = 0; rIdx < wrappedBodyRows.length; rIdx++) {
+      const rowH = rowHeights[rIdx];
+      const rowLines = wrappedBodyRows[rIdx];
+
+      // Subtle zebra background for readability while keeping crisp black borders
+      ctx.fillStyle = rIdx % 2 === 1 ? '#fafafa' : '#ffffff';
+      ctx.fillRect(padX, curY, innerWidth, rowH);
+
+      let cellX = padX;
+      for (let cIdx = 0; cIdx < rowLines.length; cIdx++) {
+        const colW = colWidths[cIdx];
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cellX, curY, colW, rowH);
+
+        ctx.fillStyle = '#000000';
+        const isBoldCol = cIdx === 0 || cIdx === 2 || cIdx === 5 || cIdx === 8;
+        ctx.font = `${isBoldCol ? '700' : '600'} 11.5px ${fontFamily}`;
+
+        const lines = rowLines[cIdx];
+        lines.forEach((line, lIdx) => {
+          if (cIdx === 0) {
+            const tw = ctx.measureText(line).width;
+            ctx.fillText(line, cellX + (colW - tw) / 2, curY + cellPadY + lIdx * lineHeight);
+          } else {
+            ctx.fillText(line, cellX + cellPadX, curY + cellPadY + lIdx * lineHeight);
+          }
+        });
+
+        cellX += colW;
+      }
+
+      curY += rowH;
+    }
+
+    // Outer table border emphasis
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      padX,
+      headerBottomY + gapBetweenHeaderAndTable,
+      innerWidth,
+      totalTableHeight
+    );
+
+    return canvas;
+  };
+
+  const handleDownloadImage = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsGeneratingImage(true);
+    try {
+      const canvas = generateHighResImageCanvas();
+      canvas.toBlob(
+        (blob) => {
+          setIsGeneratingImage(false);
+          if (!blob) return;
+          const fileDate = new Date().toISOString().slice(0, 10);
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `Rejadagi_mijozlar_${fileDate}.png`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          showTempMessage('Tiniq PNG rasm yuklab olindi!');
+        },
+        'image/png',
+        1.0
+      );
+    } catch (err) {
+      console.error('Image generation error:', err);
+      setIsGeneratingImage(false);
+    }
+  };
+
+  const handleShareImage = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsGeneratingImage(true);
+    try {
+      const canvas = generateHighResImageCanvas();
+      canvas.toBlob(
+        async (blob) => {
+          setIsGeneratingImage(false);
+          if (!blob) return;
+          const fileDate = new Date().toISOString().slice(0, 10);
+          const fileName = `Rejadagi_mijozlar_${fileDate}.png`;
+          const file = new File([blob], fileName, { type: 'image/png' });
+
+          // 1. Try native Web Share API with file (Telegram, WhatsApp, mobile/desktop share sheet)
+          if (
+            typeof navigator !== 'undefined' &&
+            navigator.share &&
+            (!navigator.canShare || navigator.canShare({ files: [file] }))
+          ) {
+            try {
+              await navigator.share({
+                title: `${title} (${fileDate})`,
+                text: `${title} — Jami: ${plans.length} ta mijoz`,
+                files: [file],
+              });
+              showTempMessage('Rasm ulashildi!');
+              return;
+            } catch (shareErr: any) {
+              if (shareErr && shareErr.name === 'AbortError') {
+                return;
+              }
+            }
+          }
+
+          // 2. Fallback: copy image to clipboard if supported, and also download it
+          let copiedToClipboard = false;
+          if (
+            typeof navigator !== 'undefined' &&
+            navigator.clipboard &&
+            typeof ClipboardItem !== 'undefined'
+          ) {
+            try {
+              await navigator.clipboard.write([
+                new ClipboardItem({ 'image/png': blob }),
+              ]);
+              copiedToClipboard = true;
+            } catch {
+              // ignore clipboard error
+            }
+          }
+
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = fileName;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+
+          showTempMessage(
+            copiedToClipboard
+              ? 'Rasm nusxalandi (Ctrl+V orqali Telegramga yuborishingiz mumkin) va yuklab olindi!'
+              : 'Tiniq PNG rasm yuklab olindi!'
+          );
+        },
+        'image/png',
+        1.0
+      );
+    } catch (err) {
+      console.error('Image share error:', err);
+      setIsGeneratingImage(false);
+    }
+  };
 
   const handleDownloadAndPrintPdf = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -100,73 +518,9 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       const totalStr = `Undirish rejasi jami: ${sanitizePdfText(formatMoney(totalPlannedAmount))}`;
       doc.text(totalStr, pageWidth - marginX - 4, 18, { align: 'right' });
 
-      const tableRows = plans.map((item, index) => {
-        const plannedLabel = formatPlannedActionLabel(item.plannedAction || item.actionDone);
-        const lastOps = getClientLastOperations(item.clientId, clients, allSystemPlans);
-
-        const agentName = getAgentDisplayName(item.agentUsername);
-        const agentCell = `${agentName}\nQo'shdi: ${formatDateDMY(item.createdAt)}`;
-        const clientCell = item.clientName || '-';
-        const phoneCell = item.clientPhone || '-';
-        const addressCell =
-          [item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') ||
-          item.clientAddress ||
-          '-';
-        const fullAddress = item.clientLandmark
-          ? `${addressCell} (${item.clientLandmark})`
-          : addressCell;
-
-        const debtLines: string[] = [];
-        if (lastOps.currentDebt > 0) {
-          debtLines.push(`Qarzdorlik: ${formatMoney(lastOps.currentDebt)}`);
-        }
-        if (lastOps.currentAdvance > 0) {
-          debtLines.push(`Haqdorlik: ${formatMoney(lastOps.currentAdvance)}`);
-        }
-        const debtAdvanceCell = debtLines.length > 0 ? debtLines.join('\n') : '0 USD';
-
-        const payDetail =
-          lastOps.lastPaymentDateFormatted && lastOps.lastPaymentAmount && lastOps.lastPaymentAmount > 0
-            ? `${lastOps.lastPaymentDateFormatted} — ${formatMoney(lastOps.lastPaymentAmount)} (${lastOps.lastPaymentMethod || "To'lov"})`
-            : "To'lov yo'q";
-        const finLine = `Oxirgi pul bergan: ${payDetail}`;
-        const prodPrefix =
-          lastOps.lastProductType === 'qaytarilgan'
-            ? 'Mahsulot qaytarilgan'
-            : 'Mahsulot berilgan';
-        const prodLine = `${prodPrefix}: ${lastOps.lastProductFormatted || "Amaliyot yo'q"}`;
-        const opsCell = `${finLine}\n${prodLine}`;
-
-        const actionAndAmount = [
-          plannedLabel || '-',
-          item.plannedAmount && item.plannedAmount > 0
-            ? `Undirish: ${formatMoney(item.plannedAmount)}`
-            : '',
-        ]
-          .filter(Boolean)
-          .join('\n');
-
-        const statusStr =
-          item.status === 'bajarildi'
-            ? 'Bajarildi'
-            : item.isClosed || item.status === 'yopildi'
-            ? 'Yopilgan'
-            : 'Rejada';
-        const noteStr = item.planNote || item.reportNote || '';
-        const statusCell = noteStr ? `${statusStr}\n${noteStr}` : statusStr;
-
-        return [
-          String(index + 1),
-          sanitizePdfText(agentCell),
-          sanitizePdfText(clientCell),
-          sanitizePdfText(phoneCell),
-          sanitizePdfText(fullAddress),
-          sanitizePdfText(debtAdvanceCell),
-          sanitizePdfText(opsCell),
-          sanitizePdfText(actionAndAmount),
-          sanitizePdfText(statusCell),
-        ];
-      });
+      const tableRows = buildRowsData().map((row) =>
+        row.map((cell) => sanitizePdfText(cell))
+      );
 
       autoTable(doc, {
         startY: 29,
@@ -233,8 +587,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       const fileDate = new Date().toISOString().slice(0, 10);
       doc.save(`Rejadagi_mijozlar_${fileDate}.pdf`);
 
-      setPdfSuccessMessage(true);
-      setTimeout(() => setPdfSuccessMessage(false), 4000);
+      showTempMessage('PDF yuklab olindi!');
     } catch (err) {
       console.error('PDF generation error:', err);
       document.body.classList.add('reja-print-active');
@@ -434,6 +787,11 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
               lastOps.lastPaymentDateFormatted && lastOps.lastPaymentAmount && lastOps.lastPaymentAmount > 0
                 ? `${lastOps.lastPaymentDateFormatted} — ${formatMoney(lastOps.lastPaymentAmount)} (${lastOps.lastPaymentMethod || "To'lov"})`
                 : "To'lov yo'q";
+            const executor =
+              item.lastExecutedBy ||
+              (item.actionsHistory && item.actionsHistory.length > 0
+                ? item.actionsHistory[0].author
+                : undefined);
             return (
               <tr
                 key={item.id}
@@ -463,10 +821,15 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
                   }}
                 >
                   <div style={{ fontWeight: 800 }}>
-                    {getAgentDisplayName(item.agentUsername)}
+                    Tuzdi: {getAgentDisplayName(item.agentUsername)}
                   </div>
+                  {executor && (
+                    <div style={{ fontWeight: 700, fontSize: '9.5px', marginTop: '1px' }}>
+                      Bajardi: {getAgentDisplayName(executor)}
+                    </div>
+                  )}
                   <div style={{ fontSize: '9px', marginTop: '2px', fontFamily: 'monospace' }}>
-                    {formatDateDMY(item.createdAt)}
+                    {formatDateDMY(item.planDate || item.createdAt)}
                   </div>
                 </td>
                 <td
@@ -585,15 +948,11 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
                   }}
                 >
                   <div style={{ fontWeight: 700 }}>
-                    {item.status === 'bajarildi'
-                      ? 'Bajarildi'
-                      : item.isClosed || item.status === 'yopildi'
-                      ? 'Yopilgan'
-                      : 'Rejada'}
+                    {getPlanStatusLabel(item)}
                   </div>
-                  {(item.planNote || item.reportNote) && (
+                  {(item.closeReason || item.planNote || item.reportNote) && (
                     <div style={{ fontSize: '9.5px', marginTop: '2px' }}>
-                      {item.planNote || item.reportNote}
+                      {item.closeReason || item.planNote || item.reportNote}
                     </div>
                   )}
                 </td>
@@ -611,30 +970,50 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       <div className="no-print fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-xs overflow-y-auto">
         <div className="relative w-full max-w-6xl bg-white rounded-2xl shadow-2xl border border-neutral-300 my-4 overflow-hidden flex flex-col max-h-[92vh]">
           {/* Top Controls */}
-          <div className="px-5 py-3.5 bg-neutral-900 text-white flex items-center justify-between gap-3 shrink-0">
+          <div className="px-4 sm:px-5 py-3.5 bg-neutral-900 text-white flex flex-wrap items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-2.5">
-              <Printer className="w-5 h-5 text-rose-400" />
+              <Printer className="w-5 h-5 text-rose-400 shrink-0" />
               <div>
                 <h3 className="text-sm sm:text-base font-bold leading-tight">
-                  {title} (To'liq A4 PDF / Chop etish)
+                  {title} (PDF / Tiniq Rasm / Share)
                 </h3>
                 <p className="text-[11px] text-neutral-300">
-                  To'liq A4 list formatida qora borderli jadval ({plans.length} ta mijoz)
+                  To'liq A4 qora borderli jadval ({plans.length} ta mijoz) — PDF yoki tiniq rasm (PNG) sifatida saqlash va ulashish
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {pdfSuccessMessage && (
-                <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600/20 border border-emerald-400/40 text-emerald-300 text-xs font-bold">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>PDF yuklab olindi!</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              {statusMessage && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600/20 border border-emerald-400/40 text-emerald-300 text-xs font-bold">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>{statusMessage}</span>
                 </span>
               )}
               <button
                 type="button"
+                disabled={isGeneratingImage}
+                onClick={handleDownloadImage}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                title="Jadvalni yuqori aniqlikdagi tiniq PNG rasm formatida yuklab olish"
+              >
+                <ImageIcon className="w-4 h-4" />
+                <span>{isGeneratingImage ? 'Tayyorlanmoqda...' : 'Rasm (PNG) yuklash'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={isGeneratingImage}
+                onClick={handleShareImage}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                title="Rasmni Telegram, WhatsApp yoki boshqa ilovalarga ulashish (Share)"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Ulashish (Share)</span>
+              </button>
+              <button
+                type="button"
                 disabled={isGeneratingPdf}
                 onClick={handleDownloadAndPrintPdf}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <Download className="w-4 h-4" />
                 <span>{isGeneratingPdf ? 'PDF tayyorlanmoqda...' : 'Print / PDF saqlash'}</span>
@@ -656,11 +1035,29 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
           </div>
 
           {/* Bottom Controls */}
-          <div className="px-5 py-3 bg-white border-t border-neutral-200 flex items-center justify-between gap-3 shrink-0">
+          <div className="px-5 py-3 bg-white border-t border-neutral-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
             <span className="text-xs text-neutral-600">
-              * "Print / PDF saqlash" tugmasini bosganingizda to'liq A4 formatdagi tayyor PDF fayl qurilmangizga yuklanadi.
+              * Jadvalni <strong>PDF</strong> yoki <strong>tiniq PNG rasm</strong> formatida yuklab olishingiz va <strong>Share</strong> tugmasi orqali ulashishingiz mumkin.
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                disabled={isGeneratingImage}
+                onClick={handleDownloadImage}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <ImageIcon className="w-3.5 h-3.5" />
+                <span>Rasm (PNG) yuklash</span>
+              </button>
+              <button
+                type="button"
+                disabled={isGeneratingImage}
+                onClick={handleShareImage}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                <span>Rasmni ulashish (Share)</span>
+              </button>
               <button
                 type="button"
                 disabled={isGeneratingPdf}
@@ -693,3 +1090,4 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     </>
   );
 };
+

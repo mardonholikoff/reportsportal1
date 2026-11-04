@@ -780,6 +780,18 @@ class StorageService {
             (currentScore === existingScore && currentTime >= existingTime);
         }
 
+        // Merge actionsHistory from both plans without losing any agent's actions
+        const mergedHistoryMap = new Map<string, NonNullable<DailyPlanItem['actionsHistory']>[number]>();
+        [...(plan.actionsHistory || []), ...(existing.actionsHistory || [])].forEach((act) => {
+          if (act && act.timestamp) {
+            mergedHistoryMap.set(`${act.timestamp}_${act.author || ''}`, act);
+          }
+        });
+        const mergedActionsHistory = Array.from(mergedHistoryMap.values()).sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        );
+        const latestAction = mergedActionsHistory[0];
+
         if (pickCurrent) {
           if (existing.id !== plan.id) duplicateIds.push(existing.id);
           byClient.set(key, {
@@ -787,6 +799,10 @@ class StorageService {
             plannedAction: plan.plannedAction || existing.plannedAction,
             plannedAmount: plan.plannedAmount ?? existing.plannedAmount,
             planNote: plan.planNote || existing.planNote,
+            lastExecutedBy: plan.lastExecutedBy || existing.lastExecutedBy || latestAction?.author,
+            lastExecutedAt: plan.lastExecutedAt || existing.lastExecutedAt || latestAction?.timestamp,
+            actionsHistory: mergedActionsHistory.length > 0 ? mergedActionsHistory : plan.actionsHistory,
+            actionsCount: mergedActionsHistory.length > 0 ? mergedActionsHistory.length : plan.actionsCount,
           });
         } else {
           if (plan.id !== existing.id) duplicateIds.push(plan.id);
@@ -795,6 +811,10 @@ class StorageService {
             plannedAction: existing.plannedAction || plan.plannedAction,
             plannedAmount: existing.plannedAmount ?? plan.plannedAmount,
             planNote: existing.planNote || plan.planNote,
+            lastExecutedBy: existing.lastExecutedBy || plan.lastExecutedBy || latestAction?.author,
+            lastExecutedAt: existing.lastExecutedAt || plan.lastExecutedAt || latestAction?.timestamp,
+            actionsHistory: mergedActionsHistory.length > 0 ? mergedActionsHistory : existing.actionsHistory,
+            actionsCount: mergedActionsHistory.length > 0 ? mergedActionsHistory.length : existing.actionsCount,
           });
         }
       }
@@ -850,16 +870,9 @@ class StorageService {
     this.notify();
   }
 
-  // Rejalarni olish (Admin uchun barcha agentlar rejalari, agent uchun o'z rejalari)
-  public getActive24hPlans(agentUsername?: string): DailyPlanItem[] {
-    const all = this.getDailyPlans();
-
-    return all.filter((item) => {
-      if (agentUsername) {
-        return item.agentUsername?.toLowerCase() === agentUsername.toLowerCase();
-      }
-      return true;
-    });
+  // Rejalarni olish (Admin va barcha agentlar uchun barcha agentlar tuzgan rejalar umumiy ko'rinadi)
+  public getActive24hPlans(_agentUsername?: string): DailyPlanItem[] {
+    return this.getDailyPlans();
   }
 
   // Kunlik reja tuzish (agent tomonidan tanlangan mijozlar, amal turi, undirish summasi, izohlar va ixtiyoriy sana)
@@ -1010,9 +1023,12 @@ class StorageService {
     }
     const nowStr = new Date().toISOString();
 
-    // 1. Update plan item
+    // 1. Update plan item (record which agent executed the action)
     plan.status = 'bajarildi';
+    plan.closedWithoutAction = false;
     plan.completedAt = nowStr;
+    plan.lastExecutedBy = author;
+    plan.lastExecutedAt = nowStr;
     plan.actionDone = report.actionDone;
     plan.financialAction = report.financialAction;
     plan.productsDelivered = report.productsDelivered;
@@ -1225,16 +1241,36 @@ class StorageService {
     return { success: true, client: updatedClient || undefined };
   }
 
-  // Rejadagi mijoz bo'yicha amallarni to'liq yakunlash (Oxirgi marta yopish)
-  public closeDailyPlanItem(planItemId: string, author: string, closeReason?: string): boolean {
+  // Rejadagi mijoz bo'yicha amallarni to'liq yakunlash (Oxirgi marta yopish: bajarib yoki bajarilmasdan yopish)
+  public closeDailyPlanItem(
+    planItemId: string,
+    author: string,
+    closeReason?: string,
+    closedWithoutActionOverride?: boolean
+  ): boolean {
     const plans = this.getDailyPlans();
     const planIndex = plans.findIndex((p) => p.id === planItemId);
     if (planIndex === -1) return false;
 
     const plan = plans[planIndex];
     const nowStr = new Date().toISOString();
-    const finalReason = closeReason?.trim() || "Amallar yakunlandi";
+    const hasCompletedAction = Boolean(
+      plan.actionDone ||
+        plan.status === 'bajarildi' ||
+        (plan.actionsHistory && plan.actionsHistory.length > 0) ||
+        (plan.actionsCount && plan.actionsCount > 0)
+    );
+    const isUnperformedClose =
+      closedWithoutActionOverride !== undefined
+        ? closedWithoutActionOverride
+        : !hasCompletedAction;
+
+    const finalReason =
+      closeReason?.trim() ||
+      (isUnperformedClose ? 'Bajarilmasdan yopildi' : 'Amallar yakunlandi');
+
     plan.isClosed = true;
+    plan.closedWithoutAction = isUnperformedClose;
     plan.status = 'yopildi';
     plan.closedAt = nowStr;
     plan.closedBy = author;
@@ -1252,8 +1288,12 @@ class StorageService {
         author,
         timestamp: nowStr,
         type: 'visit_action',
-        title: 'Reja yakunlandi va yopildi',
-        details: `${author} tomonidan ushbu mijoz bo'yicha amallar yakunlandi va reja to'liq yopildi. Yopilish sababi: ${finalReason}`,
+        title: isUnperformedClose
+          ? 'Reja bajarilmasdan yopildi'
+          : 'Reja yakunlandi va yopildi',
+        details: `${author} tomonidan ushbu mijoz bo'yicha reja ${
+          isUnperformedClose ? 'amal bajarilmasdan' : 'amallar yakunlanib'
+        } yopildi. Yopilish sababi: ${finalReason}`,
       });
       this.updateClient(client.id, {
         logs: clientLogs,
@@ -1295,6 +1335,7 @@ class StorageService {
       if (!idSet.has(plan.id) && (!plan.clientId || !targetedClientIds.has(plan.clientId))) continue;
 
       plan.isClosed = false;
+      plan.closedWithoutAction = false;
       plan.status = 'rejalashtirilgan';
       plan.reopenedAt = nowStr;
       plan.reopenedBy = author;

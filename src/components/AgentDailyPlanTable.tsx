@@ -35,7 +35,11 @@ interface Props {
   onOpenExecuteModal: (item: DailyPlanItem) => void;
   onMarkPlannedActionDone?: (item: DailyPlanItem) => void;
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
-  onClosePlanItem?: (planItemId: string, closeReason?: string) => void;
+  onClosePlanItem?: (
+    planItemId: string,
+    closeReason?: string,
+    closedWithoutActionOverride?: boolean
+  ) => void;
   onReopenPlanItems?: (planItemIds: string[], reopenReason: string) => void;
   onRemovePlanItems?: (planItemIds: string[], reason: string) => void;
 }
@@ -99,6 +103,13 @@ const calcPlanFinancials = (item: DailyPlanItem) => {
   return { paidAmount, debtAmount };
 };
 
+const isPlanClosedWithoutAction = (item: DailyPlanItem): boolean => {
+  if (item.closedWithoutAction !== undefined) return item.closedWithoutAction;
+  const hasAnyAction =
+    Boolean(item.actionDone) || Boolean(item.actionsHistory && item.actionsHistory.length > 0);
+  return !hasAnyAction;
+};
+
 export const AgentDailyPlanTable: React.FC<Props> = ({
   plans,
   clients,
@@ -122,10 +133,17 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
   const [customDate, setCustomDate] = useState<string>('');
 
+  // Closure type sub-filter: 'all' | 'done_closed' (Bajarib yopilgan) | 'undone_closed' (Bajarilmasdan yopilgan)
+  const [closureTypeFilter, setClosureTypeFilter] = useState<'all' | 'done_closed' | 'undone_closed'>('all');
+
+  // Payment filter & sort: 'all' | 'paid_only' | 'last_paid' | 'most_paid'
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'paid_only' | 'last_paid' | 'most_paid'>('all');
+
   // State for confirming closing of plan item (Oxirgi marta yopish)
   const [confirmCloseItem, setConfirmCloseItem] = useState<DailyPlanItem | null>(null);
   const [closeReason, setCloseReason] = useState<string>('');
   const [selectedPresetReason, setSelectedPresetReason] = useState<string>('');
+  const [closeWithoutActionFlag, setCloseWithoutActionFlag] = useState<boolean>(false);
 
   // General selection of plan items (can be active or closed)
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
@@ -225,12 +243,68 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     [dateFilteredPlans]
   );
   const displayedPlans = useMemo(() => {
-    return planViewFilter === 'active'
-      ? activePlans
-      : planViewFilter === 'closed'
-      ? closedPlans
-      : dateFilteredPlans;
-  }, [planViewFilter, activePlans, closedPlans, dateFilteredPlans]);
+    const baseList =
+      planViewFilter === 'active'
+        ? activePlans
+        : planViewFilter === 'closed'
+        ? closedPlans
+        : dateFilteredPlans;
+
+    const afterClosureFilter = baseList.filter((p) => {
+      if (closureTypeFilter === 'all') return true;
+      const isClosed = Boolean(p.isClosed || p.status === 'yopildi');
+      if (!isClosed) return false;
+      const withoutAction = isPlanClosedWithoutAction(p);
+      if (closureTypeFilter === 'done_closed') return !withoutAction;
+      if (closureTypeFilter === 'undone_closed') return withoutAction;
+      return true;
+    });
+
+    const afterPaymentFilter = afterClosureFilter.filter((p) => {
+      if (paymentFilter === 'all') return true;
+      const { paidAmount } = calcPlanFinancials(p);
+      const lastOps = getClientLastOperations(p.clientId, resolvedClients, allSystemPlans);
+      const hasAnyPayment =
+        paidAmount > 0 || Boolean(lastOps.lastPaymentAmount && lastOps.lastPaymentAmount > 0);
+      if (paymentFilter === 'paid_only' || paymentFilter === 'last_paid' || paymentFilter === 'most_paid') {
+        return hasAnyPayment;
+      }
+      return true;
+    });
+
+    if (paymentFilter === 'last_paid') {
+      return [...afterPaymentFilter].sort((a, b) => {
+        const opsA = getClientLastOperations(a.clientId, resolvedClients, allSystemPlans);
+        const opsB = getClientLastOperations(b.clientId, resolvedClients, allSystemPlans);
+        const tA = opsA.lastPaymentTimestamp ? new Date(opsA.lastPaymentTimestamp).getTime() : 0;
+        const tB = opsB.lastPaymentTimestamp ? new Date(opsB.lastPaymentTimestamp).getTime() : 0;
+        return tB - tA;
+      });
+    }
+
+    if (paymentFilter === 'most_paid') {
+      return [...afterPaymentFilter].sort((a, b) => {
+        const paidA = calcPlanFinancials(a).paidAmount;
+        const paidB = calcPlanFinancials(b).paidAmount;
+        const opsA = getClientLastOperations(a.clientId, resolvedClients, allSystemPlans);
+        const opsB = getClientLastOperations(b.clientId, resolvedClients, allSystemPlans);
+        const valA = paidA > 0 ? paidA : opsA.lastPaymentAmount || 0;
+        const valB = paidB > 0 ? paidB : opsB.lastPaymentAmount || 0;
+        return valB - valA;
+      });
+    }
+
+    return afterPaymentFilter;
+  }, [
+    planViewFilter,
+    activePlans,
+    closedPlans,
+    dateFilteredPlans,
+    closureTypeFilter,
+    paymentFilter,
+    resolvedClients,
+    allSystemPlans,
+  ]);
 
   const displayedClosedPlans = useMemo(
     () => displayedPlans.filter((p) => p.isClosed || p.status === 'yopildi'),
@@ -337,18 +411,27 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
   const handleOpenConfirmClose = (item: DailyPlanItem) => {
     setConfirmCloseItem(item);
-    const defaultReason = "Hisob-kitob va amallar to'liq yakunlandi";
+    const hasActions =
+      Boolean(item.actionDone) || Boolean(item.actionsHistory && item.actionsHistory.length > 0);
+    setCloseWithoutActionFlag(!hasActions);
+    const defaultReason = hasActions
+      ? "Hisob-kitob va amallar to'liq yakunlandi"
+      : "Do'kon yopiq / Mijoz joyida yo'q";
     setCloseReason(defaultReason);
     setSelectedPresetReason(defaultReason);
   };
 
   const handleExecuteClose = () => {
     if (confirmCloseItem && onClosePlanItem) {
-      const finalReason = closeReason.trim() || selectedPresetReason || "Amallar yakunlandi";
-      onClosePlanItem(confirmCloseItem.id, finalReason);
+      const finalReason =
+        closeReason.trim() ||
+        selectedPresetReason ||
+        (closeWithoutActionFlag ? 'Bajarilmasdan yopildi' : 'Amallar yakunlandi');
+      onClosePlanItem(confirmCloseItem.id, finalReason, closeWithoutActionFlag);
       setConfirmCloseItem(null);
       setCloseReason('');
       setSelectedPresetReason('');
+      setCloseWithoutActionFlag(false);
     }
   };
 
@@ -537,6 +620,102 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         </div>
         <div className="text-[11px] font-medium text-neutral-500">
           Ko'rsatilmoqda: <strong className="text-neutral-800">{displayedPlans.length} ta</strong> rejadagi mijoz
+        </div>
+      </div>
+
+      {/* Closure Type & Payment Filter/Sort Bar */}
+      <div className="px-4 py-2.5 bg-white border-b border-rose-100 flex flex-wrap items-center justify-between gap-3 text-xs">
+        {/* Bajarib yopilgan / Bajarilmasdan yopilgan filtri */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-bold text-neutral-700">Yopilish holati:</span>
+          <button
+            type="button"
+            onClick={() => setClosureTypeFilter('all')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              closureTypeFilter === 'all'
+                ? 'bg-neutral-800 text-white shadow-2xs'
+                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+            }`}
+          >
+            Barchasi
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (planViewFilter === 'active') setPlanViewFilter('closed');
+              setClosureTypeFilter('done_closed');
+            }}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              closureTypeFilter === 'done_closed'
+                ? 'bg-emerald-700 text-white shadow-2xs'
+                : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+            }`}
+          >
+            Bajarib yopilgan ({closedPlans.filter((p) => !isPlanClosedWithoutAction(p)).length})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (planViewFilter === 'active') setPlanViewFilter('closed');
+              setClosureTypeFilter('undone_closed');
+            }}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              closureTypeFilter === 'undone_closed'
+                ? 'bg-amber-600 text-white shadow-2xs'
+                : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
+            }`}
+          >
+            Bajarilmasdan yopilgan ({closedPlans.filter((p) => isPlanClosedWithoutAction(p)).length})
+          </button>
+        </div>
+
+        {/* Pul berilgani / Oxirgi pul bergani / Ko'p pul bergan asosida filtr va saralash */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="font-bold text-neutral-700">To'lov bo'yicha:</span>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('all')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'all'
+                ? 'bg-rose-700 text-white shadow-2xs'
+                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+            }`}
+          >
+            Barchasi
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('paid_only')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'paid_only'
+                ? 'bg-emerald-700 text-white shadow-2xs'
+                : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+            }`}
+          >
+            Pul berganlar
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('last_paid')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'last_paid'
+                ? 'bg-indigo-700 text-white shadow-2xs'
+                : 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
+            }`}
+          >
+            Oxirgi pul bergani asosida
+          </button>
+          <button
+            type="button"
+            onClick={() => setPaymentFilter('most_paid')}
+            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+              paymentFilter === 'most_paid'
+                ? 'bg-purple-700 text-white shadow-2xs'
+                : 'bg-purple-50 text-purple-800 border border-purple-200 hover:bg-purple-100'
+            }`}
+          >
+            Ko'p pul bergan asosida
+          </button>
         </div>
       </div>
 
@@ -731,15 +910,35 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                               {item.clientLandmark ? ` (${item.clientLandmark})` : ''}
                             </span>
                           </div>
-                          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                             <span className="flex items-center gap-1 text-neutral-500 text-[10px] font-mono">
                               <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
                               <span>{formatDateDMY(item.planDate || item.createdAt)}</span>
                             </span>
                             <span className="inline-flex items-center gap-0.5 text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
                               <User className="w-2.5 h-2.5 text-indigo-600" />
-                              <span>Tuzgan: {getAgentDisplayName(item.agentUsername)}</span>
+                              <span>Reja tuzdi: {getAgentDisplayName(item.agentUsername)}</span>
                             </span>
+                            {(() => {
+                              const executor =
+                                item.lastExecutedBy ||
+                                (item.actionsHistory && item.actionsHistory.length > 0
+                                  ? item.actionsHistory[0].author
+                                  : undefined);
+                              if (!executor) return null;
+                              return (
+                                <span className="inline-flex items-center gap-0.5 text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                                  <span>Amal bajardi: {getAgentDisplayName(executor)}</span>
+                                </span>
+                              );
+                            })()}
+                            {isClosed && item.closedBy && (
+                              <span className="inline-flex items-center gap-0.5 text-[9.5px] font-bold px-1.5 py-0.2 rounded bg-neutral-100 text-neutral-700 border border-neutral-300">
+                                <Lock className="w-2.5 h-2.5 text-neutral-600" />
+                                <span>Yopdi: {getAgentDisplayName(item.closedBy)}</span>
+                              </span>
+                            )}
                           </div>
                         </td>
 
@@ -872,10 +1071,17 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         <td className="py-2.5 px-2.5">
                           {isClosed ? (
                             <div className="space-y-0.5">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-800 border border-neutral-300">
-                                <Lock className="w-2.5 h-2.5 text-neutral-600" />
-                                <span>Yopildi</span>
-                              </span>
+                              {isPlanClosedWithoutAction(item) ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                  <Lock className="w-2.5 h-2.5 text-amber-700" />
+                                  <span>Bajarilmasdan yopilgan</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-700" />
+                                  <span>Bajarib yopilgan</span>
+                                </span>
+                              )}
                               {item.closeReason && (
                                 <div
                                   className="text-[10px] font-bold text-rose-900 bg-rose-50 border border-rose-200 rounded px-1.5 py-0.5 max-w-[150px] truncate"
@@ -982,6 +1188,30 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                     </span>
                                   </div>
                                 )}
+
+                                {/* Who executed actions on this plan */}
+                                {(() => {
+                                  const authors = Array.from(
+                                    new Set(
+                                      (item.actionsHistory || [])
+                                        .map((a) => a.author)
+                                        .filter(Boolean)
+                                    )
+                                  );
+                                  const primaryExec = item.lastExecutedBy || authors[0];
+                                  if (!primaryExec) return null;
+                                  return (
+                                    <div className="text-[9.5px] font-bold text-indigo-900 bg-indigo-50/80 border border-indigo-200/80 rounded px-1.5 py-0.5 inline-flex items-center gap-1 flex-wrap">
+                                      <User className="w-2.5 h-2.5 text-indigo-700 shrink-0" />
+                                      <span>
+                                        Bajargan:{' '}
+                                        {authors.length > 1
+                                          ? authors.map((a) => getAgentDisplayName(a)).join(', ')
+                                          : getAgentDisplayName(primaryExec)}
+                                      </span>
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             ) : (
                               <span className="text-neutral-400 italic text-[11px] block">
@@ -1196,16 +1426,37 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         )}
                         <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
                           <User className="w-2.5 h-2.5 text-indigo-600" />
-                          <span>Tuzgan: {getAgentDisplayName(item.agentUsername)}</span>
+                          <span>Reja tuzdi: {getAgentDisplayName(item.agentUsername)}</span>
                         </span>
+                        {(() => {
+                          const executor =
+                            item.lastExecutedBy ||
+                            (item.actionsHistory && item.actionsHistory.length > 0
+                              ? item.actionsHistory[0].author
+                              : undefined);
+                          if (!executor) return null;
+                          return (
+                            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 shrink-0">
+                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                              <span>Amal bajardi: {getAgentDisplayName(executor)}</span>
+                            </span>
+                          );
+                        })()}
                       </div>
 
                       <div className="shrink-0">
                         {isClosed ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-neutral-200 text-neutral-700">
-                            <Lock className="w-2.5 h-2.5" />
-                            <span>Yopildi</span>
-                          </span>
+                          isPlanClosedWithoutAction(item) ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                              <Lock className="w-2.5 h-2.5 text-amber-700" />
+                              <span>Bajarilmasdan yopilgan</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-700" />
+                              <span>Bajarib yopilgan</span>
+                            </span>
+                          )
                         ) : isDone ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800">
                             <CheckCircle2 className="w-2.5 h-2.5" />
@@ -1562,7 +1813,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         </div>
       )}
 
-      {/* Remove Confirmation Modal: Rejadagi mijozlarni olib tashlash (Izoh majburiy) */}
+      {/* Remove Confirmation Modal: Rejadagi mijozlarni olib tashlash (Aniqmi + Izoh majburiy) */}
       {removeModalTargetIds && removeModalTargetIds.length > 0 && (
         <div
           role="dialog"
@@ -1572,14 +1823,14 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-rose-100 space-y-4">
             <div className="flex items-center gap-3 text-rose-700">
               <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
-                <Trash2 className="w-6 h-6 text-rose-700" />
+                <AlertTriangle className="w-6 h-6 text-rose-700" />
               </div>
               <div>
                 <h3 className="text-base font-bold font-display text-neutral-900">
-                  Rejadan olib tashlash ({removeModalTargetIds.length} ta)
+                  Aniqmi? Rejadan olib tashlashni tasdiqlaysizmi?
                 </h3>
-                <p className="text-xs text-neutral-500">
-                  Rejadan o'chirish uchun sabab / izoh kiritish majburiy
+                <p className="text-xs text-rose-700 font-semibold">
+                  Haqiqatan ham ushbu mijoz ({removeModalTargetIds.length} ta) ni rejadan olib tashlamoqchimisiz?
                 </p>
               </div>
             </div>
@@ -1650,7 +1901,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 }}
                 className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
               >
-                Bekor qilish
+                Yo'q, bekor qilish
               </button>
               <button
                 type="button"
@@ -1659,7 +1910,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
               >
                 <Trash2 className="w-4 h-4" />
-                <span>Rejadan olib tashlash ({removeModalTargetIds.length} ta)</span>
+                <span>Ha, aniq — olib tashlash ({removeModalTargetIds.length} ta)</span>
               </button>
             </div>
           </div>
@@ -1698,6 +1949,49 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>Yopilgandan so'ng kerak bo'lsa "Yopilganlar" bo'limidan izoh kiritib qayta ochishingiz mumkin.</span>
+              </div>
+            </div>
+
+            {/* Yopish turi: Bajarib yopish yoki Bajarilmasdan yopish */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-neutral-700">
+                Yopilish holati:
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCloseWithoutActionFlag(false);
+                    const r = "Hisob-kitob va amallar to'liq yakunlandi";
+                    setSelectedPresetReason(r);
+                    setCloseReason(r);
+                  }}
+                  className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
+                    !closeWithoutActionFlag
+                      ? 'bg-emerald-700 border-emerald-700 text-white shadow-xs'
+                      : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>Bajarib yopilgan</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCloseWithoutActionFlag(true);
+                    const r = "Do'kon yopiq / Mijoz joyida yo'q";
+                    setSelectedPresetReason(r);
+                    setCloseReason(r);
+                  }}
+                  className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
+                    closeWithoutActionFlag
+                      ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
+                      : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  <Lock className="w-4 h-4 shrink-0" />
+                  <span>Bajarilmasdan yopilgan</span>
+                </button>
               </div>
             </div>
 
@@ -1754,10 +2048,18 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 type="button"
                 disabled={!closeReason.trim()}
                 onClick={handleExecuteClose}
-                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+                className={`px-5 py-2.5 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer ${
+                  closeWithoutActionFlag
+                    ? 'bg-amber-600 hover:bg-amber-700'
+                    : 'bg-rose-700 hover:bg-rose-800'
+                }`}
               >
                 <Lock className="w-4 h-4" />
-                <span>Ha, yakunlash va yopish</span>
+                <span>
+                  {closeWithoutActionFlag
+                    ? 'Bajarilmasdan yopish'
+                    : 'Ha, bajarib yopish'}
+                </span>
               </button>
             </div>
           </div>
