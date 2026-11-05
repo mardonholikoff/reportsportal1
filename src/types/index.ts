@@ -87,6 +87,14 @@ export interface DeliveryPaymentInfo {
   debtAmount: number;
 }
 
+export interface FinancialPaymentSplit {
+  method: FinancialMethodType;
+  methodLabel: string;
+  amount: number; // USD da summa
+  amountUzs?: number; // So'mda kiritilgan summa (ixtiyoriy)
+  exchangeRate?: number; // Konvertatsiya kursi (ixtiyoriy)
+}
+
 export interface DailyPlanItem {
   id: string;
   agentUsername: string;
@@ -122,6 +130,7 @@ export interface DailyPlanItem {
     amount: number;
     currency?: string; // 'so'm' | 'USD' | ombor valyutasi
     note?: string;
+    splits?: FinancialPaymentSplit[];
   };
   productsDelivered?: ProductItem[];
   deliveryPayment?: DeliveryPaymentInfo;
@@ -148,6 +157,8 @@ export interface DailyPlanItem {
       methodLabel: string;
       amount: number;
       currency?: string;
+      note?: string;
+      splits?: FinancialPaymentSplit[];
     };
     productsDelivered?: ProductItem[];
     deliveryPayment?: DeliveryPaymentInfo;

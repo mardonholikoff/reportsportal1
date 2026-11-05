@@ -19,6 +19,7 @@ import {
   DailyPlanItem,
   PlanActionType,
   FinancialMethodType,
+  FinancialPaymentSplit,
   ProductItem,
   WarehouseProduct,
   DeliveryPaymentInfo,
@@ -1005,6 +1006,7 @@ export default function App() {
         amount: number;
         currency?: string;
         note?: string;
+        splits?: FinancialPaymentSplit[];
       };
       productsDelivered?: ProductItem[];
       deliveryPayment?: DeliveryPaymentInfo;

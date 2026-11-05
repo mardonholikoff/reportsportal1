@@ -962,24 +962,36 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         let bank = 0;
         let qr = 0;
 
-        // Payment from financialAction
+        // Payment from financialAction (supports single or multi-method splits)
         if (act.financialAction && act.financialAction.amount > 0) {
-          const m =
-            (act.financialAction as any).method ||
-            ((act.financialAction.methodLabel || '').toLowerCase().includes('naqd')
-              ? 'naqd'
-              : (act.financialAction.methodLabel || '').toLowerCase().includes('karta')
-              ? 'karta'
-              : (act.financialAction.methodLabel || '').toLowerCase().includes('bank')
-              ? 'bank'
-              : (act.financialAction.methodLabel || '').toLowerCase().includes('qr')
-              ? 'qr'
-              : 'naqd');
-          const amt = act.financialAction.amount;
-          if (m === 'naqd') naqd += amt;
-          else if (m === 'karta') karta += amt;
-          else if (m === 'bank') bank += amt;
-          else if (m === 'qr') qr += amt;
+          const splits = act.financialAction.splits;
+          if (splits && splits.length > 0) {
+            splits.forEach((sp) => {
+              if (!sp || sp.amount <= 0) return;
+              const mStr = (sp.method || sp.methodLabel || '').toLowerCase();
+              if (mStr.includes('karta')) karta += sp.amount;
+              else if (mStr.includes('bank')) bank += sp.amount;
+              else if (mStr.includes('qr')) qr += sp.amount;
+              else naqd += sp.amount;
+            });
+          } else {
+            const m =
+              (act.financialAction as any).method ||
+              ((act.financialAction.methodLabel || '').toLowerCase().includes('naqd')
+                ? 'naqd'
+                : (act.financialAction.methodLabel || '').toLowerCase().includes('karta')
+                ? 'karta'
+                : (act.financialAction.methodLabel || '').toLowerCase().includes('bank')
+                ? 'bank'
+                : (act.financialAction.methodLabel || '').toLowerCase().includes('qr')
+                ? 'qr'
+                : 'naqd');
+            const amt = act.financialAction.amount;
+            if (m === 'naqd') naqd += amt;
+            else if (m === 'karta') karta += amt;
+            else if (m === 'bank') bank += amt;
+            else if (m === 'qr') qr += amt;
+          }
         }
 
         // Delivery payment

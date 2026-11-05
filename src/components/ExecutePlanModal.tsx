@@ -3,6 +3,7 @@ import {
   DailyPlanItem,
   PlanActionType,
   FinancialMethodType,
+  FinancialPaymentSplit,
   ProductItem,
   Client,
   WarehouseProduct,
@@ -49,6 +50,7 @@ interface Props {
         amount: number;
         currency?: string;
         note?: string;
+        splits?: FinancialPaymentSplit[];
       };
       productsDelivered?: ProductItem[];
       deliveryPayment?: DeliveryPaymentInfo;
@@ -113,20 +115,22 @@ export interface ExtraReturnItem {
   totalPrice: number;
 }
 
-interface WarehouseProductSearchSelectProps {
+export interface WarehouseProductSearchSelectProps {
   products: WarehouseProduct[];
   selectedId: string;
   onSelect: (warehouseId: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  allowClearManual?: boolean;
 }
 
-const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelectProps> = ({
+export const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelectProps> = ({
   products,
   selectedId,
   onSelect,
   disabled,
   placeholder = "Ombordagi mahsulotni qidiring (3 ta so'z orqali: brend, nom, marka)...",
+  allowClearManual = false,
 }) => {
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
@@ -140,7 +144,7 @@ const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelectProps> 
   const filteredProducts = useMemo(() => {
     const rawWords = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
     if (rawWords.length === 0) {
-      return products.slice(0, 35);
+      return products.slice(0, 60);
     }
     return products.filter((wh) => {
       const combined = [
@@ -191,16 +195,32 @@ const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelectProps> 
           </div>
         </div>
         {!disabled && (
-          <button
-            type="button"
-            onClick={() => {
-              setIsOpen(true);
-              setQuery('');
-            }}
-            className="px-2.5 py-1 text-[11px] font-bold text-rose-700 bg-white hover:bg-rose-100 rounded-lg border border-rose-200 transition shrink-0 cursor-pointer shadow-2xs"
-          >
-            O'zgartirish
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setIsOpen(true);
+                setQuery('');
+              }}
+              className="px-2.5 py-1 text-[11px] font-bold text-rose-700 bg-white hover:bg-rose-100 rounded-lg border border-rose-200 transition cursor-pointer shadow-2xs"
+            >
+              O'zgartirish
+            </button>
+            {allowClearManual && (
+              <button
+                type="button"
+                onClick={() => {
+                  onSelect('');
+                  setIsOpen(false);
+                  setQuery('');
+                }}
+                title="Tanlovni bekor qilish (Qo'lda yozish)"
+                className="px-2 py-1 text-[11px] font-bold text-neutral-600 bg-white hover:bg-neutral-100 rounded-lg border border-neutral-200 transition cursor-pointer"
+              >
+                ✕
+              </button>
+            )}
+          </div>
         )}
       </div>
     );
@@ -208,7 +228,7 @@ const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelectProps> 
 
   return (
     <div className="relative space-y-1">
-      <div className="relative">
+      <div className="relative flex items-center">
         <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
         <input
           type="text"
@@ -220,21 +240,46 @@ const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelectProps> 
             setIsOpen(true);
           }}
           onFocus={() => setIsOpen(true)}
-          className="w-full pl-8.5 pr-8 py-2 bg-neutral-50 focus:bg-white rounded-xl border border-neutral-200 focus:border-rose-500 text-xs text-neutral-900 outline-none transition"
+          className="w-full pl-8.5 pr-14 py-2 bg-neutral-50 focus:bg-white rounded-xl border border-neutral-200 focus:border-rose-500 text-xs text-neutral-900 outline-none transition"
         />
-        {query && (
+        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              className="text-neutral-400 hover:text-neutral-700 text-xs px-1 cursor-pointer"
+            >
+              ✕
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => setQuery('')}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-700 text-xs cursor-pointer"
+            disabled={disabled}
+            onClick={() => setIsOpen((prev) => !prev)}
+            className="text-neutral-500 hover:text-neutral-800 p-0.5 rounded cursor-pointer"
+            title="Ro'yxatni ochish / yopish"
           >
-            ✕
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
           </button>
-        )}
+        </div>
       </div>
 
       {isOpen && (
-        <div className="absolute z-30 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white rounded-xl border border-neutral-200 shadow-xl divide-y divide-neutral-100 text-xs">
+        <div className="absolute z-30 left-0 right-0 mt-1 max-h-60 overflow-y-auto bg-white rounded-xl border border-neutral-200 shadow-xl divide-y divide-neutral-100 text-xs">
+          {allowClearManual && (
+            <button
+              type="button"
+              onClick={() => {
+                onSelect('');
+                setIsOpen(false);
+                setQuery('');
+              }}
+              className="w-full text-left px-3 py-2 text-[11px] font-semibold text-neutral-600 hover:bg-neutral-50 flex items-center justify-between cursor-pointer"
+            >
+              <span>-- Boshqa (Qo'lda yozish) --</span>
+              <span className="text-[10px] text-neutral-400">Tanlovsiz</span>
+            </button>
+          )}
           {filteredProducts.length === 0 ? (
             <div className="p-3 text-center text-neutral-400 text-xs">
               "{query}" bo'yicha mahsulot topilmadi
@@ -310,10 +355,28 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const [isPlannedActionConfirmed, setIsPlannedActionConfirmed] = useState<boolean>(false);
   const [showExtraActionSelector, setShowExtraActionSelector] = useState<boolean>(false);
 
-  // Section 2: Financial payment (All in USD, with UZS->USD converter)
+  // Section 2: Financial payment (Supports single or multiple payment methods with UZS & USD per method)
   const [hasPayment, setHasPayment] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<FinancialMethodType>('naqd');
-  const [paymentAmount, setPaymentAmount] = useState<number | ''>('');
+  const [selectedPaymentMethods, setSelectedPaymentMethods] = useState<FinancialMethodType[]>(['naqd']);
+  const [methodAmountsUsd, setMethodAmountsUsd] = useState<Partial<Record<FinancialMethodType, number | ''>>>({
+    naqd: '',
+    bank_otkazma: '',
+    karta_otkazma: '',
+    qr_otkazma: '',
+  });
+  const [methodAmountsUzs, setMethodAmountsUzs] = useState<Partial<Record<FinancialMethodType, number | ''>>>({
+    naqd: '',
+    bank_otkazma: '',
+    karta_otkazma: '',
+    qr_otkazma: '',
+  });
+  const [splitExchangeRate, setSplitExchangeRate] = useState<string>(() => {
+    try {
+      return localStorage.getItem('savdo_usd_uzs_rate_v1') || '12800';
+    } catch {
+      return '12800';
+    }
+  });
   const [paymentNote, setPaymentNote] = useState('');
 
   // Section 3: Products delivered (with bidirectional discount % / USD)
@@ -345,8 +408,19 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setIsPlannedActionConfirmed(alreadyDone);
       setShowExtraActionSelector(!planItem.plannedAction);
       setHasPayment(false);
-      setPaymentMethod('naqd');
-      setPaymentAmount(planItem.plannedAmount && planItem.plannedAmount > 0 ? planItem.plannedAmount : '');
+      setSelectedPaymentMethods(['naqd']);
+      setMethodAmountsUsd({
+        naqd: planItem.plannedAmount && planItem.plannedAmount > 0 ? planItem.plannedAmount : '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      });
+      setMethodAmountsUzs({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      });
       setPaymentNote('');
       setHasProducts(false);
       setProducts([createEmptyProductRow()]);
@@ -360,6 +434,147 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setReportNote('');
     }
   }, [isOpen, planItem?.id]);
+
+  const numExchangeRate = useMemo(() => {
+    const r = parseFloat(splitExchangeRate);
+    return r > 0 ? r : 12800;
+  }, [splitExchangeRate]);
+
+  const handleTogglePaymentMethod = (methodId: FinancialMethodType) => {
+    setSelectedPaymentMethods((prev) => {
+      if (prev.includes(methodId)) {
+        if (prev.length <= 1) return prev;
+        return prev.filter((id) => id !== methodId);
+      }
+      return [...prev, methodId];
+    });
+  };
+
+  const handleMethodUzsChange = (methodId: FinancialMethodType, rawVal: string) => {
+    const uzsVal = rawVal === '' ? '' : parseFloat(rawVal) || 0;
+    setMethodAmountsUzs((prev) => ({ ...prev, [methodId]: uzsVal }));
+    if (uzsVal === '' || uzsVal <= 0) {
+      setMethodAmountsUsd((prev) => ({ ...prev, [methodId]: '' }));
+    } else if (numExchangeRate > 0) {
+      const calcUsd = Math.round((uzsVal / numExchangeRate) * 100) / 100;
+      setMethodAmountsUsd((prev) => ({ ...prev, [methodId]: calcUsd }));
+    }
+  };
+
+  const handleMethodUsdChange = (methodId: FinancialMethodType, rawVal: string) => {
+    const usdVal = rawVal === '' ? '' : parseFloat(rawVal) || 0;
+    setMethodAmountsUsd((prev) => ({ ...prev, [methodId]: usdVal }));
+    if (usdVal === '' || usdVal <= 0) {
+      setMethodAmountsUzs((prev) => ({ ...prev, [methodId]: '' }));
+    } else if (numExchangeRate > 0) {
+      setMethodAmountsUzs((prev) => ({
+        ...prev,
+        [methodId]: Math.round(usdVal * numExchangeRate),
+      }));
+    }
+  };
+
+  const handleExchangeRateChange = (newRateStr: string) => {
+    setSplitExchangeRate(newRateStr);
+    const parsedRate = parseFloat(newRateStr);
+    if (parsedRate > 0) {
+      try {
+        localStorage.setItem('savdo_usd_uzs_rate_v1', newRateStr);
+      } catch {
+        // ignore storage error
+      }
+      setMethodAmountsUsd((prevUsd) => {
+        const nextUsd = { ...prevUsd };
+        selectedPaymentMethods.forEach((mId) => {
+          const uzsVal = methodAmountsUzs[mId];
+          if (typeof uzsVal === 'number' && uzsVal > 0) {
+            nextUsd[mId] = Math.round((uzsVal / parsedRate) * 100) / 100;
+          }
+        });
+        return nextUsd;
+      });
+    }
+  };
+
+  // Active splits with amounts > 0
+  const activePaymentSplits = useMemo<FinancialPaymentSplit[]>(() => {
+    return selectedPaymentMethods
+      .map((mId) => {
+        const meta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === mId);
+        const usdAmt =
+          typeof methodAmountsUsd[mId] === 'number'
+            ? (methodAmountsUsd[mId] as number)
+            : Number(methodAmountsUsd[mId]) || 0;
+        const uzsAmt =
+          typeof methodAmountsUzs[mId] === 'number'
+            ? (methodAmountsUzs[mId] as number)
+            : Number(methodAmountsUzs[mId]) || 0;
+        return {
+          method: mId,
+          methodLabel: meta?.label || "To'lov",
+          amount: Math.round(usdAmt * 100) / 100,
+          amountUzs: uzsAmt > 0 ? Math.round(uzsAmt) : undefined,
+          exchangeRate: uzsAmt > 0 && numExchangeRate > 0 ? numExchangeRate : undefined,
+        };
+      })
+      .filter((s) => s.amount > 0);
+  }, [selectedPaymentMethods, methodAmountsUsd, methodAmountsUzs, numExchangeRate]);
+
+  const totalPaymentUsd = useMemo(() => {
+    const sum = activePaymentSplits.reduce((acc, s) => acc + s.amount, 0);
+    return Math.round(sum * 100) / 100;
+  }, [activePaymentSplits]);
+
+  const totalPaymentUzs = useMemo(() => {
+    return activePaymentSplits.reduce(
+      (acc, s) => acc + (s.amountUzs !== undefined ? s.amountUzs : Math.round(s.amount * numExchangeRate)),
+      0
+    );
+  }, [activePaymentSplits, numExchangeRate]);
+
+  const combinedPaymentSummary = useMemo(() => {
+    if (activePaymentSplits.length === 0) {
+      const firstMethod =
+        FINANCIAL_PAYMENT_METHODS.find((m) => m.id === selectedPaymentMethods[0])?.label || 'Naqd pul';
+      return {
+        primaryMethod: selectedPaymentMethods[0] || ('naqd' as FinancialMethodType),
+        methodLabel: `${firstMethod} (USD)`,
+        autoBreakdownNote: '',
+      };
+    }
+
+    if (activePaymentSplits.length === 1) {
+      const sp = activePaymentSplits[0];
+      const uzsText =
+        sp.amountUzs && sp.amountUzs > 0
+          ? `${new Intl.NumberFormat('uz-UZ').format(sp.amountUzs)} so'm = ${formatMoney(sp.amount)}`
+          : '';
+      return {
+        primaryMethod: sp.method,
+        methodLabel: `${sp.methodLabel} (USD)`,
+        autoBreakdownNote: uzsText,
+      };
+    }
+
+    const labelParts = activePaymentSplits.map((sp) => {
+      if (sp.amountUzs && sp.amountUzs > 0) {
+        return `${sp.methodLabel}: ${new Intl.NumberFormat('uz-UZ').format(sp.amountUzs)} so'm (${formatMoney(sp.amount)})`;
+      }
+      return `${sp.methodLabel}: ${formatMoney(sp.amount)}`;
+    });
+
+    const shortLabelParts = activePaymentSplits.map(
+      (sp) => `${sp.methodLabel} (${formatMoney(sp.amount)})`
+    );
+
+    const breakdownText = `${labelParts.join(' + ')} = Umumiy: ${new Intl.NumberFormat('uz-UZ').format(totalPaymentUzs)} so'm (${formatMoney(totalPaymentUsd)})`;
+
+    return {
+      primaryMethod: activePaymentSplits[0].method,
+      methodLabel: shortLabelParts.join(' + '),
+      autoBreakdownNote: breakdownText,
+    };
+  }, [activePaymentSplits, selectedPaymentMethods, totalPaymentUzs, totalPaymentUsd]);
 
   // Product return is automatically active when visit occurs
   const showReturnSection =
@@ -806,8 +1021,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
         ? totalDeliveredSum
         : Math.max(0, Math.round((totalDeliveredSum - effectivePaid) * 100) / 100);
 
-    const numFinPay = typeof paymentAmount === 'number' ? paymentAmount : Number(paymentAmount) || 0;
-    const selectedFinMethod = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === paymentMethod);
+    const numFinPay = totalPaymentUsd;
+    const finNoteCombined = [combinedPaymentSummary.autoBreakdownNote, paymentNote.trim()]
+      .filter(Boolean)
+      .join(' | ');
 
     const phonesList =
       client?.phones && client.phones.length > 0
@@ -851,12 +1068,12 @@ export const ExecutePlanModal: React.FC<Props> = ({
       financialPayment:
         hasPayment && numFinPay > 0
           ? {
-              methodLabel: selectedFinMethod?.label || "To'lov",
+              methodLabel: combinedPaymentSummary.methodLabel,
               amount: numFinPay,
-              note: paymentNote.trim() || undefined,
+              note: finNoteCombined || undefined,
             }
           : undefined,
-      note: reportNote.trim() || paymentNote.trim() || undefined,
+      note: reportNote.trim() || finNoteCombined || undefined,
     });
   };
 
@@ -865,21 +1082,21 @@ export const ExecutePlanModal: React.FC<Props> = ({
     const isClosed = planItem.isClosed || planItem.status === 'yopildi';
     if (isClosed) return;
 
-    // 1. Financial data (Section 2 - strictly USD)
-    const selectedFinancialMethodObj = FINANCIAL_PAYMENT_METHODS.find(
-      (m) => m.id === paymentMethod
-    );
-    const numPaymentAmount =
-      typeof paymentAmount === 'number' ? paymentAmount : Number(paymentAmount) || 0;
+    // 1. Financial data (Section 2 - supports single or multiple payment methods)
+    const numPaymentAmount = totalPaymentUsd;
+    const finNoteCombined = [combinedPaymentSummary.autoBreakdownNote, paymentNote.trim()]
+      .filter(Boolean)
+      .join(' | ');
 
     const financialData =
       hasPayment && numPaymentAmount > 0
         ? {
-            method: paymentMethod,
-            methodLabel: `${selectedFinancialMethodObj?.label || "To'lov"} (USD)`,
+            method: combinedPaymentSummary.primaryMethod,
+            methodLabel: combinedPaymentSummary.methodLabel,
             amount: numPaymentAmount,
             currency: 'USD',
-            note: paymentNote.trim(),
+            note: finNoteCombined,
+            splits: activePaymentSplits,
           }
         : undefined;
 
@@ -1079,7 +1296,18 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     type="button"
                     onClick={() => {
                       setHasPayment(true);
-                      setPaymentAmount(planItem.plannedAmount || '');
+                      const firstMethod = selectedPaymentMethods[0] || 'naqd';
+                      const amt = planItem.plannedAmount || 0;
+                      setMethodAmountsUsd((prev) => ({
+                        ...prev,
+                        [firstMethod]: amt > 0 ? amt : '',
+                      }));
+                      if (amt > 0 && numExchangeRate > 0) {
+                        setMethodAmountsUzs((prev) => ({
+                          ...prev,
+                          [firstMethod]: Math.round(amt * numExchangeRate),
+                        }));
+                      }
                     }}
                     className="px-2.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-bold transition cursor-pointer shadow-2xs"
                   >
@@ -1212,11 +1440,16 @@ export const ExecutePlanModal: React.FC<Props> = ({
               </div>
 
               {hasPayment && (
-                <div className="p-4 rounded-2xl bg-rose-50/50 border border-rose-200/80 space-y-3 animate-in fade-in duration-100">
+                <div className="p-4 rounded-2xl bg-rose-50/50 border border-rose-200/80 space-y-3.5 animate-in fade-in duration-100">
                   <div className="flex items-center justify-between flex-wrap gap-2">
-                    <span className="text-[11px] font-bold text-rose-900">
-                      To'lov tafsilotlari (USD)
-                    </span>
+                    <div>
+                      <span className="text-[11px] font-bold text-rose-900 block">
+                        To'lov turlari va summalar (bir yoki bir nechta to'lov usulini tanlang)
+                      </span>
+                      <span className="text-[10px] text-neutral-500">
+                        Masalan: QR to'lovga 100,000 so'm va Naqd pulga 300,000 so'm kiritilsa, umumiy 400,000 so'm (USDda) hisoblanadi
+                      </span>
+                    </div>
                     <button
                       type="button"
                       onClick={handleOpenNakladnoy}
@@ -1226,84 +1459,182 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       <span>Print / Yuk xati (PDF)</span>
                     </button>
                   </div>
-                  {/* To'lov usuli tanlash: Naqd pul, Bank, Karta, QR */}
-                  <div>
-                    <label className="block text-[11px] font-semibold text-neutral-700 mb-1.5">
-                      To'lov usuli
-                    </label>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {FINANCIAL_PAYMENT_METHODS.map((m) => (
-                        <button
-                          key={m.id}
-                          type="button"
+
+                  {/* To'lov usuli tanlash (Bir nechta tanlash mumkin): Naqd pul, Bank, Karta, QR */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <label className="block text-[11px] font-semibold text-neutral-700">
+                        To'lov turlarini tanlang (bir nechtasini bosib faollashtirish mumkin):
+                      </label>
+                      <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-xl">
+                        <span className="text-[10px] font-bold text-amber-900">1$ kursi (so'm):</span>
+                        <input
+                          type="number"
                           disabled={isClosed}
-                          onClick={() => setPaymentMethod(m.id)}
-                          className={`px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                            paymentMethod === m.id
-                              ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
-                              : 'bg-white text-neutral-700 border-neutral-200 hover:bg-rose-50/50'
-                          }`}
-                        >
-                          {m.label}
-                        </button>
-                      ))}
+                          min="1"
+                          step="any"
+                          value={splitExchangeRate}
+                          onChange={(e) => handleExchangeRateChange(e.target.value)}
+                          className="w-20 px-2 py-0.5 rounded-lg border border-amber-300 bg-white font-mono font-bold text-xs text-neutral-900 outline-none focus:border-amber-600"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {FINANCIAL_PAYMENT_METHODS.map((m) => {
+                        const isSelected = selectedPaymentMethods.includes(m.id);
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            disabled={isClosed}
+                            onClick={() => handleTogglePaymentMethod(m.id)}
+                            className={`px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                              isSelected
+                                ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
+                                : 'bg-white text-neutral-700 border-neutral-200 hover:bg-rose-50/50'
+                            }`}
+                          >
+                            <span
+                              className={`w-3.5 h-3.5 rounded flex items-center justify-center border text-[10px] ${
+                                isSelected
+                                  ? 'bg-white text-rose-700 border-white font-black'
+                                  : 'border-neutral-300 bg-neutral-50 text-transparent'
+                              }`}
+                            >
+                              ✓
+                            </span>
+                            <span>{m.label}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
 
-                  {/* Avtomatik Konvertatsiya (Naqd pul, Bank, Karta yoki QR tanlanganda) */}
-                  <UsdConverterPanel
-                    disabled={isClosed}
-                    label={`${
-                      FINANCIAL_PAYMENT_METHODS.find((m) => m.id === paymentMethod)?.label ||
-                      "To'lov"
-                    } bo'yicha so'mdan (UZS) USDga konvertatsiya`}
-                    onApplyUsd={(usdVal, convNote) => {
-                      setPaymentAmount(usdVal);
-                      setPaymentNote((prev) => (prev ? `${prev} | ${convNote}` : convNote));
-                    }}
-                  />
+                  {/* Har bir tanlangan to'lov turi uchun alohida So'm (UZS) va USD kiritish qatorlari */}
+                  <div className="space-y-2.5">
+                    {selectedPaymentMethods.map((methodId, idx) => {
+                      const methodMeta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === methodId);
+                      const uzsVal = methodAmountsUzs[methodId];
+                      const usdVal = methodAmountsUsd[methodId];
+                      return (
+                        <div
+                          key={methodId}
+                          className="p-3 rounded-xl bg-white border border-rose-200/90 shadow-2xs space-y-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-extrabold text-rose-900 flex items-center gap-1.5">
+                              <span className="w-5 h-5 rounded-md bg-rose-100 text-rose-800 flex items-center justify-center text-[11px] font-mono">
+                                {idx + 1}
+                              </span>
+                              <span>{methodMeta?.label || "To'lov"}</span>
+                            </span>
+                            {selectedPaymentMethods.length > 1 && !isClosed && (
+                              <button
+                                type="button"
+                                onClick={() => handleTogglePaymentMethod(methodId)}
+                                className="text-[11px] font-semibold text-neutral-400 hover:text-rose-600 px-1.5 py-0.5 rounded cursor-pointer"
+                                title="Ushbu to'lov turini olib tashlash"
+                              >
+                                Olib tashlash ✕
+                              </button>
+                            )}
+                          </div>
 
-                  {/* To'langan summa (USD) va izoh */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
-                        To'langan summa (USD) <span className="text-rose-600">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        disabled={isClosed}
-                        required={hasPayment}
-                        min="0.01"
-                        step="any"
-                        placeholder="Masalan: 150"
-                        value={paymentAmount}
-                        onChange={(e) =>
-                          setPaymentAmount(
-                            e.target.value === '' ? '' : parseFloat(e.target.value) || 0
-                          )
-                        }
-                        className="w-full px-3 py-2 rounded-xl border border-neutral-200 bg-white font-mono font-bold text-sm text-neutral-900 outline-none focus:border-rose-500"
-                      />
-                      {typeof paymentAmount === 'number' && paymentAmount > 0 && (
-                        <div className="text-[11px] font-mono text-rose-800 mt-1">
-                          Hisobotga qo'shiladi: {formatMoney(paymentAmount)}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div>
+                              <label className="block text-[10px] font-bold text-amber-900 mb-1">
+                                {methodMeta?.label} — So'mda (UZS) kiritish
+                              </label>
+                              <input
+                                type="number"
+                                disabled={isClosed}
+                                min="0"
+                                step="any"
+                                placeholder="Masalan: 100000"
+                                value={uzsVal}
+                                onChange={(e) => handleMethodUzsChange(methodId, e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-amber-300 bg-amber-50/40 focus:bg-white font-mono font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-amber-600"
+                              />
+                              {typeof uzsVal === 'number' && uzsVal > 0 && (
+                                <div className="text-[10px] font-mono text-amber-800 mt-0.5">
+                                  {new Intl.NumberFormat('uz-UZ').format(uzsVal)} so'm
+                                </div>
+                              )}
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                                {methodMeta?.label} — USD ($) da summa <span className="text-rose-600">*</span>
+                              </label>
+                              <input
+                                type="number"
+                                disabled={isClosed}
+                                required={hasPayment && idx === 0 && totalPaymentUsd <= 0}
+                                min="0"
+                                step="any"
+                                placeholder="Masalan: 25"
+                                value={usdVal}
+                                onChange={(e) => handleMethodUsdChange(methodId, e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-emerald-50/30 focus:bg-white font-mono font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-emerald-600"
+                              />
+                              {typeof usdVal === 'number' && usdVal > 0 && (
+                                <div className="text-[10px] font-mono text-emerald-800 mt-0.5">
+                                  Hisobda: {formatMoney(usdVal)}
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                      )}
-                    </div>
+                      );
+                    })}
+                  </div>
 
-                    <div>
-                      <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
-                        To'lov bo'yicha izoh
-                      </label>
-                      <input
-                        type="text"
-                        disabled={isClosed}
-                        placeholder="Chek raqami, konvertatsiya kursi yoki eslatma"
-                        value={paymentNote}
-                        onChange={(e) => setPaymentNote(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-neutral-200 bg-white text-xs text-neutral-900 outline-none focus:border-rose-500"
-                      />
+                  {/* Umumiy jami to'lov (Barcha tanlangan to'lov turlari yig'indisi) */}
+                  {activePaymentSplits.length > 0 && (
+                    <div className="p-3 rounded-xl bg-emerald-50/90 border border-emerald-300 space-y-1.5">
+                      <div className="text-[11px] font-bold text-emerald-950 flex flex-wrap items-center gap-x-2 gap-y-1">
+                        {activePaymentSplits.map((sp, i) => (
+                          <React.Fragment key={sp.method}>
+                            {i > 0 && <span className="text-emerald-700 font-black">+</span>}
+                            <span className="bg-white px-2 py-0.5 rounded-lg border border-emerald-200 font-mono text-[11px]">
+                              <strong>{sp.methodLabel}:</strong>{' '}
+                              {sp.amountUzs && sp.amountUzs > 0
+                                ? `${new Intl.NumberFormat('uz-UZ').format(sp.amountUzs)} so'm (${formatMoney(sp.amount)})`
+                                : formatMoney(sp.amount)}
+                            </span>
+                          </React.Fragment>
+                        ))}
+                      </div>
+                      <div className="pt-1 border-t border-emerald-200/80 flex items-center justify-between flex-wrap gap-2">
+                        <span className="text-xs font-extrabold text-emerald-900 uppercase">
+                          Umumiy jami to'lov:
+                        </span>
+                        <div className="text-right font-mono">
+                          <span className="text-xs sm:text-sm font-black text-amber-900 mr-2">
+                            {new Intl.NumberFormat('uz-UZ').format(totalPaymentUzs)} so'm
+                          </span>
+                          <span className="text-xs sm:text-sm font-black text-emerald-800 bg-white px-2.5 py-0.5 rounded-lg border border-emerald-300">
+                            {formatMoney(totalPaymentUsd)}
+                          </span>
+                        </div>
+                      </div>
                     </div>
+                  )}
+
+                  {/* To'lov bo'yicha izoh */}
+                  <div>
+                    <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
+                      To'lov bo'yicha qo'shimcha izoh
+                    </label>
+                    <input
+                      type="text"
+                      disabled={isClosed}
+                      placeholder="Chek raqami yoki qo'shimcha eslatma"
+                      value={paymentNote}
+                      onChange={(e) => setPaymentNote(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-neutral-200 bg-white text-xs text-neutral-900 outline-none focus:border-rose-500"
+                    />
                   </div>
                 </div>
               )}

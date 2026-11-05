@@ -285,24 +285,46 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     metricTargetPlans.forEach((p) => {
       const actions = getPlanActions(p);
       actions.forEach((act) => {
-        // 1. Direct financial action from Section 2
+        // 1. Direct financial action from Section 2 (supports single or multi-method splits)
         if (act.financialAction && act.financialAction.amount > 0) {
-          const amt = act.financialAction.amount;
-          totalReceipts += amt;
-          const methodStr = (act.financialAction.methodLabel || '').toLowerCase();
-
-          if (methodStr.includes('bank')) {
-            receiptsByType.bank.amount += amt;
-            receiptsByType.bank.count++;
-          } else if (methodStr.includes('karta')) {
-            receiptsByType.karta.amount += amt;
-            receiptsByType.karta.count++;
-          } else if (methodStr.includes('qr')) {
-            receiptsByType.qr.amount += amt;
-            receiptsByType.qr.count++;
+          const splits = act.financialAction.splits;
+          if (splits && splits.length > 0) {
+            splits.forEach((sp) => {
+              if (!sp || sp.amount <= 0) return;
+              totalReceipts += sp.amount;
+              const mStr = (sp.method || sp.methodLabel || '').toLowerCase();
+              if (mStr.includes('bank')) {
+                receiptsByType.bank.amount += sp.amount;
+                receiptsByType.bank.count++;
+              } else if (mStr.includes('karta')) {
+                receiptsByType.karta.amount += sp.amount;
+                receiptsByType.karta.count++;
+              } else if (mStr.includes('qr')) {
+                receiptsByType.qr.amount += sp.amount;
+                receiptsByType.qr.count++;
+              } else {
+                receiptsByType.naqd.amount += sp.amount;
+                receiptsByType.naqd.count++;
+              }
+            });
           } else {
-            receiptsByType.naqd.amount += amt;
-            receiptsByType.naqd.count++;
+            const amt = act.financialAction.amount;
+            totalReceipts += amt;
+            const methodStr = (act.financialAction.methodLabel || '').toLowerCase();
+
+            if (methodStr.includes('bank')) {
+              receiptsByType.bank.amount += amt;
+              receiptsByType.bank.count++;
+            } else if (methodStr.includes('karta')) {
+              receiptsByType.karta.amount += amt;
+              receiptsByType.karta.count++;
+            } else if (methodStr.includes('qr')) {
+              receiptsByType.qr.amount += amt;
+              receiptsByType.qr.count++;
+            } else {
+              receiptsByType.naqd.amount += amt;
+              receiptsByType.naqd.count++;
+            }
           }
         }
 
@@ -2028,11 +2050,18 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
                         {/* Financial operation */}
                         {act.financialAction && act.financialAction.amount > 0 && (
-                          <div className="p-2 bg-emerald-50 rounded-lg text-xs text-emerald-900 flex items-center justify-between">
-                            <span>To'lov qabul qilindi:</span>
-                            <span className="font-mono font-bold">
-                              +{formatMoney(act.financialAction.amount)} ({act.financialAction.methodLabel})
-                            </span>
+                          <div className="p-2 bg-emerald-50 rounded-lg text-xs text-emerald-900 space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span>To'lov qabul qilindi:</span>
+                              <span className="font-mono font-bold">
+                                +{formatMoney(act.financialAction.amount)} ({act.financialAction.methodLabel})
+                              </span>
+                            </div>
+                            {act.financialAction.note && (
+                              <div className="text-[11px] text-emerald-800 font-mono">
+                                {act.financialAction.note}
+                              </div>
+                            )}
                           </div>
                         )}
 

@@ -4,6 +4,7 @@ import {
   DailyPlanItem,
   PlanActionType,
   FinancialMethodType,
+  FinancialPaymentSplit,
   ProductItem,
   WarehouseProduct,
   DeliveryPaymentInfo,
@@ -999,6 +1000,7 @@ class StorageService {
         amount: number;
         currency?: string;
         note?: string;
+        splits?: FinancialPaymentSplit[];
       };
       productsDelivered?: ProductItem[];
       deliveryPayment?: DeliveryPaymentInfo;
@@ -1043,9 +1045,12 @@ class StorageService {
         actionDone: report.actionDone,
         financialAction: report.financialAction
           ? {
+              method: report.financialAction.method,
               methodLabel: report.financialAction.methodLabel,
               amount: report.financialAction.amount,
               currency: report.financialAction.currency,
+              note: report.financialAction.note,
+              splits: report.financialAction.splits,
             }
           : undefined,
         productsDelivered: report.productsDelivered,

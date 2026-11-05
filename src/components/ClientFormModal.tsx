@@ -6,6 +6,7 @@ import { storageService } from '../services/storage';
 import { UsdConverterPanel } from './UsdConverterPanel';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import { ExcelClientImporter, ImportedClientPayload } from './ExcelClientImporter';
+import { WarehouseProductSearchSelect } from './ExecutePlanModal';
 import {
   X,
   Plus,
@@ -769,35 +770,18 @@ export const ClientFormModal: React.FC<Props> = ({
                         </button>
                       </div>
 
-                      {/* 1. Ombordagi mahsulotni tanlash */}
+                      {/* 1. Ombordagi mahsulotni tanlash (Qidiruv va ro'yxat orqali) */}
                       <div>
                         <label className="block text-[11px] font-semibold text-neutral-700 mb-1">
-                          Ombordagi mahsulot <span className="text-rose-600">*</span>
+                          Ombordagi mahsulot (qidirish yoki ro'yxatdan tanlash) <span className="text-rose-600">*</span>
                         </label>
-                        <select
-                          value={prod.warehouseId || ''}
-                          onChange={(e) => handleSelectWarehouseProduct(idx, e.target.value)}
-                          className="w-full px-3 py-2 bg-white rounded-xl border border-neutral-200 focus:border-rose-500 text-xs sm:text-sm text-neutral-900 outline-none font-medium"
-                        >
-                          <option value="">-- Ombordagi mahsulotni tanlang --</option>
-                          {warehouseProducts.map((wh) => {
-                            const minSellPrice =
-                              wh.minSellingPrice !== undefined ? wh.minSellingPrice : wh.price || 0;
-                            const minUnitLabel =
-                              (wh.minSellingPricingUnitType || wh.pricingUnitType) === 'package' &&
-                              wh.packageUnitName
-                                ? wh.packageUnitName
-                                : wh.pieceUnitName || 'dona';
-                            const unitsLabel = wh.packageUnitName
-                              ? `${wh.packageUnitName} / ${wh.pieceUnitName}`
-                              : wh.pieceUnitName || 'dona';
-                            return (
-                              <option key={wh.id} value={wh.id}>
-                                {wh.brand} - {wh.name} {wh.mark1 ? `[${wh.mark1}]` : ''} ({unitsLabel}) — Eng kam sotilish narxi: {minSellPrice} USD (1 {minUnitLabel})
-                              </option>
-                            );
-                          })}
-                        </select>
+                        <WarehouseProductSearchSelect
+                          products={warehouseProducts}
+                          selectedId={prod.warehouseId || ''}
+                          onSelect={(whId) => handleSelectWarehouseProduct(idx, whId)}
+                          placeholder="Ombordagi mahsulotni qidiring (brend, nom, marka) yoki ro'yxatdan tanlang..."
+                          allowClearManual={true}
+                        />
                         {selectedWh && (
                           <div className="mt-1.5 p-2 rounded-lg bg-indigo-50/70 border border-indigo-200/80 flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium">
                             <span className="text-neutral-700">
