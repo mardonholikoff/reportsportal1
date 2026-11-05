@@ -25,6 +25,7 @@ import {
   exportAgentActionsToExcel,
   ActionExportItem,
 } from '../utils/exportAgentActionsExcel';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Package,
   Search,
@@ -1617,10 +1618,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           </div>
 
           {filteredProducts.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider text-[11px]">
-                  <tr>
+            <div>
+              <StickyTableWrapper>
+                <table className="w-full min-w-[1040px] text-left text-xs">
+                  <thead className="bg-rose-50 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20">
+                    <tr>
                     <th className="py-3 px-3 w-10 text-center">#</th>
                     <th className="py-3 px-3">Mahsulot nomi</th>
                     <th className="py-3 px-3">Brendi</th>
@@ -1778,7 +1780,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     );
                   })}
                 </tbody>
-              </table>
+                </table>
+              </StickyTableWrapper>
               {filteredProducts.length > 25 && (
                 <div className="px-4 py-3 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-2 text-neutral-600">
@@ -2223,10 +2226,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs whitespace-nowrap">
-                <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">
-                  <tr>
+            <div>
+              <StickyTableWrapper>
+                <table className="w-full text-left text-xs whitespace-nowrap">
+                  <thead className="bg-rose-50 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20 border-b border-rose-200">
+                    <tr>
                     <th rowSpan={2} className="py-3 px-3 w-10 text-center border-b border-rose-200">#</th>
                     <th rowSpan={2} className="py-3 px-3.5 min-w-[180px] border-b border-rose-200">Mijoz nomi</th>
                     <th rowSpan={2} className="py-3 px-3 min-w-[120px] border-b border-rose-200">Telefon</th>
@@ -2332,7 +2336,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     ))}
                   </tr>
                 </tfoot>
-              </table>
+                </table>
+              </StickyTableWrapper>
               {filteredAnnualClients.length > 25 && (
                 <div className="px-4 py-3 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-2 text-neutral-600">
@@ -2422,10 +2427,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs whitespace-nowrap">
-              <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">
-                <tr>
+          <div>
+            <StickyTableWrapper>
+              <table className="w-full text-left text-xs whitespace-nowrap">
+                <thead className="bg-rose-50 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20 border-b border-rose-200">
+                  <tr>
                   <th rowSpan={2} className="py-3 px-3 w-10 text-center border-b border-rose-200">#</th>
                   <th rowSpan={2} className="py-3 px-3.5 min-w-[170px] border-b border-rose-200">Mijoz nomi</th>
                   <th rowSpan={2} className="py-3 px-3 min-w-[110px] border-b border-rose-200">Telefon</th>
@@ -2501,7 +2507,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   );
                 })}
               </tbody>
-            </table>
+              </table>
+            </StickyTableWrapper>
             {filteredDeliveryClients.length > 25 && (
               <div className="px-4 py-3 bg-neutral-50 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-2 text-neutral-600">
@@ -3022,9 +3029,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             </div>
           ) : actionViewMode === 'consolidated' ? (
             /* CONSOLIDATED VIEW: Bitta mijozga belgilangan vaqt oralig'ida nechchi marta amal bajarilgani bitta qilib */
-            <div className="overflow-x-auto">
+            <StickyTableWrapper>
               <table className="w-full text-left text-xs whitespace-nowrap">
-                <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">
+                <thead className="bg-rose-50 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20 border-b border-rose-200">
                   <tr>
                     <th className="py-3 px-3 w-10 text-center">#</th>
                     <th className="py-3 px-3 min-w-[130px]">So'nggi amal vaqti</th>
@@ -3314,9 +3321,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                                   </span>
                                 </div>
 
-                                <div className="overflow-x-auto">
-                                  <table className="w-full text-left text-xs">
-                                    <thead className="bg-neutral-100 text-neutral-700 text-[10px] uppercase font-bold border-b border-neutral-200">
+                                <StickyTableWrapper maxHeightClassName="max-h-64">
+                                  <table className="w-full min-w-[760px] text-left text-xs">
+                                    <thead className="bg-neutral-100 text-neutral-700 text-[10px] uppercase font-bold border-b border-neutral-200 sticky top-0 z-20">
                                       <tr>
                                         <th className="py-2 px-2.5 w-8">#</th>
                                         <th className="py-2 px-2.5">Sana va Vaqt</th>
@@ -3383,7 +3390,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                                       ))}
                                     </tbody>
                                   </table>
-                                </div>
+                                </StickyTableWrapper>
                               </div>
                             </td>
                           </tr>
@@ -3418,12 +3425,12 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   </tr>
                 </tfoot>
               </table>
-            </div>
+            </StickyTableWrapper>
           ) : (
             /* DETAILED VIEW: Barcha amallar alohida */
-            <div className="overflow-x-auto">
+            <StickyTableWrapper>
               <table className="w-full text-left text-xs whitespace-nowrap">
-                <thead className="bg-rose-50/90 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-rose-200">
+                <thead className="bg-rose-50 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20 border-b border-rose-200">
                   <tr>
                     <th className="py-3 px-3 w-10 text-center">#</th>
                     <th className="py-3 px-3 min-w-[125px]">Sana va Vaqt</th>
@@ -3604,7 +3611,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   </tr>
                 </tfoot>
               </table>
-            </div>
+            </StickyTableWrapper>
           )}
         </div>
       )}

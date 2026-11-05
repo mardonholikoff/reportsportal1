@@ -29,6 +29,7 @@ import {
 import { exportSystemLogsToExcel } from '../utils/exportSystemLogsExcel';
 import { getPeriodArchives } from '../services/firebase';
 import { formatDate, getAgentDisplayName } from '../utils/format';
+import { StickyTableWrapper } from './StickyTableWrapper';
 
 interface Props {
   logs: SystemLog[];
@@ -814,9 +815,9 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs whitespace-nowrap">
-              <thead className="bg-slate-50 text-neutral-700 font-bold uppercase tracking-wider text-[11px] border-b border-neutral-200">
+          <StickyTableWrapper>
+            <table className="w-full min-w-[1000px] text-left text-xs whitespace-nowrap">
+              <thead className="bg-rose-50 text-neutral-700 font-bold uppercase tracking-wider text-[11px] border-b border-neutral-200 sticky top-0 z-20">
                 <tr>
                   <th className="py-3 px-3 w-10 text-center">№</th>
                   <th className="py-3 px-3 min-w-[140px]">Sana va Vaqt</th>
@@ -917,7 +918,7 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
                 })}
               </tbody>
             </table>
-          </div>
+          </StickyTableWrapper>
         )}
       </div>
 

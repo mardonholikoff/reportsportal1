@@ -755,7 +755,8 @@ class StorageService {
 
     for (const plan of plans) {
       if (!plan || !plan.clientId) continue;
-      const key = plan.clientId;
+      const planDateKey = plan.planDate || (plan.createdAt ? plan.createdAt.slice(0, 10) : '');
+      const key = `${plan.clientId}_${planDateKey}`;
       const existing = byClient.get(key);
       if (!existing) {
         byClient.set(key, plan);
@@ -881,7 +882,7 @@ class StorageService {
   }
 
   // Kunlik reja tuzish (agent tomonidan tanlangan mijozlar, amal turi, undirish summasi, izohlar va ixtiyoriy sana)
-  // Har bir mijoz faqat bir marta tanlanadi va avtomatik bajarildi bo'lmaydi (status: 'rejalashtirilgan')
+  // Har bir mijoz bir kun (planDate) uchun faqat bir marta tanlanadi va avtomatik bajarildi bo'lmaydi (status: 'rejalashtirilgan')
   public createDailyPlan(
     agentUsername: string,
     selections: Array<
@@ -897,16 +898,17 @@ class StorageService {
   ): DailyPlanItem[] {
     const allClients = this.getClients();
     const existingPlans = this.getDailyPlans();
-    const nowStr = new Date().toISOString();
+    const now = new Date();
+    const nowStr = now.toISOString();
+    const todayLocalStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
     let targetCreatedAt = nowStr;
-    let targetPlanDate: string | undefined = undefined;
+    let targetPlanDate: string = todayLocalStr;
 
     if (customDate) {
       const trimmedDate = customDate.trim();
       if (/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
         targetPlanDate = trimmedDate;
-        const now = new Date();
         const [y, m, d] = trimmedDate.split('-').map(Number);
         if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
           const dt = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds());
@@ -938,8 +940,12 @@ class StorageService {
       const client = allClients.find((c) => c.id === cId);
       if (!client) return;
 
-      // Agar mijoz allaqachon rejada mavjud bo'lsa, ikkinchi marta dublikat yaratmasdan mavjudini yangilaymiz
-      const existingIdx = existingPlans.findIndex((p) => p.clientId === client.id);
+      // Agar mijoz aynan shu sanadagi (targetPlanDate) rejada allaqachon mavjud bo'lsa, dublikat yaratmasdan mavjudini yangilaymiz
+      const existingIdx = existingPlans.findIndex((p) => {
+        if (p.clientId !== client.id) return false;
+        const pDate = p.planDate || (p.createdAt ? p.createdAt.slice(0, 10) : '');
+        return pDate === targetPlanDate;
+      });
       if (existingIdx !== -1) {
         const current = existingPlans[existingIdx];
         if (!current.isClosed && current.status !== 'yopildi') {
@@ -1331,17 +1337,24 @@ class StorageService {
     const nowStr = new Date().toISOString();
     const reopenedItems: DailyPlanItem[] = [];
 
-    // Maqsadli mijozlarning barcha dublikat reja yozuvlari ham to'liq ochiladi
-    const targetedClientIds = new Set<string>();
+    // Maqsadli mijozlarning aynan shu sanadagi dublikat reja yozuvlari ham to'liq ochiladi
+    const targetedClientDateKeys = new Set<string>();
     for (const p of plans) {
       if (idSet.has(p.id) && p.clientId) {
-        targetedClientIds.add(p.clientId);
+        const pDate = p.planDate || (p.createdAt ? p.createdAt.slice(0, 10) : '');
+        targetedClientDateKeys.add(`${p.clientId}_${pDate}`);
       }
     }
 
     for (let i = 0; i < plans.length; i++) {
       const plan = plans[i];
-      if (!idSet.has(plan.id) && (!plan.clientId || !targetedClientIds.has(plan.clientId))) continue;
+      const planDateKey = plan.planDate || (plan.createdAt ? plan.createdAt.slice(0, 10) : '');
+      if (
+        !idSet.has(plan.id) &&
+        (!plan.clientId || !targetedClientDateKeys.has(`${plan.clientId}_${planDateKey}`))
+      ) {
+        continue;
+      }
 
       plan.isClosed = false;
       plan.closedWithoutAction = false;

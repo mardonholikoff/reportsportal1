@@ -1180,6 +1180,29 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     const productsReturned = [...directReturned, ...extraReturnedList];
 
+    const hasAnyActionOrData =
+      isPlannedActionConfirmed ||
+      Boolean(financialData) ||
+      validProducts.length > 0 ||
+      productsReturned.length > 0;
+
+    // Agar amal bajarildi bosilmagan bo'lsa va moliyaviy/mahsulot amaliyoti kiritilmagan bo'lsa,
+    // yopish tugmasi bosilganda avtomatik ravishda "Bajarilmasdan yopilgan" bo'lib yopiladi
+    if (!hasAnyActionOrData) {
+      if (closeAfterSave && onCloseWithoutAction) {
+        const reason = reportNote.trim() || 'Bajarilmasdan yopildi';
+        onCloseWithoutAction(planItem.id, reason);
+        onClose();
+        return;
+      }
+      if (!closeAfterSave && onCloseWithoutAction) {
+        const reason = reportNote.trim() || 'Bajarilmasdan yopildi';
+        onCloseWithoutAction(planItem.id, reason);
+        onClose();
+        return;
+      }
+    }
+
     onSaveReport(
       planItem.id,
       {
@@ -2388,24 +2411,6 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     <span>Print / Yuk xati (PDF)</span>
                   </button>
                 ) : null}
-
-                {!isClosed && onCloseWithoutAction && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const reason =
-                        reportNote.trim() ||
-                        "Bajarilmasdan yopildi (Do'kon yopiq / keyingi kunga qoldirildi)";
-                      onCloseWithoutAction(planItem.id, reason);
-                      onClose();
-                    }}
-                    className="px-3.5 py-2 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
-                    title="Amal bajarmasdan to'g'ridan-to'g'ri yopish (Bajarilmasdan yopilgan deb belgilanadi)"
-                  >
-                    <Lock className="w-3.5 h-3.5 text-amber-700" />
-                    <span>Bajarilmasdan yopish</span>
-                  </button>
-                )}
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
@@ -2431,10 +2436,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       type="button"
                       onClick={() => executeSaveReport(true)}
                       className="px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white text-xs font-bold shadow-xs transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
-                      title="Hisobotni topshirish va ushbu mijoz rejasini bir vaqtda yakunlab yopish"
+                      title="Hisobotni saqlash va ushbu mijoz rejasini bir vaqtda yakunlab yopish (agar amal bajarildi belgilanmagan bo'lsa, bajarilmasdan yopiladi)"
                     >
                       <Lock className="w-4 h-4" />
-                      <span>Hisobotni yopish va yopish</span>
+                      <span>Hisobotni saqlash va yopish</span>
                     </button>
                   </>
                 )}

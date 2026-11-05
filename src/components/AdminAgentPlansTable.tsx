@@ -4,6 +4,7 @@ import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format
 import { storageService, isClosedPlanExpired7Days } from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import { RejaPrintModal } from './RejaPrintModal';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Users,
   CheckCircle2,
@@ -1388,10 +1389,11 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           </div>
 
           {/* Desktop & Katta ekranlar uchun Jadval ko'rinishi (hidden md:block) */}
-          <div className="hidden md:block overflow-x-auto rounded-3xl border border-rose-100 bg-white shadow-xs">
-            <table className="w-full text-left text-xs">
-            <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider">
-              <tr>
+          <div className="hidden md:block overflow-hidden rounded-3xl border border-rose-100 bg-white shadow-xs">
+            <StickyTableWrapper>
+              <table className="w-full min-w-[1280px] text-left text-xs">
+              <thead className="bg-rose-50 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider sticky top-0 z-20">
+                <tr>
                 <th className="py-3 px-3 w-[4%] text-center">
                   <div className="flex items-center justify-center">
                     <input
@@ -1884,6 +1886,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
               })}
             </tbody>
           </table>
+            </StickyTableWrapper>
         </div>
       </>
     )}

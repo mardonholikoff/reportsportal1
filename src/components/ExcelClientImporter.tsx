@@ -3,6 +3,7 @@ import ExcelJS from 'exceljs';
 import { Client } from '../types';
 import { formatMoney } from '../utils/format';
 import { formatAddress, parseLegacyAddress } from '../utils/location';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   FileSpreadsheet,
   Upload,
@@ -899,10 +900,11 @@ export const ExcelClientImporter: React.FC<Props> = ({
                 Ushbu varaqda ma'lumot qatorlari topilmadi.
               </div>
             ) : (
-              <div className="max-h-64 overflow-auto rounded-xl border border-neutral-200">
-                <table className="w-full text-left text-xs whitespace-nowrap">
-                  <thead className="bg-neutral-100 text-neutral-800 font-bold sticky top-0 z-10 border-b border-neutral-200">
-                    <tr>
+              <div className="overflow-hidden rounded-xl border border-neutral-200">
+                <StickyTableWrapper maxHeightClassName="max-h-64">
+                  <table className="w-full text-left text-xs whitespace-nowrap">
+                    <thead className="bg-neutral-100 text-neutral-800 font-bold sticky top-0 z-20 border-b border-neutral-200">
+                      <tr>
                       <th className="py-2.5 px-3 w-10 text-center">
                         <button
                           type="button"
@@ -987,7 +989,8 @@ export const ExcelClientImporter: React.FC<Props> = ({
                       );
                     })}
                   </tbody>
-                </table>
+                  </table>
+                </StickyTableWrapper>
               </div>
             )}
           </div>

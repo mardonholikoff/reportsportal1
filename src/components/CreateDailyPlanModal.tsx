@@ -220,10 +220,33 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
     return count;
   }, [selectedRegion, selectedDistrict, debtFilter, advanceFilter, selectedProduct]);
 
-  // Allaqachon rejada bor bo'lgan mijozlar ID lari (faqat 1 marta tanlash mumkin)
+  // Allaqachon tanlangan sanadagi (planDate) rejada bor bo'lgan mijozlar ID lari (bir kun uchun 1 marta tanlash mumkin)
   const alreadyPlannedClientIds = useMemo(() => {
-    return new Set(existingPlans.map((p) => p.clientId));
-  }, [existingPlans]);
+    const ids = new Set<string>();
+    existingPlans.forEach((p) => {
+      if (!p || !p.clientId) return;
+      const pDate = p.planDate || (p.createdAt ? p.createdAt.slice(0, 10) : '');
+      if (pDate === planDate) {
+        ids.add(p.clientId);
+      }
+    });
+    return ids;
+  }, [existingPlans, planDate]);
+
+  // Sana o'zgarganda, yangi sanada allaqachon rejada bor bo'lgan mijozlarni tanlanganlar ro'yxatidan chiqaramiz
+  useEffect(() => {
+    setSelectedClientsMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      Object.keys(next).forEach((cId) => {
+        if (alreadyPlannedClientIds.has(cId)) {
+          delete next[cId];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [alreadyPlannedClientIds]);
 
   // Safe early exit AFTER all hooks have executed
   if (!isOpen) return null;
@@ -821,7 +844,7 @@ export const CreateDailyPlanModal: React.FC<Props> = ({
                           <span>{client.name}</span>
                           {isAlreadyInPlan && (
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                              Rejada bor (1 marta tanlangan)
+                              Shu sanada rejada bor ({formatDateDMY(planDate)})
                             </span>
                           )}
                         </div>

@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import { RejaPrintModal } from './RejaPrintModal';
+import { StickyTableWrapper } from './StickyTableWrapper';
 
 interface Props {
   plans: DailyPlanItem[];
@@ -815,11 +816,12 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
           </div>
         ) : (
           <>
-            {/* Desktop / Tablet Compact Table: NO horizontal scroll */}
+            {/* Desktop / Tablet Compact Table with Sticky Swipe Controls & Sticky Headers */}
             <div className="hidden md:block rounded-2xl border border-rose-100 overflow-hidden bg-white">
-              <table className="w-full table-fixed text-left text-xs">
-                <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 font-bold uppercase text-[11px]">
-                  <tr>
+              <StickyTableWrapper>
+                <table className="w-full min-w-[1040px] table-fixed text-left text-xs">
+                  <thead className="bg-rose-50 border-b border-rose-100 text-neutral-800 font-bold uppercase text-[11px] sticky top-0 z-20">
+                    <tr>
                     <th className="py-2.5 px-2 w-[4%] text-center">
                       <div className="flex items-center justify-center gap-1">
                         <input
@@ -1376,7 +1378,8 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                     );
                   })}
                 </tbody>
-              </table>
+                </table>
+              </StickyTableWrapper>
             </div>
 
             {/* Mobile Compact Cards View: Fits 100% of mobile screen with zero horizontal scroll */}
@@ -1952,47 +1955,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               </div>
             </div>
 
-            {/* Yopish turi: Bajarib yopish yoki Bajarilmasdan yopish */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-neutral-700">
-                Yopilish holati:
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCloseWithoutActionFlag(false);
-                    const r = "Hisob-kitob va amallar to'liq yakunlandi";
-                    setSelectedPresetReason(r);
-                    setCloseReason(r);
-                  }}
-                  className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
-                    !closeWithoutActionFlag
-                      ? 'bg-emerald-700 border-emerald-700 text-white shadow-xs'
-                      : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                  }`}
-                >
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+            {/* Avtomatik aniqlangan yopilish holati */}
+            <div className="p-3 rounded-xl border bg-neutral-50 border-neutral-200 flex items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-neutral-700">Yopilish holati:</span>
+              {closeWithoutActionFlag ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-bold">
+                  <Lock className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Bajarilmasdan yopilgan (amal bajarilmagan)</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
                   <span>Bajarib yopilgan</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCloseWithoutActionFlag(true);
-                    const r = "Do'kon yopiq / Mijoz joyida yo'q";
-                    setSelectedPresetReason(r);
-                    setCloseReason(r);
-                  }}
-                  className={`p-2.5 rounded-xl border text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
-                    closeWithoutActionFlag
-                      ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
-                      : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                  }`}
-                >
-                  <Lock className="w-4 h-4 shrink-0" />
-                  <span>Bajarilmasdan yopilgan</span>
-                </button>
-              </div>
+                </span>
+              )}
             </div>
 
             {/* Sabab tanlash va yozish */}
@@ -2048,18 +2024,10 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 type="button"
                 disabled={!closeReason.trim()}
                 onClick={handleExecuteClose}
-                className={`px-5 py-2.5 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer ${
-                  closeWithoutActionFlag
-                    ? 'bg-amber-600 hover:bg-amber-700'
-                    : 'bg-rose-700 hover:bg-rose-800'
-                }`}
+                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
               >
                 <Lock className="w-4 h-4" />
-                <span>
-                  {closeWithoutActionFlag
-                    ? 'Bajarilmasdan yopish'
-                    : 'Ha, bajarib yopish'}
-                </span>
+                <span>Yopish</span>
               </button>
             </div>
           </div>

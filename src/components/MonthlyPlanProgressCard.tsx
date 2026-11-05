@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { MonthlyPlan } from '../types';
 import { storageService } from '../services/storage';
 import { formatMoney, formatDate, getAgentDisplayName } from '../utils/format';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Target,
   Calendar,
@@ -455,9 +456,9 @@ export const MonthlyPlanProgressCard: React.FC<Props> = ({
               </div>
             ) : (
               <div className="bg-white rounded-xl border border-neutral-200 overflow-hidden shadow-2xs">
-                <div className="max-h-96 overflow-y-auto overflow-x-auto">
+                <StickyTableWrapper maxHeightClassName="max-h-96">
                   <table className="w-full text-left border-collapse min-w-[900px]">
-                    <thead className="bg-neutral-100 text-neutral-700 text-[11px] font-bold uppercase sticky top-0 z-10 border-b border-neutral-200">
+                    <thead className="bg-neutral-100 text-neutral-700 text-[11px] font-bold uppercase sticky top-0 z-20 border-b border-neutral-200">
                       <tr>
                         <th className="py-2.5 px-3 w-10">#</th>
                         <th className="py-2.5 px-3">Tanlangan mijoz</th>
@@ -608,7 +609,7 @@ export const MonthlyPlanProgressCard: React.FC<Props> = ({
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </StickyTableWrapper>
               </div>
             )}
           </div>

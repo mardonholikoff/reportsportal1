@@ -20,6 +20,7 @@ import {
 import { MonthlyPlan } from '../types';
 import { storageService } from '../services/storage';
 import { formatDate, getAgentDisplayName } from '../utils/format';
+import { StickyTableWrapper } from './StickyTableWrapper';
 
 interface MonthlyProductPlanProgressCardProps {
   plan: MonthlyPlan | null;
@@ -317,9 +318,9 @@ export const MonthlyProductPlanProgressCard: React.FC<MonthlyProductPlanProgress
 
               {showClientsBreakdown && (
                 <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-2xs">
-                  <div className="max-h-96 overflow-y-auto overflow-x-auto">
+                  <StickyTableWrapper maxHeightClassName="max-h-96">
                     <table className="w-full text-left border-collapse min-w-[780px]">
-                      <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-[11px] font-extrabold text-slate-600 uppercase">
+                      <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-[11px] font-extrabold text-slate-600 uppercase">
                         <tr>
                           <th className="py-2.5 px-3 min-w-[180px]">Mijoz</th>
                           <th className="py-2.5 px-3 min-w-[340px] bg-indigo-50/60 text-indigo-900">
@@ -439,7 +440,7 @@ export const MonthlyProductPlanProgressCard: React.FC<MonthlyProductPlanProgress
                         })}
                       </tbody>
                     </table>
-                  </div>
+                  </StickyTableWrapper>
                 </div>
               )}
             </div>

@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { WarehouseProduct } from '../types';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Search,
   Warehouse,
@@ -256,10 +257,11 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
         ) : (
           <>
             {/* Desktop Table View (>= 768px) */}
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-left text-xs text-neutral-900 border-collapse">
-                <thead>
-                  <tr className="bg-neutral-50/90 border-b border-neutral-200 text-neutral-700 font-bold uppercase tracking-wider text-[11px]">
+            <div className="hidden md:block">
+              <StickyTableWrapper>
+                <table className="w-full min-w-[960px] text-left text-xs text-neutral-900 border-collapse">
+                  <thead className="sticky top-0 z-20">
+                    <tr className="bg-rose-50 border-b border-neutral-200 text-neutral-700 font-bold uppercase tracking-wider text-[11px]">
                     <th className="py-3 px-3.5 w-12 text-center">#</th>
                     <th className="py-3 px-3.5">Brend va Nomi</th>
                     <th className="py-3 px-3.5">Markasi</th>
@@ -403,7 +405,8 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                     );
                   })}
                 </tbody>
-              </table>
+                </table>
+              </StickyTableWrapper>
             </div>
 
             {/* Mobile Card View (< 768px): Full view, zero horizontal swiping needed */}

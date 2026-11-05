@@ -21,6 +21,7 @@ import {
   Tag,
   Info,
 } from 'lucide-react';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   MonthlyPlan,
   MonthlyPlanTarget,
@@ -921,9 +922,9 @@ export const CreateMonthlyProductPlanModal: React.FC<CreateMonthlyProductPlanMod
 
             {/* Clients Table (30-Day Only, No 10-Day Columns) */}
             <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
-              <div className="max-h-96 overflow-y-auto overflow-x-auto">
+              <StickyTableWrapper maxHeightClassName="max-h-96">
                 <table className="w-full text-left border-collapse min-w-[780px]">
-                  <thead className="bg-slate-100 sticky top-0 z-10 border-b border-slate-200 text-[11px] font-extrabold text-slate-600 uppercase">
+                  <thead className="bg-slate-100 sticky top-0 z-20 border-b border-slate-200 text-[11px] font-extrabold text-slate-600 uppercase">
                     <tr>
                       <th className="py-2.5 px-3 w-10 text-center">Tanlash</th>
                       <th className="py-2.5 px-3 min-w-[200px]">Mijoz va Joriy Balans</th>
@@ -1104,7 +1105,7 @@ export const CreateMonthlyProductPlanModal: React.FC<CreateMonthlyProductPlanMod
                     )}
                   </tbody>
                 </table>
-              </div>
+              </StickyTableWrapper>
             </div>
           </div>
 

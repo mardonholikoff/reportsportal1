@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import ExcelJS from 'exceljs';
 import { WarehouseProduct } from '../types';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   FileSpreadsheet,
   Upload,
@@ -1345,10 +1346,11 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
                 Ushbu varaqda ma'lumot qatorlari topilmadi.
               </div>
             ) : (
-              <div className="max-h-72 overflow-auto rounded-xl border border-neutral-200">
-                <table className="w-full text-left text-xs whitespace-nowrap">
-                  <thead className="bg-neutral-100 text-neutral-800 font-bold sticky top-0 z-10 border-b border-neutral-200">
-                    <tr>
+              <div className="overflow-hidden rounded-xl border border-neutral-200">
+                <StickyTableWrapper maxHeightClassName="max-h-72">
+                  <table className="w-full text-left text-xs whitespace-nowrap">
+                    <thead className="bg-neutral-100 text-neutral-800 font-bold sticky top-0 z-20 border-b border-neutral-200">
+                      <tr>
                       <th className="py-2.5 px-3 w-10 text-center">
                         <button
                           type="button"
@@ -1439,7 +1441,8 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
                       );
                     })}
                   </tbody>
-                </table>
+                  </table>
+                </StickyTableWrapper>
               </div>
             )}
           </div>

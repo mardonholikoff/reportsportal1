@@ -9,6 +9,7 @@ import {
 } from '../types';
 import { formatMoney, formatDate } from '../utils/format';
 import { storageService } from '../services/storage';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   X,
   Calendar,
@@ -1120,9 +1121,9 @@ export const CreateMonthlyPlanModal: React.FC<Props> = ({
 
             {/* One-Pass Interactive Clients Table with 4 Percentages per Client */}
             <div className="bg-white rounded-2xl border border-neutral-200 overflow-hidden shadow-2xs">
-              <div className="max-h-80 overflow-y-auto overflow-x-auto">
+              <StickyTableWrapper maxHeightClassName="max-h-80">
                 <table className="w-full text-left border-collapse min-w-[880px]">
-                  <thead className="bg-neutral-100 text-neutral-700 text-[11px] font-bold uppercase sticky top-0 z-10 border-b border-neutral-200">
+                  <thead className="bg-neutral-100 text-neutral-700 text-[11px] font-bold uppercase sticky top-0 z-20 border-b border-neutral-200">
                     <tr>
                       <th className="py-2.5 px-3 w-10 text-center">Tanlash</th>
                       <th className="py-2.5 px-3">Mijoz F.I.Sh. / Telefon</th>
@@ -1358,7 +1359,7 @@ export const CreateMonthlyPlanModal: React.FC<Props> = ({
                     )}
                   </tbody>
                 </table>
-              </div>
+              </StickyTableWrapper>
 
               {/* Table Footer Totals */}
               {selectedClientsSummary.count > 0 && (

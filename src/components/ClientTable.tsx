@@ -4,6 +4,7 @@ import { formatMoney, formatNumber, formatDate, getAgentDisplayName } from '../u
 import { parseLegacyAddress } from '../utils/location';
 import { storageService } from '../services/storage';
 import { exportClientsToXLSX } from '../utils/excelExport';
+import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Search,
   Plus,
@@ -1034,9 +1035,9 @@ export const ClientTable: React.FC<Props> = ({
       {/* Desktop & Tablet Table (>= 768px) */}
       {filteredClients.length > 0 && (
         <div className="hidden md:block bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-rose-50/70 border-b border-rose-100 text-neutral-800 uppercase tracking-wider font-bold">
+          <StickyTableWrapper>
+            <table className="w-full min-w-[960px] text-left text-xs">
+              <thead className="bg-rose-50 border-b border-rose-100 text-neutral-800 uppercase tracking-wider font-bold sticky top-0 z-20">
                 <tr>
                   <th className="py-3.5 px-4">Mijoz ismi & Telefon</th>
                   <th className="py-3.5 px-4">Manzili</th>
@@ -1264,7 +1265,7 @@ export const ClientTable: React.FC<Props> = ({
                 </tr>
               </tfoot>
             </table>
-          </div>
+          </StickyTableWrapper>
         </div>
       )}
 

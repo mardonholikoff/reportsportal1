@@ -44,6 +44,24 @@ body {
   background: #f43f5e66;
 }
 
+/* Sticky Table Column Headers across all tables */
+.sticky-table-viewport table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.sticky-table-viewport thead {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background-color: #fff1f2;
+  box-shadow: 0 1px 0 0 #ffe4e6, 0 2px 4px -1px rgba(0, 0, 0, 0.05);
+}
+
+.sticky-table-viewport thead tr {
+  background-color: inherit;
+}
+
 #reja-print-portal-root {
   display: none;
 }

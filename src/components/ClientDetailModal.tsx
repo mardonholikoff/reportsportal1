@@ -19,6 +19,7 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
+import { StickyTableWrapper } from './StickyTableWrapper';
 
 interface Props {
   client: Client | null;
@@ -342,10 +343,11 @@ export const ClientDetailModal: React.FC<Props> = ({
                 Ushbu mijozga biriktirilgan mahsulotlar mavjud emas.
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-2xl border border-rose-100">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-rose-50/70 text-neutral-700 border-b border-rose-100">
-                    <tr>
+              <div className="overflow-hidden rounded-2xl border border-rose-100">
+                <StickyTableWrapper maxHeightClassName="max-h-80">
+                  <table className="w-full min-w-[640px] text-left text-xs">
+                    <thead className="bg-rose-50 text-neutral-700 border-b border-rose-100 sticky top-0 z-20">
+                      <tr>
                       <th className="py-2.5 px-3 font-bold">#</th>
                       <th className="py-2.5 px-3 font-bold">Mahsulot nomi</th>
                       <th className="py-2.5 px-3 font-bold">O'lchov</th>
@@ -382,7 +384,8 @@ export const ClientDetailModal: React.FC<Props> = ({
                       </td>
                     </tr>
                   </tfoot>
-                </table>
+                  </table>
+                </StickyTableWrapper>
               </div>
             )}
           </div>
