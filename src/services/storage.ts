@@ -314,13 +314,17 @@ class StorageService {
 
   constructor() {
     if (typeof window !== 'undefined') {
+      const OPS_RESET_FLAG = 'savdo_ops_reset_v20261105';
+      if (!localStorage.getItem(OPS_RESET_FLAG)) {
+        localStorage.setItem(OPS_RESET_FLAG, 'true');
+        localStorage.removeItem(SYNC_QUEUE_KEY);
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(DAILY_PLANS_KEY);
+        localStorage.removeItem(WAREHOUSE_KEY);
+      }
       const isInit = localStorage.getItem(APP_INITIALIZED_KEY);
       if (!isInit) {
         localStorage.setItem(APP_INITIALIZED_KEY, 'true');
-        const existing = localStorage.getItem(STORAGE_KEY);
-        if (!existing) {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_CLIENTS));
-        }
       } else {
         // Upgrade existing records if createdBy or logs missing
         try {
