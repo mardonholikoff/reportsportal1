@@ -942,7 +942,14 @@ export default function App() {
     clientId: string,
     newDebt: number,
     newAdvance: number,
-    noteAddition: string
+    noteAddition: string,
+    conversionMeta?: {
+      amountUzs?: number;
+      exchangeRate?: number;
+      purpose?: 'payment' | 'product';
+      paymentMethodLabel?: string;
+      usdAmount?: number;
+    }
   ) => {
     const currentUsername = user?.username || 'adminc';
     const updated = storageService.updateDebtOrAdvance(
@@ -950,7 +957,8 @@ export default function App() {
       newDebt,
       newAdvance,
       noteAddition,
-      currentUsername
+      currentUsername,
+      conversionMeta
     );
     if (updated) {
       syncClientToFirestore(updated);
@@ -1004,6 +1012,8 @@ export default function App() {
         method: FinancialMethodType;
         methodLabel: string;
         amount: number;
+        amountUzs?: number;
+        exchangeRate?: number;
         currency?: string;
         note?: string;
         splits?: FinancialPaymentSplit[];

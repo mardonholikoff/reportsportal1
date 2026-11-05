@@ -20,6 +20,10 @@ export interface ClientAuditLog {
   title: string;
   details: string;
   amountChanged?: number;
+  amountUzs?: number;
+  exchangeRate?: number;
+  purpose?: 'payment' | 'product';
+  paymentMethodLabel?: string;
 }
 
 export interface Client {
@@ -85,6 +89,8 @@ export interface DeliveryPaymentInfo {
   paidAmount: number;
   totalAmount: number;
   debtAmount: number;
+  paidAmountUzs?: number;
+  exchangeRate?: number;
 }
 
 export interface FinancialPaymentSplit {
@@ -130,6 +136,8 @@ export interface DailyPlanItem {
     amount: number;
     currency?: string; // 'so'm' | 'USD' | ombor valyutasi
     note?: string;
+    amountUzs?: number;
+    exchangeRate?: number;
     splits?: FinancialPaymentSplit[];
   };
   productsDelivered?: ProductItem[];
@@ -158,6 +166,8 @@ export interface DailyPlanItem {
       amount: number;
       currency?: string;
       note?: string;
+      amountUzs?: number;
+      exchangeRate?: number;
       splits?: FinancialPaymentSplit[];
     };
     productsDelivered?: ProductItem[];

@@ -693,7 +693,14 @@ class StorageService {
     newDebt: number,
     newAdvance: number,
     noteAddition?: string,
-    author: string = 'adminc'
+    author: string = 'adminc',
+    conversionMeta?: {
+      amountUzs?: number;
+      exchangeRate?: number;
+      purpose?: 'payment' | 'product';
+      paymentMethodLabel?: string;
+      usdAmount?: number;
+    }
   ): Client | null {
     const client = this.getClients().find((c) => c.id === id);
     if (!client) return null;
@@ -705,6 +712,9 @@ class StorageService {
     }
 
     const currentLogs = client.logs || [];
+    const defaultChanged = Math.abs(
+      (client.currentDebt || 0) - newDebt + ((newAdvance || 0) - (client.currentAdvance || 0))
+    );
     currentLogs.unshift({
       id: 'log_' + Date.now() + '_pay',
       clientId: id,
@@ -713,7 +723,14 @@ class StorageService {
       type: 'payment',
       title: "Hisob-kitob yangilandi",
       details: `${author} tomonidan o'zgartirildi: ${noteAddition || ''}. Yangi qarz: ${newDebt} USD, Yangi avans: ${newAdvance} USD.`,
-      amountChanged: Math.abs((client.currentDebt || 0) - newDebt),
+      amountChanged:
+        conversionMeta?.usdAmount && conversionMeta.usdAmount > 0
+          ? conversionMeta.usdAmount
+          : defaultChanged || Math.abs((client.currentDebt || 0) - newDebt),
+      amountUzs: conversionMeta?.amountUzs,
+      exchangeRate: conversionMeta?.exchangeRate,
+      purpose: conversionMeta?.purpose || 'payment',
+      paymentMethodLabel: conversionMeta?.paymentMethodLabel,
     });
 
     return this.updateClient(id, {
@@ -1010,6 +1027,8 @@ class StorageService {
         amount: number;
         currency?: string;
         note?: string;
+        amountUzs?: number;
+        exchangeRate?: number;
         splits?: FinancialPaymentSplit[];
       };
       productsDelivered?: ProductItem[];
@@ -1060,6 +1079,8 @@ class StorageService {
               amount: report.financialAction.amount,
               currency: report.financialAction.currency,
               note: report.financialAction.note,
+              amountUzs: report.financialAction.amountUzs,
+              exchangeRate: report.financialAction.exchangeRate,
               splits: report.financialAction.splits,
             }
           : undefined,

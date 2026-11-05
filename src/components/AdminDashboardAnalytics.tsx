@@ -25,6 +25,10 @@ import {
   exportAgentActionsToExcel,
   ActionExportItem,
 } from '../utils/exportAgentActionsExcel';
+import {
+  exportUzsConversionsToExcel,
+  UzsConversionAnalyticsItem,
+} from '../utils/exportUzsConversionsExcel';
 import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Package,
@@ -55,6 +59,8 @@ import {
   Trash2,
   Edit3,
   TrendingUp,
+  Calculator,
+  Coins,
 } from 'lucide-react';
 
 interface Props {
@@ -104,8 +110,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   onEditWarehouseProduct,
   onDeleteWarehouseProduct,
 }) => {
-  // Navigation between blocks: 'all' | 'block1' | 'block2' | 'block3' | 'block4'
-  const [activeBlockView, setActiveBlockView] = useState<'all' | 'block1' | 'block2' | 'block3' | 'block4'>('all');
+  // Navigation between blocks: 'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5'
+  const [activeBlockView, setActiveBlockView] = useState<'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5'>('all');
 
   // =========================================================================
   // 1-BLOK DATA & STATES (Ombordagi mahsulotlar soni tahliliy jadvali)
@@ -1442,10 +1448,334 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     actionAgent !== 'all' ||
     selectedActionType !== 'all';
 
+  // =========================================================================
+  // 5-BLOK DATA & STATES (So'mda (kurs bilan) qabul qilingan to'lovlar va mahsulot to'lovlari)
+  // =========================================================================
+  const [b5DatePreset, setB5DatePreset] = useState<'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'custom'>('all');
+  const [b5StartDate, setB5StartDate] = useState<string>('');
+  const [b5EndDate, setB5EndDate] = useState<string>('');
+  const [b5PurposeFilter, setB5PurposeFilter] = useState<'all' | 'payment' | 'product'>('all');
+  const [b5MethodFilter, setB5MethodFilter] = useState<string>('all');
+  const [b5AuthorFilter, setB5AuthorFilter] = useState<string>('all');
+  const [b5SortMode, setB5SortMode] = useState<'date_desc' | 'date_asc' | 'uzs_desc' | 'usd_desc' | 'rate_desc'>('date_desc');
+  const [b5Search, setB5Search] = useState<string>('');
+  const deferredB5Search = useDeferredValue(b5Search);
+  const [isExportingB5, setIsExportingB5] = useState<boolean>(false);
+
+  const handleB5DatePresetChange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'custom') => {
+    setB5DatePreset(preset);
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    if (preset === 'all') {
+      setB5StartDate('');
+      setB5EndDate('');
+    } else if (preset === 'today') {
+      setB5StartDate(todayStr);
+      setB5EndDate(todayStr);
+    } else if (preset === 'yesterday') {
+      const y = new Date(now);
+      y.setDate(now.getDate() - 1);
+      const yStr = y.toISOString().slice(0, 10);
+      setB5StartDate(yStr);
+      setB5EndDate(yStr);
+    } else if (preset === 'last7') {
+      const p7 = new Date(now);
+      p7.setDate(now.getDate() - 7);
+      setB5StartDate(p7.toISOString().slice(0, 10));
+      setB5EndDate(todayStr);
+    } else if (preset === 'thisMonth') {
+      const firstDay = `${todayStr.slice(0, 7)}-01`;
+      setB5StartDate(firstDay);
+      setB5EndDate(todayStr);
+    }
+  };
+
+  // Extract all UZS-to-USD converted transactions (both plain payments & product delivery payments)
+  const allUzsConversionItems = useMemo<UzsConversionAnalyticsItem[]>(() => {
+    const items: UzsConversionAnalyticsItem[] = [];
+
+    // 1. From DailyPlans (actionsHistory & top-level fields)
+    internalPlans.forEach((plan) => {
+      const client = internalClientsMap.get(plan.clientId);
+      const clientName = plan.clientName || client?.name || "Noma'lum mijoz";
+      const clientPhone = plan.clientPhone || client?.phone || '';
+
+      const rawActions =
+        plan.actionsHistory && plan.actionsHistory.length > 0
+          ? plan.actionsHistory
+          : plan.actionDone || plan.financialAction || plan.productsDelivered || plan.deliveryPayment
+          ? [
+              {
+                timestamp: plan.completedAt || plan.createdAt,
+                author: plan.closedBy || plan.agentUsername,
+                actionDone: plan.actionDone || ('joyiga borildi' as const),
+                financialAction: plan.financialAction,
+                deliveryPayment: plan.deliveryPayment,
+                productsDelivered: plan.productsDelivered,
+                productsReturned: plan.productsReturned,
+                reportNote: plan.reportNote,
+              },
+            ]
+          : [];
+
+      rawActions.forEach((act, actIdx) => {
+        const ts = act.timestamp || plan.completedAt || plan.createdAt;
+        const dateStr = (ts || '').slice(0, 10);
+        const author = act.author || plan.closedBy || plan.agentUsername || 'agentp1';
+
+        // A. Shunchaki to'lov (Section 2: financialAction)
+        if (act.financialAction && act.financialAction.amount > 0) {
+          const fin = act.financialAction;
+          const splits = fin.splits;
+
+          if (splits && splits.length > 0) {
+            splits.forEach((sp, spIdx) => {
+              if (sp && sp.amountUzs && sp.amountUzs > 0 && sp.amount > 0) {
+                const rate = sp.exchangeRate && sp.exchangeRate > 0
+                  ? sp.exchangeRate
+                  : Math.round(sp.amountUzs / sp.amount);
+                items.push({
+                  id: `plan_fin_sp_${plan.id}_${actIdx}_${spIdx}`,
+                  timestamp: ts,
+                  dateStr,
+                  clientId: plan.clientId,
+                  clientName,
+                  clientPhone,
+                  purpose: 'payment',
+                  purposeLabel: "Shunchaki to'lov",
+                  paymentMethod: sp.method || 'naqd',
+                  paymentMethodLabel: sp.methodLabel || "To'lov",
+                  amountUzs: Math.round(sp.amountUzs),
+                  exchangeRate: rate,
+                  amountUsd: Math.round(sp.amount * 100) / 100,
+                  author,
+                  note: fin.note || act.reportNote || '',
+                });
+              }
+            });
+          } else if (fin.amountUzs && fin.amountUzs > 0) {
+            const rate = fin.exchangeRate && fin.exchangeRate > 0
+              ? fin.exchangeRate
+              : Math.round(fin.amountUzs / fin.amount);
+            items.push({
+              id: `plan_fin_${plan.id}_${actIdx}`,
+              timestamp: ts,
+              dateStr,
+              clientId: plan.clientId,
+              clientName,
+              clientPhone,
+              purpose: 'payment',
+              purposeLabel: "Shunchaki to'lov",
+              paymentMethod: fin.method || 'naqd',
+              paymentMethodLabel: fin.methodLabel || "To'lov",
+              amountUzs: Math.round(fin.amountUzs),
+              exchangeRate: rate,
+              amountUsd: Math.round(fin.amount * 100) / 100,
+              author,
+              note: fin.note || act.reportNote || '',
+            });
+          }
+        }
+
+        // B. Mahsulot uchun to'lov (Section 3: deliveryPayment)
+        if (
+          act.deliveryPayment &&
+          act.deliveryPayment.paidAmount > 0 &&
+          act.deliveryPayment.paidAmountUzs &&
+          act.deliveryPayment.paidAmountUzs > 0
+        ) {
+          const dp = act.deliveryPayment;
+          const rate = dp.exchangeRate && dp.exchangeRate > 0
+            ? dp.exchangeRate
+            : Math.round(dp.paidAmountUzs! / dp.paidAmount);
+          const prodSummary = (act.productsDelivered || [])
+            .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
+            .join(', ');
+          items.push({
+            id: `plan_deliv_${plan.id}_${actIdx}`,
+            timestamp: ts,
+            dateStr,
+            clientId: plan.clientId,
+            clientName,
+            clientPhone,
+            purpose: 'product',
+            purposeLabel: 'Mahsulot uchun',
+            paymentMethod: dp.paymentType || 'naqd',
+            paymentMethodLabel: dp.paymentLabel || "Mahsulot to'lovi",
+            amountUzs: Math.round(dp.paidAmountUzs!),
+            exchangeRate: rate,
+            amountUsd: Math.round(dp.paidAmount * 100) / 100,
+            author,
+            note: act.reportNote || plan.reportNote || '',
+            productsSummary: prodSummary,
+          });
+        }
+      });
+    });
+
+    // 2. From Client Audit Logs (standalone QuickPaymentModal or direct debt/advance updates with UZS conversion)
+    internalClients.forEach((client) => {
+      if (!client.logs || client.logs.length === 0) return;
+      client.logs.forEach((log) => {
+        // Avoid duplicating logs that came from executeDailyPlanItem
+        if (log.type === 'visit_action' || log.type === 'product_added') return;
+        if (log.amountUzs && log.amountUzs > 0) {
+          const rate = log.exchangeRate && log.exchangeRate > 0 ? log.exchangeRate : 12800;
+          const calcUsd =
+            log.amountChanged && log.amountChanged > 0
+              ? Math.round(log.amountChanged * 100) / 100
+              : Math.round((log.amountUzs / rate) * 100) / 100;
+          const purpose = log.purpose === 'product' ? 'product' : 'payment';
+          const mLabel = log.paymentMethodLabel || "To'lov";
+          const mLower = mLabel.toLowerCase();
+          const mKey = mLower.includes('karta')
+            ? 'karta'
+            : mLower.includes('bank')
+            ? 'bank'
+            : mLower.includes('qr')
+            ? 'qr'
+            : 'naqd';
+
+          items.push({
+            id: `client_log_${client.id}_${log.id}`,
+            timestamp: log.timestamp,
+            dateStr: (log.timestamp || '').slice(0, 10),
+            clientId: client.id,
+            clientName: client.name,
+            clientPhone: client.phone,
+            purpose,
+            purposeLabel: purpose === 'product' ? 'Mahsulot uchun' : "Shunchaki to'lov",
+            paymentMethod: mKey,
+            paymentMethodLabel: mLabel,
+            amountUzs: Math.round(log.amountUzs),
+            exchangeRate: rate,
+            amountUsd: calcUsd,
+            author: log.author || 'adminc',
+            note: log.details || log.title || '',
+          });
+        }
+      });
+    });
+
+    return items;
+  }, [internalPlans, internalClients, internalClientsMap]);
+
+  const uniqueB5Authors = useMemo(() => {
+    const set = new Set<string>();
+    allUzsConversionItems.forEach((item) => {
+      if (item.author) set.add(item.author);
+    });
+    return Array.from(set).sort();
+  }, [allUzsConversionItems]);
+
+  const filteredB5Items = useMemo(() => {
+    const list = allUzsConversionItems.filter((item) => {
+      if (b5StartDate && item.dateStr < b5StartDate) return false;
+      if (b5EndDate && item.dateStr > b5EndDate) return false;
+      if (b5PurposeFilter !== 'all' && item.purpose !== b5PurposeFilter) return false;
+      if (b5AuthorFilter !== 'all' && item.author !== b5AuthorFilter) return false;
+      if (b5MethodFilter !== 'all') {
+        const mStr = `${item.paymentMethod} ${item.paymentMethodLabel}`.toLowerCase();
+        if (!mStr.includes(b5MethodFilter.toLowerCase())) return false;
+      }
+      if (deferredB5Search.trim()) {
+        const q = deferredB5Search.toLowerCase().trim();
+        const mName = item.clientName.toLowerCase().includes(q);
+        const mPhone = (item.clientPhone || '').toLowerCase().includes(q);
+        const mAuthor = item.author.toLowerCase().includes(q);
+        const mNote = (item.note || '').toLowerCase().includes(q);
+        const mProd = (item.productsSummary || '').toLowerCase().includes(q);
+        if (!mName && !mPhone && !mAuthor && !mNote && !mProd) return false;
+      }
+      return true;
+    });
+
+    list.sort((a, b) => {
+      if (b5SortMode === 'date_desc') return (b.timestamp || '').localeCompare(a.timestamp || '');
+      if (b5SortMode === 'date_asc') return (a.timestamp || '').localeCompare(b.timestamp || '');
+      if (b5SortMode === 'uzs_desc') return b.amountUzs - a.amountUzs;
+      if (b5SortMode === 'usd_desc') return b.amountUsd - a.amountUsd;
+      if (b5SortMode === 'rate_desc') return b.exchangeRate - a.exchangeRate;
+      return 0;
+    });
+
+    return list;
+  }, [
+    allUzsConversionItems,
+    b5StartDate,
+    b5EndDate,
+    b5PurposeFilter,
+    b5AuthorFilter,
+    b5MethodFilter,
+    b5SortMode,
+    deferredB5Search,
+  ]);
+
+  const b5Stats = useMemo(() => {
+    let totalUzs = 0;
+    let totalUsd = 0;
+    let paymentCount = 0;
+    let paymentUsd = 0;
+    let paymentUzs = 0;
+    let productCount = 0;
+    let productUsd = 0;
+    let productUzs = 0;
+
+    filteredB5Items.forEach((i) => {
+      totalUzs += i.amountUzs;
+      totalUsd += i.amountUsd;
+      if (i.purpose === 'product') {
+        productCount++;
+        productUsd += i.amountUsd;
+        productUzs += i.amountUzs;
+      } else {
+        paymentCount++;
+        paymentUsd += i.amountUsd;
+        paymentUzs += i.amountUzs;
+      }
+    });
+
+    const avgRate = totalUsd > 0 ? Math.round(totalUzs / totalUsd) : 0;
+
+    return {
+      totalCount: filteredB5Items.length,
+      totalUzs,
+      totalUsd: Math.round(totalUsd * 100) / 100,
+      avgRate,
+      paymentCount,
+      paymentUsd: Math.round(paymentUsd * 100) / 100,
+      paymentUzs,
+      productCount,
+      productUsd: Math.round(productUsd * 100) / 100,
+      productUzs,
+    };
+  }, [filteredB5Items]);
+
+  const handleExportB5Excel = async () => {
+    try {
+      setIsExportingB5(true);
+      const dateLabel =
+        b5StartDate || b5EndDate
+          ? `${b5StartDate || 'Boshi'} dan ${b5EndDate || 'Hozirgacha'}`
+          : 'Barcha vaqt';
+      const purposeLabel =
+        b5PurposeFilter === 'all'
+          ? "Barchasi (Shunchaki to'lov + Mahsulot uchun)"
+          : b5PurposeFilter === 'payment'
+          ? "Faqat shunchaki to'lov"
+          : 'Faqat mahsulot uchun';
+      await exportUzsConversionsToExcel(filteredB5Items, dateLabel, purposeLabel);
+    } catch (err) {
+      console.error('5-Blok Excel export error:', err);
+    } finally {
+      setIsExportingB5(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* ========================================================= */}
-      {/* TOP NAVIGATION TABS FOR BLOCKS 1, 2, 3 & 4               */}
+      {/* TOP NAVIGATION TABS FOR BLOCKS 1, 2, 3, 4 & 5             */}
       {/* ========================================================= */}
       <div className="bg-white rounded-2xl p-1.5 border border-rose-100 shadow-2xs flex items-center gap-1.5 flex-wrap">
         <button
@@ -1458,7 +1788,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           }`}
         >
           <Layers className="w-4 h-4" />
-          <span>Barcha bloklar (1-4)</span>
+          <span>Barcha bloklar (1-5)</span>
         </button>
 
         <button
@@ -1511,6 +1841,19 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         >
           <Activity className="w-4 h-4" />
           <span>4-Blok: Agentlar amallari & tushumlar</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveBlockView('block5')}
+          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+            activeBlockView === 'block5'
+              ? 'bg-amber-700 text-white shadow-xs'
+              : 'text-amber-900 bg-amber-50/70 hover:bg-amber-100 border border-amber-200/80'
+          }`}
+        >
+          <Calculator className="w-4 h-4" />
+          <span>5-Blok: So'mda (kurs bilan) to'lovlar ({allUzsConversionItems.length})</span>
         </button>
       </div>
 
@@ -3608,6 +3951,372 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                       {actionStats.returnedProductsCount > 0 ? `${actionStats.returnedProductsCount} dona qaytdi` : '-'}
                     </td>
                     <td />
+                  </tr>
+                </tfoot>
+              </table>
+            </StickyTableWrapper>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 5-BLOK: SO'MDA (KURS BILAN) QABUL QILINGAN TO'LOVLAR VA MAHSULOT TO'LOVLARI TAHLILI */}
+      {/* ========================================================= */}
+      {(activeBlockView === 'all' || activeBlockView === 'block5') && (
+        <div className="bg-white rounded-3xl border border-amber-200 shadow-xs overflow-hidden">
+          {/* Header */}
+          <div className="p-4 sm:p-6 bg-gradient-to-r from-amber-900 via-amber-800 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-8 h-8 rounded-xl bg-amber-500 text-neutral-950 flex items-center justify-center shadow-xs font-extrabold">
+                  <Calculator className="w-4 h-4" />
+                </div>
+                <h2 className="text-base sm:text-xl font-bold font-display tracking-tight text-white">
+                  5-Blok: So'mda (kurs bilan) qabul qilingan to'lovlar va mahsulot to'lovlari tahlili
+                </h2>
+              </div>
+              <p className="text-xs text-amber-100/90">
+                Kurs kiritib so'mda (UZS) qabul qilinib dollarga ($) o'tkazilgan barcha to'lovlar va mahsulot to'lovlari jadvali
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/15">
+                <div className="text-[10px] text-amber-200 uppercase font-semibold">Jami So'mda</div>
+                <div className="text-xs sm:text-sm font-bold font-mono text-amber-300">
+                  {new Intl.NumberFormat('uz-UZ').format(b5Stats.totalUzs)} so'm
+                </div>
+              </div>
+
+              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/15">
+                <div className="text-[10px] text-emerald-200 uppercase font-semibold">Jami Dollarda</div>
+                <div className="text-xs sm:text-sm font-bold font-mono text-emerald-300">
+                  {formatMoney(b5Stats.totalUsd)}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleExportB5Excel}
+                disabled={isExportingB5 || filteredB5Items.length === 0}
+                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[40px] cursor-pointer shrink-0"
+              >
+                <Download className={`w-4 h-4 ${isExportingB5 ? 'animate-bounce' : ''}`} />
+                <span>{isExportingB5 ? 'Yuklanmoqda...' : '5-Blok Excel (.xlsx)'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* KPI Summary Cards */}
+          <div className="p-4 bg-amber-50/40 border-b border-amber-100 grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-3 rounded-2xl bg-white border border-amber-200/80 shadow-2xs">
+              <div className="text-[11px] font-bold text-neutral-500 uppercase">Jami amaliyotlar</div>
+              <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5">
+                {b5Stats.totalCount} ta
+              </div>
+              <div className="text-[11px] text-amber-800 font-mono mt-0.5">
+                O'rtacha kurs: 1$ = {b5Stats.avgRate > 0 ? new Intl.NumberFormat('uz-UZ').format(b5Stats.avgRate) : '-'} so'm
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-white border border-amber-200/80 shadow-2xs">
+              <div className="text-[11px] font-bold text-amber-900 uppercase">Jami So'm → Dollar</div>
+              <div className="text-sm sm:text-base font-extrabold font-mono text-amber-800 mt-0.5">
+                {new Intl.NumberFormat('uz-UZ').format(b5Stats.totalUzs)} so'm
+              </div>
+              <div className="text-xs font-extrabold font-mono text-emerald-700 mt-0.5">
+                = {formatMoney(b5Stats.totalUsd)}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-white border border-blue-200/80 shadow-2xs">
+              <div className="text-[11px] font-bold text-blue-900 uppercase">
+                Shunchaki to'lov ({b5Stats.paymentCount} ta)
+              </div>
+              <div className="text-sm font-extrabold font-mono text-blue-800 mt-0.5">
+                {new Intl.NumberFormat('uz-UZ').format(b5Stats.paymentUzs)} so'm
+              </div>
+              <div className="text-xs font-bold font-mono text-emerald-700 mt-0.5">
+                = {formatMoney(b5Stats.paymentUsd)}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-white border border-purple-200/80 shadow-2xs">
+              <div className="text-[11px] font-bold text-purple-900 uppercase">
+                Mahsulot uchun ({b5Stats.productCount} ta)
+              </div>
+              <div className="text-sm font-extrabold font-mono text-purple-800 mt-0.5">
+                {new Intl.NumberFormat('uz-UZ').format(b5Stats.productUzs)} so'm
+              </div>
+              <div className="text-xs font-bold font-mono text-emerald-700 mt-0.5">
+                = {formatMoney(b5Stats.productUsd)}
+              </div>
+            </div>
+          </div>
+
+          {/* Filter Panel */}
+          <div className="p-4 bg-neutral-50 border-b border-neutral-200 space-y-3">
+            {/* Row 1: Date range presets + Custom Start/End Date + Purpose buttons */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-bold text-neutral-700 flex items-center gap-1 mr-1">
+                  <Calendar className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Vaqt oralig'i:</span>
+                </span>
+                {(
+                  [
+                    { id: 'all', label: 'Barcha vaqt' },
+                    { id: 'today', label: 'Bugun' },
+                    { id: 'yesterday', label: 'Kecha' },
+                    { id: 'last7', label: 'Oxirgi 7 kun' },
+                    { id: 'thisMonth', label: 'Shu oy' },
+                  ] as const
+                ).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => handleB5DatePresetChange(p.id)}
+                    className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                      b5DatePreset === p.id
+                        ? 'bg-amber-700 text-white border-amber-700 shadow-2xs'
+                        : 'bg-white text-neutral-700 border-neutral-200 hover:bg-amber-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Maxsus sana oralig'i: Dan — Gacha */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-xl border border-neutral-300">
+                  <span className="text-[11px] font-bold text-neutral-600">Dan:</span>
+                  <input
+                    type="date"
+                    value={b5StartDate}
+                    onChange={(e) => {
+                      setB5StartDate(e.target.value);
+                      setB5DatePreset('custom');
+                    }}
+                    className="text-xs font-mono font-bold text-neutral-900 outline-none bg-transparent cursor-pointer"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-xl border border-neutral-300">
+                  <span className="text-[11px] font-bold text-neutral-600">Gacha:</span>
+                  <input
+                    type="date"
+                    value={b5EndDate}
+                    onChange={(e) => {
+                      setB5EndDate(e.target.value);
+                      setB5DatePreset('custom');
+                    }}
+                    className="text-xs font-mono font-bold text-neutral-900 outline-none bg-transparent cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Row 2: Purpose Filter (Barchasi | Shunchaki to'lov | Mahsulot uchun) */}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-xs font-bold text-neutral-700">To'lov maqsadi:</span>
+              <button
+                type="button"
+                onClick={() => setB5PurposeFilter('all')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                  b5PurposeFilter === 'all'
+                    ? 'bg-neutral-900 text-white border-neutral-900'
+                    : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                }`}
+              >
+                Barchasi ({allUzsConversionItems.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setB5PurposeFilter('payment')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-1.5 ${
+                  b5PurposeFilter === 'payment'
+                    ? 'bg-blue-700 text-white border-blue-700'
+                    : 'bg-white text-blue-800 border-blue-200 hover:bg-blue-50'
+                }`}
+              >
+                <Coins className="w-3.5 h-3.5" />
+                <span>Shunchaki to'lov</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setB5PurposeFilter('product')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-1.5 ${
+                  b5PurposeFilter === 'product'
+                    ? 'bg-purple-700 text-white border-purple-700'
+                    : 'bg-white text-purple-800 border-purple-200 hover:bg-purple-50'
+                }`}
+              >
+                <ShoppingBag className="w-3.5 h-3.5" />
+                <span>Mahsulot uchun</span>
+              </button>
+            </div>
+
+            {/* Row 3: Search, Method filter, Author (Kim qo'shgani) filter, Sort */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="text"
+                  placeholder="Mijoz ismi, tel, mahsulot yoki izoh..."
+                  value={b5Search}
+                  onChange={(e) => setB5Search(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-white rounded-xl border border-neutral-300 focus:border-amber-600 outline-none"
+                />
+              </div>
+
+              <select
+                value={b5AuthorFilter}
+                onChange={(e) => setB5AuthorFilter(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-amber-600 outline-none cursor-pointer"
+              >
+                <option value="all">Kim qo'shgani: Barchasi ({uniqueB5Authors.length})</option>
+                {uniqueB5Authors.map((a) => (
+                  <option key={a} value={a}>
+                    Qo'shgan: {getAgentDisplayName(a)} (@{a})
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={b5MethodFilter}
+                onChange={(e) => setB5MethodFilter(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-amber-600 outline-none cursor-pointer"
+              >
+                <option value="all">Barcha to'lov turlari</option>
+                <option value="naqd">Naqd pul</option>
+                <option value="karta">Karta o'tkazmasi</option>
+                <option value="bank">Bank o'tkazmasi</option>
+                <option value="qr">QR to'lov</option>
+              </select>
+
+              <select
+                value={b5SortMode}
+                onChange={(e) => setB5SortMode(e.target.value as any)}
+                className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-amber-600 outline-none cursor-pointer"
+              >
+                <option value="date_desc">Sana: Yangidan eskiga</option>
+                <option value="date_asc">Sana: Eskidan yangiga</option>
+                <option value="uzs_desc">So'm miqdori: Ko'pdan kamga</option>
+                <option value="usd_desc">Dollar miqdori: Ko'pdan kamga</option>
+                <option value="rate_desc">Kurs: Yuqoridan pastga</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Table */}
+          {filteredB5Items.length === 0 ? (
+            <div className="p-10 text-center space-y-2">
+              <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center mx-auto">
+                <Calculator className="w-6 h-6" />
+              </div>
+              <div className="text-sm font-bold text-neutral-800">
+                So'mda (kurs kiritib) dollarga o'tkazilgan to'lovlar topilmadi
+              </div>
+              <p className="text-xs text-neutral-500 max-w-md mx-auto">
+                Mijozdan to'lov qabul qilishda yoki mahsulot berishda «To'lov so'mda (UZS) bo'lsa, kursni kiritib dollarga ($) o'tkazish» belgisini yoqib kiritilgan barcha amaliyotlar shu yerda avtomatik aks etadi.
+              </p>
+            </div>
+          ) : (
+            <StickyTableWrapper>
+              <table className="w-full min-w-[1050px] text-left text-xs">
+                <thead className="bg-amber-50 border-b border-amber-200 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20">
+                  <tr>
+                    <th className="py-3 px-3 w-12 text-center">#</th>
+                    <th className="py-3 px-3">Sana va Mijoz</th>
+                    <th className="py-3 px-3 text-center">Shunchaki to'lov yoki Mahsulot uchun</th>
+                    <th className="py-3 px-3 text-center">To'lov usuli</th>
+                    <th className="py-3 px-3.5 text-right text-amber-950">So'm (UZS)</th>
+                    <th className="py-3 px-3 text-right text-neutral-800">Kurs (1$)</th>
+                    <th className="py-3 px-3.5 text-right text-emerald-950">Dollar (USD)</th>
+                    <th className="py-3 px-3 text-center">Kim qo'shgani</th>
+                    <th className="py-3 px-3">Izoh / Mahsulotlar</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-150">
+                  {filteredB5Items.map((item, idx) => (
+                    <tr
+                      key={item.id}
+                      className={
+                        idx % 2 === 1
+                          ? 'bg-neutral-50/50 hover:bg-amber-50/30'
+                          : 'bg-white hover:bg-amber-50/30'
+                      }
+                    >
+                      <td className="py-3 px-3 text-center font-mono font-bold text-neutral-500">
+                        {idx + 1}
+                      </td>
+                      <td className="py-3 px-3">
+                        <div className="font-bold text-neutral-900">{item.clientName}</div>
+                        <div className="text-[11px] text-neutral-500 font-mono flex items-center gap-2 mt-0.5">
+                          <span>{formatDate(item.timestamp)}</span>
+                          {item.clientPhone && <span>• {item.clientPhone}</span>}
+                        </div>
+                      </td>
+                      <td className="py-3 px-3 text-center">
+                        {item.purpose === 'product' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-50 text-purple-800 border border-purple-200 font-bold text-[11px]">
+                            <ShoppingBag className="w-3 h-3" />
+                            <span>Mahsulot uchun</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-800 border border-blue-200 font-bold text-[11px]">
+                            <Coins className="w-3 h-3" />
+                            <span>Shunchaki to'lov</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 text-center">
+                        <span className="px-2 py-0.5 rounded-md bg-neutral-100 border border-neutral-200 text-neutral-800 font-semibold text-[11px]">
+                          {item.paymentMethodLabel}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3.5 text-right font-mono font-extrabold text-amber-900 text-xs sm:text-sm">
+                        {new Intl.NumberFormat('uz-UZ').format(item.amountUzs)} so'm
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono font-bold text-neutral-700">
+                        1$ = {new Intl.NumberFormat('uz-UZ').format(item.exchangeRate)} so'm
+                      </td>
+                      <td className="py-3 px-3.5 text-right font-mono font-extrabold text-emerald-800 bg-emerald-50/40 text-xs sm:text-sm">
+                        {formatMoney(item.amountUsd)}
+                      </td>
+                      <td className="py-3 px-3 text-center">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-50 text-rose-900 border border-rose-200 font-bold text-[11px]">
+                          @{item.author}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3 max-w-[260px]">
+                        {item.productsSummary && (
+                          <div className="text-[11px] font-semibold text-purple-900 truncate" title={item.productsSummary}>
+                            Mahsulot: {item.productsSummary}
+                          </div>
+                        )}
+                        <div className="text-[11px] text-neutral-600 truncate" title={item.note}>
+                          {item.note || '-'}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="bg-amber-50/90 border-t-2 border-amber-200 font-bold sticky bottom-0 z-10">
+                  <tr>
+                    <td colSpan={4} className="py-3 px-3.5 text-right text-neutral-900 uppercase tracking-wider text-[11px]">
+                      JAMI ({filteredB5Items.length} ta amaliyot):
+                    </td>
+                    <td className="py-3 px-3.5 text-right font-mono text-xs sm:text-sm text-amber-950 font-extrabold">
+                      {new Intl.NumberFormat('uz-UZ').format(b5Stats.totalUzs)} so'm
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono text-[11px] text-neutral-700">
+                      O'rtacha: {b5Stats.avgRate > 0 ? new Intl.NumberFormat('uz-UZ').format(b5Stats.avgRate) : '-'} so'm
+                    </td>
+                    <td className="py-3 px-3.5 text-right font-mono text-xs sm:text-sm text-emerald-950 font-extrabold bg-emerald-100/90">
+                      {formatMoney(b5Stats.totalUsd)}
+                    </td>
+                    <td colSpan={2} />
                   </tr>
                 </tfoot>
               </table>
