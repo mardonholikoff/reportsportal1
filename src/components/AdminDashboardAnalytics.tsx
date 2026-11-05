@@ -29,6 +29,10 @@ import {
   exportUzsConversionsToExcel,
   UzsConversionAnalyticsItem,
 } from '../utils/exportUzsConversionsExcel';
+import {
+  exportClientDailyActionsMatrixToExcel,
+  ClientDailyMatrixRow,
+} from '../utils/exportClientDailyActionsMatrixExcel';
 import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Package,
@@ -110,8 +114,10 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   onEditWarehouseProduct,
   onDeleteWarehouseProduct,
 }) => {
-  // Navigation between blocks: 'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5'
-  const [activeBlockView, setActiveBlockView] = useState<'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5'>('all');
+  // Navigation between blocks: 'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
+  const [activeBlockView, setActiveBlockView] = useState<
+    'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
+  >('all');
 
   // =========================================================================
   // 1-BLOK DATA & STATES (Ombordagi mahsulotlar soni tahliliy jadvali)
@@ -1011,10 +1017,20 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             creditDeliv += dp.totalAmount || dp.debtAmount || 0;
           } else {
             paidDeliv += dp.paidAmount || 0;
-            if (pType === 'naqd') naqd += dp.paidAmount || 0;
-            else if (pType === 'karta') karta += dp.paidAmount || 0;
-            else if (pType === 'bank') bank += dp.paidAmount || 0;
-            else if (pType === 'qr') qr += dp.paidAmount || 0;
+            if (dp.splits && dp.splits.length > 0) {
+              dp.splits.forEach((sp) => {
+                const mStr = (sp.method || sp.methodLabel || '').toLowerCase();
+                if (mStr.includes('karta')) karta += sp.amount || 0;
+                else if (mStr.includes('bank')) bank += sp.amount || 0;
+                else if (mStr.includes('qr')) qr += sp.amount || 0;
+                else naqd += sp.amount || 0;
+              });
+            } else {
+              if (pType === 'naqd') naqd += dp.paidAmount || 0;
+              else if (pType === 'karta') karta += dp.paidAmount || 0;
+              else if (pType === 'bank') bank += dp.paidAmount || 0;
+              else if (pType === 'qr') qr += dp.paidAmount || 0;
+            }
 
             if (dp.debtAmount && dp.debtAmount > 0) {
               creditDeliv += dp.debtAmount;
@@ -1578,37 +1594,63 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         }
 
         // B. Mahsulot uchun to'lov (Section 3: deliveryPayment)
-        if (
-          act.deliveryPayment &&
-          act.deliveryPayment.paidAmount > 0 &&
-          act.deliveryPayment.paidAmountUzs &&
-          act.deliveryPayment.paidAmountUzs > 0
-        ) {
+        if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
           const dp = act.deliveryPayment;
-          const rate = dp.exchangeRate && dp.exchangeRate > 0
-            ? dp.exchangeRate
-            : Math.round(dp.paidAmountUzs! / dp.paidAmount);
           const prodSummary = (act.productsDelivered || [])
             .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
             .join(', ');
-          items.push({
-            id: `plan_deliv_${plan.id}_${actIdx}`,
-            timestamp: ts,
-            dateStr,
-            clientId: plan.clientId,
-            clientName,
-            clientPhone,
-            purpose: 'product',
-            purposeLabel: 'Mahsulot uchun',
-            paymentMethod: dp.paymentType || 'naqd',
-            paymentMethodLabel: dp.paymentLabel || "Mahsulot to'lovi",
-            amountUzs: Math.round(dp.paidAmountUzs!),
-            exchangeRate: rate,
-            amountUsd: Math.round(dp.paidAmount * 100) / 100,
-            author,
-            note: act.reportNote || plan.reportNote || '',
-            productsSummary: prodSummary,
-          });
+
+          if (dp.splits && dp.splits.length > 0) {
+            dp.splits.forEach((sp, spIdx) => {
+              if (sp.amountUzs && sp.amountUzs > 0) {
+                const rate =
+                  sp.exchangeRate && sp.exchangeRate > 0
+                    ? sp.exchangeRate
+                    : Math.round(sp.amountUzs / (sp.amount || 1));
+                items.push({
+                  id: `plan_deliv_${plan.id}_${actIdx}_${spIdx}`,
+                  timestamp: ts,
+                  dateStr,
+                  clientId: plan.clientId,
+                  clientName,
+                  clientPhone,
+                  purpose: 'product',
+                  purposeLabel: 'Mahsulot uchun',
+                  paymentMethod: sp.method || 'naqd',
+                  paymentMethodLabel: sp.methodLabel || dp.paymentLabel || "Mahsulot to'lovi",
+                  amountUzs: Math.round(sp.amountUzs),
+                  exchangeRate: rate,
+                  amountUsd: Math.round((sp.amount || 0) * 100) / 100,
+                  author,
+                  note: act.reportNote || plan.reportNote || '',
+                  productsSummary: prodSummary,
+                });
+              }
+            });
+          } else if (dp.paidAmountUzs && dp.paidAmountUzs > 0) {
+            const rate =
+              dp.exchangeRate && dp.exchangeRate > 0
+                ? dp.exchangeRate
+                : Math.round(dp.paidAmountUzs / dp.paidAmount);
+            items.push({
+              id: `plan_deliv_${plan.id}_${actIdx}`,
+              timestamp: ts,
+              dateStr,
+              clientId: plan.clientId,
+              clientName,
+              clientPhone,
+              purpose: 'product',
+              purposeLabel: 'Mahsulot uchun',
+              paymentMethod: dp.paymentType || 'naqd',
+              paymentMethodLabel: dp.paymentLabel || "Mahsulot to'lovi",
+              amountUzs: Math.round(dp.paidAmountUzs),
+              exchangeRate: rate,
+              amountUsd: Math.round(dp.paidAmount * 100) / 100,
+              author,
+              note: act.reportNote || plan.reportNote || '',
+              productsSummary: prodSummary,
+            });
+          }
         }
       });
     });
@@ -1772,10 +1814,388 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     }
   };
 
+  // =========================================================================
+  // 6-BLOK: MIJOZLAR BO'YICHA KUNLIK BAJARILIB YOPILGAN AMALLAR MATRITSASI (MAKS. 31 KUN: t, b, t+b)
+  // =========================================================================
+  const [b6DatePreset, setB6DatePreset] = useState<'thisMonth' | 'last7' | 'last15' | 'last31' | 'custom'>('thisMonth');
+  const [b6StartDate, setB6StartDate] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  });
+  const [b6EndDate, setB6EndDate] = useState<string>(() => {
+    const now = new Date();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  });
+  const [b6LimitWarning, setB6LimitWarning] = useState<string | null>(null);
+  const [b6Search, setB6Search] = useState<string>('');
+  const deferredB6Search = useDeferredValue(b6Search);
+  const [b6AgentFilter, setB6AgentFilter] = useState<string>('all');
+  const [b6ClientShowMode, setB6ClientShowMode] = useState<'all' | 'active_only'>('all');
+  const [b6MarkFilter, setB6MarkFilter] = useState<'all' | 't' | 'b' | 't+b'>('all');
+  const [isExportingB6, setIsExportingB6] = useState<boolean>(false);
+
+  const toLocalYMD = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const handleB6PresetChange = (preset: 'thisMonth' | 'last7' | 'last15' | 'last31') => {
+    setB6DatePreset(preset);
+    setB6LimitWarning(null);
+    const now = new Date();
+    if (preset === 'thisMonth') {
+      const s = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const e = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      setB6StartDate(s);
+      setB6EndDate(e);
+    } else {
+      const daysBack = preset === 'last7' ? 6 : preset === 'last15' ? 14 : 30;
+      const startObj = new Date(now);
+      startObj.setDate(now.getDate() - daysBack);
+      setB6StartDate(toLocalYMD(startObj));
+      setB6EndDate(toLocalYMD(now));
+    }
+  };
+
+  const handleB6StartChange = (newStart: string) => {
+    if (!newStart) return;
+    setB6DatePreset('custom');
+    const sDate = new Date(`${newStart}T00:00:00`);
+    const eDate = b6EndDate ? new Date(`${b6EndDate}T00:00:00`) : new Date(`${newStart}T00:00:00`);
+
+    if (sDate > eDate) {
+      setB6StartDate(newStart);
+      setB6EndDate(newStart);
+      setB6LimitWarning(null);
+      return;
+    }
+
+    const diffDays = Math.round((eDate.getTime() - sDate.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays > 30) {
+      // Cap end date to start + 30 days (31 inclusive days)
+      const cappedEnd = new Date(sDate);
+      cappedEnd.setDate(sDate.getDate() + 30);
+      setB6StartDate(newStart);
+      setB6EndDate(toLocalYMD(cappedEnd));
+      setB6LimitWarning("Maksimal vaqt oralig'i 31 kundan oshmasligi kerak! Tugash sanasi avtomatik 31 kunga moslashtirildi.");
+      setTimeout(() => setB6LimitWarning(null), 5000);
+    } else {
+      setB6StartDate(newStart);
+      setB6LimitWarning(null);
+    }
+  };
+
+  const handleB6EndChange = (newEnd: string) => {
+    if (!newEnd) return;
+    setB6DatePreset('custom');
+    const eDate = new Date(`${newEnd}T00:00:00`);
+    const sDate = b6StartDate ? new Date(`${b6StartDate}T00:00:00`) : new Date(`${newEnd}T00:00:00`);
+
+    if (eDate < sDate) {
+      setB6StartDate(newEnd);
+      setB6EndDate(newEnd);
+      setB6LimitWarning(null);
+      return;
+    }
+
+    const diffDays = Math.round((eDate.getTime() - sDate.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays > 30) {
+      // Cap start date to end - 30 days (31 inclusive days)
+      const cappedStart = new Date(eDate);
+      cappedStart.setDate(eDate.getDate() - 30);
+      setB6StartDate(toLocalYMD(cappedStart));
+      setB6EndDate(newEnd);
+      setB6LimitWarning("Maksimal vaqt oralig'i 31 kundan oshmasligi kerak! Boshlanish sanasi avtomatik 31 kunga moslashtirildi.");
+      setTimeout(() => setB6LimitWarning(null), 5000);
+    } else {
+      setB6EndDate(newEnd);
+      setB6LimitWarning(null);
+    }
+  };
+
+  // Generate array of YYYY-MM-DD dates in the selected interval (strictly max 31 days)
+  const b6DatesList = useMemo(() => {
+    if (!b6StartDate || !b6EndDate) return [];
+    const s = new Date(`${b6StartDate}T00:00:00`);
+    const e = new Date(`${b6EndDate}T00:00:00`);
+    if (isNaN(s.getTime()) || isNaN(e.getTime()) || s > e) return [b6StartDate];
+
+    const list: string[] = [];
+    const cur = new Date(s);
+    while (cur <= e && list.length < 31) {
+      list.push(toLocalYMD(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return list;
+  }, [b6StartDate, b6EndDate]);
+
+  // Build lookup of completed & closed actions per (clientId, dateStr) -> { hasT, hasB, agents }
+  const b6MatrixRows: ClientDailyMatrixRow[] = useMemo(() => {
+    const dateSet = new Set(b6DatesList);
+    // Map: clientId -> dateStr -> { hasT: boolean; hasB: boolean; agents: Set<string> }
+    const clientDayMap = new Map<
+      string,
+      Map<string, { hasT: boolean; hasB: boolean; agents: Set<string> }>
+    >();
+
+    // Track plans that are still open or closed WITHOUT action so we don't misclassify logs for those days
+    const nonCompletedPlanDays = new Set<string>();
+
+    const registerAction = (
+      clientId: string,
+      dateStr: string,
+      actionText: string,
+      agentUser: string
+    ) => {
+      if (!dateSet.has(dateStr)) return;
+      if (b6AgentFilter !== 'all' && agentUser !== b6AgentFilter) return;
+
+      const lower = (actionText || '').toLowerCase();
+      const isTel = lower.includes('telefon');
+      const isBor = lower.includes('joyiga') || lower.includes('borildi');
+      if (!isTel && !isBor) return;
+
+      if (!clientDayMap.has(clientId)) {
+        clientDayMap.set(clientId, new Map());
+      }
+      const dMap = clientDayMap.get(clientId)!;
+      if (!dMap.has(dateStr)) {
+        dMap.set(dateStr, { hasT: false, hasB: false, agents: new Set() });
+      }
+      const entry = dMap.get(dateStr)!;
+      if (isTel) entry.hasT = true;
+      if (isBor) entry.hasB = true;
+      if (agentUser) entry.agents.add(agentUser);
+    };
+
+    // 1. Inspect dailyPlans: only plans that are closed as completed ("bajarildi deb yopilgan")
+    internalPlans.forEach((plan) => {
+      const planDateStr = (
+        plan.planDate ||
+        plan.closedAt ||
+        plan.completedAt ||
+        plan.createdAt ||
+        ''
+      ).slice(0, 10);
+
+      const isClosed = Boolean(plan.isClosed || plan.status === 'yopildi');
+      const isCompletedAndClosed = isClosed && !plan.closedWithoutAction;
+
+      if (!isCompletedAndClosed) {
+        if (planDateStr) {
+          nonCompletedPlanDays.add(`${plan.clientId}_${planDateStr}`);
+        }
+        return;
+      }
+
+      const defaultAuthor =
+        plan.closedBy || plan.lastExecutedBy || plan.agentUsername || 'agentp1';
+
+      if (plan.actionsHistory && plan.actionsHistory.length > 0) {
+        plan.actionsHistory.forEach((act) => {
+          const actDate = (act.timestamp || planDateStr).slice(0, 10);
+          registerAction(
+            plan.clientId,
+            actDate,
+            act.actionDone || plan.actionDone || 'joyiga borildi',
+            act.author || defaultAuthor
+          );
+          // Also register on planDateStr if the plan was scheduled for planDateStr
+          if (planDateStr && planDateStr !== actDate) {
+            registerAction(
+              plan.clientId,
+              planDateStr,
+              act.actionDone || plan.actionDone || 'joyiga borildi',
+              act.author || defaultAuthor
+            );
+          }
+        });
+      } else if (plan.actionDone || plan.status === 'yopildi') {
+        registerAction(
+          plan.clientId,
+          planDateStr,
+          plan.actionDone || 'joyiga borildi',
+          defaultAuthor
+        );
+      }
+    });
+
+    // 2. Inspect client.logs for historical closed visits within the 31-day window
+    internalClients.forEach((client) => {
+      if (!client.logs || client.logs.length === 0) return;
+
+      // Group visit_action logs by date
+      const logsByDate = new Map<string, typeof client.logs>();
+      client.logs.forEach((log) => {
+        if (log.type !== 'visit_action') return;
+        const dStr = (log.timestamp || '').slice(0, 10);
+        if (!dateSet.has(dStr)) return;
+        if (!logsByDate.has(dStr)) logsByDate.set(dStr, []);
+        logsByDate.get(dStr)!.push(log);
+      });
+
+      logsByDate.forEach((dayLogs, dStr) => {
+        if (nonCompletedPlanDays.has(`${client.id}_${dStr}`)) return;
+
+        const hasCloseCompleted = dayLogs.some(
+          (l) =>
+            l.title.toLowerCase().includes('yakunlandi va yopildi') ||
+            l.details.toLowerCase().includes('amallar yakunlanib')
+        );
+        const hasUnperformedClose = dayLogs.some((l) =>
+          l.title.toLowerCase().includes('bajarilmasdan yopildi')
+        );
+
+        if (hasCloseCompleted && !hasUnperformedClose) {
+          dayLogs.forEach((l) => {
+            const combined = `${l.title || ''} ${l.details || ''}`;
+            registerAction(client.id, dStr, combined, l.author || 'agentp1');
+          });
+        }
+      });
+    });
+
+    // Build rows for all clients
+    const result: ClientDailyMatrixRow[] = [];
+
+    internalClients.forEach((client) => {
+      if (deferredB6Search.trim()) {
+        const q = deferredB6Search.toLowerCase().trim();
+        const mName = (client.name || '').toLowerCase().includes(q);
+        const mPhone = (client.phone || '').toLowerCase().includes(q);
+        const mAddr = (client.address || '').toLowerCase().includes(q);
+        if (!mName && !mPhone && !mAddr) return;
+      }
+
+      const dMap = clientDayMap.get(client.id);
+      const dailyMarks: Record<string, 't' | 'b' | 't+b'> = {};
+      const dailyAgents: Record<string, string> = {};
+      let totalActiveDays = 0;
+      let countT = 0;
+      let countB = 0;
+      let countTB = 0;
+
+      b6DatesList.forEach((dStr) => {
+        const info = dMap?.get(dStr);
+        if (!info) return;
+        let mark: 't' | 'b' | 't+b' | null = null;
+        if (info.hasT && info.hasB) {
+          mark = 't+b';
+        } else if (info.hasB) {
+          mark = 'b';
+        } else if (info.hasT) {
+          mark = 't';
+        }
+
+        if (mark) {
+          if (b6MarkFilter !== 'all' && mark !== b6MarkFilter) return;
+          dailyMarks[dStr] = mark;
+          dailyAgents[dStr] = Array.from(info.agents)
+            .map((a) => `${getAgentDisplayName(a)} (@${a})`)
+            .join(', ');
+          totalActiveDays++;
+          if (mark === 't') countT++;
+          else if (mark === 'b') countB++;
+          else if (mark === 't+b') countTB++;
+        }
+      });
+
+      if (b6ClientShowMode === 'active_only' && totalActiveDays === 0) {
+        return;
+      }
+      if (b6MarkFilter !== 'all' && totalActiveDays === 0) {
+        return;
+      }
+
+      result.push({
+        clientId: client.id,
+        clientName: client.name,
+        clientPhone: client.phone || '',
+        clientAddress: client.address || '',
+        dailyMarks,
+        dailyAgents,
+        totalActiveDays,
+        countT,
+        countB,
+        countTB,
+      });
+    });
+
+    // Sort: clients with actions first or alphabetical by client code/name
+    result.sort((a, b) => a.clientName.localeCompare(b.clientName, 'uz'));
+    return result;
+  }, [
+    internalClients,
+    internalPlans,
+    b6DatesList,
+    b6AgentFilter,
+    b6ClientShowMode,
+    b6MarkFilter,
+    deferredB6Search,
+  ]);
+
+  const b6SummaryStats = useMemo(() => {
+    let totalT = 0;
+    let totalB = 0;
+    let totalTB = 0;
+    let clientsWithActions = 0;
+    const perDayTotals: Record<string, { total: number; t: number; b: number; tb: number }> = {};
+    b6DatesList.forEach((d) => {
+      perDayTotals[d] = { total: 0, t: 0, b: 0, tb: 0 };
+    });
+
+    b6MatrixRows.forEach((r) => {
+      if (r.totalActiveDays > 0) clientsWithActions++;
+      totalT += r.countT;
+      totalB += r.countB;
+      totalTB += r.countTB;
+      b6DatesList.forEach((d) => {
+        const m = r.dailyMarks[d];
+        if (m) {
+          perDayTotals[d].total++;
+          if (m === 't') perDayTotals[d].t++;
+          else if (m === 'b') perDayTotals[d].b++;
+          else if (m === 't+b') perDayTotals[d].tb++;
+        }
+      });
+    });
+
+    return {
+      totalClients: b6MatrixRows.length,
+      clientsWithActions,
+      totalActions: totalT + totalB + totalTB,
+      totalT,
+      totalB,
+      totalTB,
+      perDayTotals,
+    };
+  }, [b6MatrixRows, b6DatesList]);
+
+  const handleExportB6Excel = async () => {
+    try {
+      setIsExportingB6(true);
+      const agentLabel =
+        b6AgentFilter === 'all'
+          ? 'Barcha agentlar'
+          : `${getAgentDisplayName(b6AgentFilter)} (@${b6AgentFilter})`;
+      await exportClientDailyActionsMatrixToExcel(
+        b6MatrixRows,
+        b6DatesList,
+        b6StartDate,
+        b6EndDate,
+        agentLabel
+      );
+    } catch (err) {
+      console.error('6-Blok Excel export error:', err);
+    } finally {
+      setIsExportingB6(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* ========================================================= */}
-      {/* TOP NAVIGATION TABS FOR BLOCKS 1, 2, 3, 4 & 5             */}
+      {/* TOP NAVIGATION TABS FOR BLOCKS 1, 2, 3, 4, 5 & 6          */}
       {/* ========================================================= */}
       <div className="bg-white rounded-2xl p-1.5 border border-rose-100 shadow-2xs flex items-center gap-1.5 flex-wrap">
         <button
@@ -1788,7 +2208,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           }`}
         >
           <Layers className="w-4 h-4" />
-          <span>Barcha bloklar (1-5)</span>
+          <span>Barcha bloklar (1-6)</span>
         </button>
 
         <button
@@ -1854,6 +2274,19 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         >
           <Calculator className="w-4 h-4" />
           <span>5-Blok: So'mda (kurs bilan) to'lovlar ({allUzsConversionItems.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveBlockView('block6')}
+          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+            activeBlockView === 'block6'
+              ? 'bg-teal-700 text-white shadow-xs'
+              : 'text-teal-900 bg-teal-50/80 hover:bg-teal-100 border border-teal-200/90'
+          }`}
+        >
+          <Calendar className="w-4 h-4" />
+          <span>6-Blok: Kunlik amallar matritsasi (t / b / t+b)</span>
         </button>
       </div>
 
@@ -4317,6 +4750,400 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                       {formatMoney(b5Stats.totalUsd)}
                     </td>
                     <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              </table>
+            </StickyTableWrapper>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 6-BLOK: MIJOZLAR BO'YICHA KUNLIK BAJARILIB YOPILGAN AMALLAR MATRITSASI (MAKS. 31 KUN) */}
+      {/* ========================================================= */}
+      {(activeBlockView === 'all' || activeBlockView === 'block6') && (
+        <div className="bg-white rounded-3xl border border-teal-200 shadow-xs overflow-hidden">
+          {/* Header */}
+          <div className="p-4 sm:p-6 bg-gradient-to-r from-teal-900 via-teal-800 to-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <div className="w-8 h-8 rounded-xl bg-teal-400 text-slate-950 flex items-center justify-center shadow-xs font-extrabold">
+                  <Calendar className="w-4 h-4" />
+                </div>
+                <h2 className="text-base sm:text-xl font-bold font-display tracking-tight text-white">
+                  6-Blok: Mijozlar bo'yicha kunlik bajarib yopilgan amallar matritsasi
+                </h2>
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-teal-400/20 text-teal-200 border border-teal-400/30">
+                  Maksimal: 31 kun ({b6DatesList.length} kun tanlangan)
+                </span>
+              </div>
+              <p className="text-xs text-teal-100/90">
+                Birinchi ustunda barcha mijozlar ro'yxati va yuqori qatorda tanlangan kunlar bittalab ko'rsatiladi: <strong className="text-white">t</strong> — telefon qilindi, <strong className="text-white">b</strong> — joyiga borildi, <strong className="text-white">t+b</strong> — ikkalasi ham bajarib yopilgan
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/15">
+                <div className="text-[10px] text-teal-200 uppercase font-semibold">Tanlangan kunlar</div>
+                <div className="text-xs sm:text-sm font-bold font-mono text-white">
+                  {b6DatesList.length} kun <span className="text-[10px] text-teal-300 font-normal">(maks. 31)</span>
+                </div>
+              </div>
+
+              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/15">
+                <div className="text-[10px] text-emerald-200 uppercase font-semibold">Bajarib yopilgan</div>
+                <div className="text-xs sm:text-sm font-bold font-mono text-emerald-300">
+                  {b6SummaryStats.totalActions} ta amal
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleExportB6Excel}
+                disabled={isExportingB6 || b6MatrixRows.length === 0}
+                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[40px] cursor-pointer shrink-0"
+              >
+                <Download className={`w-4 h-4 ${isExportingB6 ? 'animate-bounce' : ''}`} />
+                <span>{isExportingB6 ? 'Yuklanmoqda...' : '6-Blok Excel (.xlsx)'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 31-day limit warning banner if triggered */}
+          {b6LimitWarning && (
+            <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-center gap-2 text-xs font-bold text-amber-900">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>{b6LimitWarning}</span>
+            </div>
+          )}
+
+          {/* KPI Summary Cards & Legend */}
+          <div className="p-4 bg-teal-50/40 border-b border-teal-100 grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="p-3 rounded-2xl bg-white border border-teal-200/80 shadow-2xs">
+              <div className="text-[11px] font-bold text-neutral-500 uppercase">Ro'yxatdagi mijozlar</div>
+              <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5">
+                {b6SummaryStats.totalClients} ta
+              </div>
+              <div className="text-[11px] text-teal-800 font-medium mt-0.5">
+                Amal bajarilgan: <strong>{b6SummaryStats.clientsWithActions} ta</strong> mijoz
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-white border border-blue-200/80 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-blue-900 uppercase">Telefon bilan (t)</span>
+                <span className="px-2 py-0.5 rounded-md bg-blue-100 text-blue-900 font-mono font-extrabold text-xs border border-blue-300">
+                  t
+                </span>
+              </div>
+              <div className="text-base sm:text-lg font-extrabold font-mono text-blue-800 mt-0.5">
+                {b6SummaryStats.totalT} ta
+              </div>
+              <div className="text-[10px] text-neutral-500 mt-0.5">Telefon qilindi va yopildi</div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-white border border-purple-200/80 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-purple-900 uppercase">Joyiga borish (b)</span>
+                <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-900 font-mono font-extrabold text-xs border border-purple-300">
+                  b
+                </span>
+              </div>
+              <div className="text-base sm:text-lg font-extrabold font-mono text-purple-800 mt-0.5">
+                {b6SummaryStats.totalB} ta
+              </div>
+              <div className="text-[10px] text-neutral-500 mt-0.5">Joyiga borildi va yopildi</div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-white border border-emerald-200/80 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-emerald-900 uppercase">Ikkalasi ham (t+b)</span>
+                <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-900 font-mono font-extrabold text-xs border border-emerald-300">
+                  t+b
+                </span>
+              </div>
+              <div className="text-base sm:text-lg font-extrabold font-mono text-emerald-800 mt-0.5">
+                {b6SummaryStats.totalTB} ta
+              </div>
+              <div className="text-[10px] text-neutral-500 mt-0.5">Telefon + Joyiga borib yopildi</div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-white border border-neutral-200/80 shadow-2xs col-span-2 lg:col-span-1">
+              <div className="text-[11px] font-bold text-neutral-600 uppercase">Jami bajarib yopilgan</div>
+              <div className="text-base sm:text-lg font-extrabold font-mono text-teal-900 mt-0.5">
+                {b6SummaryStats.totalActions} ta
+              </div>
+              <div className="text-[10px] text-neutral-500 mt-0.5">
+                {b6DatesList.length} kunlik davr ichida
+              </div>
+            </div>
+          </div>
+
+          {/* Filter Panel */}
+          <div className="p-4 bg-neutral-50 border-b border-neutral-200 space-y-3">
+            {/* Row 1: Date range presets + Custom Start/End Date (max 31 days) */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-bold text-neutral-700 flex items-center gap-1 mr-1">
+                  <Calendar className="w-3.5 h-3.5 text-teal-700" />
+                  <span>Vaqt oralig'i (maks. 31 kun):</span>
+                </span>
+                {(
+                  [
+                    { id: 'thisMonth', label: 'Shu oy (maks. 31 kun)' },
+                    { id: 'last7', label: 'Oxirgi 7 kun' },
+                    { id: 'last15', label: 'Oxirgi 15 kun' },
+                    { id: 'last31', label: 'Oxirgi 31 kun' },
+                  ] as const
+                ).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => handleB6PresetChange(p.id)}
+                    className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                      b6DatePreset === p.id
+                        ? 'bg-teal-700 text-white border-teal-700 shadow-2xs'
+                        : 'bg-white text-neutral-700 border-neutral-200 hover:bg-teal-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Maxsus sana oralig'i: Dan — Gacha (Max 31 kun) */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-xl border border-teal-300 shadow-2xs">
+                  <span className="text-[11px] font-bold text-teal-800">Dan:</span>
+                  <input
+                    type="date"
+                    value={b6StartDate}
+                    onChange={(e) => handleB6StartChange(e.target.value)}
+                    className="text-xs font-mono font-bold text-neutral-900 outline-none bg-transparent cursor-pointer"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-xl border border-teal-300 shadow-2xs">
+                  <span className="text-[11px] font-bold text-teal-800">Gacha:</span>
+                  <input
+                    type="date"
+                    value={b6EndDate}
+                    onChange={(e) => handleB6EndChange(e.target.value)}
+                    className="text-xs font-mono font-bold text-neutral-900 outline-none bg-transparent cursor-pointer"
+                  />
+                </div>
+                <span className="px-2.5 py-1 rounded-xl bg-teal-100 text-teal-900 border border-teal-300 text-xs font-mono font-bold">
+                  {b6DatesList.length} / 31 kun
+                </span>
+              </div>
+            </div>
+
+            {/* Row 2: Search, Agent filter, Mark filter (t / b / t+b), Client display mode */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1">
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                <input
+                  type="text"
+                  placeholder="Mijoz ismi, kodi, telefoni yoki manzili..."
+                  value={b6Search}
+                  onChange={(e) => setB6Search(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-white rounded-xl border border-neutral-300 focus:border-teal-600 outline-none"
+                />
+              </div>
+
+              <select
+                value={b6AgentFilter}
+                onChange={(e) => setB6AgentFilter(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-teal-600 outline-none cursor-pointer"
+              >
+                <option value="all">Barcha agentlar tomonidan yopilganlar</option>
+                <option value="agentc1">Eldorbek (@agentc1)</option>
+                <option value="agentp1">Mirsaid (@agentp1)</option>
+                <option value="adminc">Administrator (@adminc)</option>
+              </select>
+
+              <select
+                value={b6MarkFilter}
+                onChange={(e) => setB6MarkFilter(e.target.value as any)}
+                className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-teal-600 outline-none cursor-pointer"
+              >
+                <option value="all">Barcha amaliyot turlari (t, b, t+b)</option>
+                <option value="t">Faqat "t" — Telefon qilindi</option>
+                <option value="b">Faqat "b" — Joyiga borildi</option>
+                <option value="t+b">Faqat "t+b" — Telefon + Joyiga borildi</option>
+              </select>
+
+              <select
+                value={b6ClientShowMode}
+                onChange={(e) => setB6ClientShowMode(e.target.value as 'all' | 'active_only')}
+                className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-teal-600 outline-none cursor-pointer"
+              >
+                <option value="all">Barcha mijozlar ro'yxati ({internalClients.length} ta)</option>
+                <option value="active_only">
+                  Faqat shu kunlarda amaliyot bajarilgan mijozlar ({b6SummaryStats.clientsWithActions} ta)
+                </option>
+              </select>
+            </div>
+          </div>
+
+          {/* Matrix Table */}
+          {b6MatrixRows.length === 0 ? (
+            <div className="p-10 text-center space-y-2">
+              <div className="w-12 h-12 rounded-2xl bg-teal-50 border border-teal-200 text-teal-700 flex items-center justify-center mx-auto">
+                <Calendar className="w-6 h-6" />
+              </div>
+              <div className="text-sm font-bold text-neutral-800">
+                Tanlangan filtr bo'yicha mijozlar topilmadi
+              </div>
+              <p className="text-xs text-neutral-500 max-w-md mx-auto">
+                Filtrlarni tozalab barcha mijozlar ro'yxatini ko'rishingiz mumkin.
+              </p>
+            </div>
+          ) : (
+            <StickyTableWrapper>
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-teal-50 border-b-2 border-teal-200 text-neutral-800 font-bold text-[11px] sticky top-0 z-20">
+                  <tr>
+                    <th className="py-2.5 px-2.5 w-10 text-center border-r border-teal-200 bg-teal-50 sticky left-0 z-30">
+                      №
+                    </th>
+                    <th className="py-2.5 px-3 min-w-[230px] max-w-[280px] border-r-2 border-teal-300 bg-teal-50 sticky left-10 z-30 shadow-2xs">
+                      Mijozlar ro'yxati ({b6MatrixRows.length} ta)
+                    </th>
+                    {b6DatesList.map((dStr) => {
+                      const parts = dStr.split('-');
+                      const dayNum = parts[2] || dStr;
+                      const monthNum = parts[1] || '';
+                      const dayTotal = b6SummaryStats.perDayTotals[dStr]?.total || 0;
+                      return (
+                        <th
+                          key={dStr}
+                          title={`Sana: ${dayNum}.${monthNum}.${parts[0]} — Jami bajarilgan: ${dayTotal} ta`}
+                          className="py-2 px-1.5 min-w-[46px] text-center border-r border-teal-200/80 font-mono"
+                        >
+                          <div className="text-[11px] font-extrabold text-teal-950 leading-tight">
+                            {dayNum}.{monthNum}
+                          </div>
+                          {dayTotal > 0 ? (
+                            <div className="text-[9px] font-bold text-emerald-700 bg-emerald-100/90 rounded px-1 mt-0.5 inline-block">
+                              {dayTotal} ta
+                            </div>
+                          ) : (
+                            <div className="text-[9px] font-normal text-neutral-400 mt-0.5">-</div>
+                          )}
+                        </th>
+                      );
+                    })}
+                    <th className="py-2.5 px-3 min-w-[80px] text-center bg-teal-100/80 text-teal-950 border-l-2 border-teal-300">
+                      Jami (kun)
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-200">
+                  {b6MatrixRows.map((row, idx) => {
+                    const isEven = idx % 2 === 0;
+                    const stickyBg = isEven ? 'bg-white' : 'bg-neutral-50';
+                    return (
+                      <tr
+                        key={row.clientId}
+                        className={`${
+                          isEven ? 'bg-white' : 'bg-neutral-50/70'
+                        } hover:bg-teal-50/40 transition-colors`}
+                      >
+                        <td
+                          className={`py-2 px-2 text-center font-mono text-[11px] font-semibold text-neutral-500 border-r border-neutral-200 sticky left-0 z-10 ${stickyBg}`}
+                        >
+                          {idx + 1}
+                        </td>
+                        <td
+                          className={`py-2 px-3 border-r-2 border-teal-200 sticky left-10 z-10 ${stickyBg} max-w-[280px]`}
+                        >
+                          <div className="font-bold text-neutral-900 truncate" title={row.clientName}>
+                            {row.clientName}
+                          </div>
+                          {row.clientPhone && (
+                            <div className="text-[10px] text-neutral-500 font-mono truncate">
+                              {row.clientPhone}
+                            </div>
+                          )}
+                        </td>
+                        {b6DatesList.map((dStr) => {
+                          const mark = row.dailyMarks[dStr];
+                          const agentInfo = row.dailyAgents?.[dStr] || '';
+                          return (
+                            <td
+                              key={dStr}
+                              title={
+                                mark
+                                  ? `${row.clientName} | Sana: ${dStr} | Amal: ${
+                                      mark === 't+b'
+                                        ? 'Telefon + Joyiga borildi (t+b)'
+                                        : mark === 'b'
+                                        ? 'Joyiga borildi (b)'
+                                        : 'Telefon qilindi (t)'
+                                    }${agentInfo ? ` | Agent: ${agentInfo}` : ''}`
+                                  : `${row.clientName} (${dStr}): amal qayd etilmagan`
+                              }
+                              className="py-1.5 px-1 text-center border-r border-neutral-200/80 font-mono align-middle"
+                            >
+                              {mark === 't+b' ? (
+                                <span className="inline-flex items-center justify-center px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-900 border border-emerald-300 font-extrabold text-[11px] shadow-2xs">
+                                  t+b
+                                </span>
+                              ) : mark === 'b' ? (
+                                <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md bg-purple-100 text-purple-900 border border-purple-300 font-extrabold text-[11px] shadow-2xs">
+                                  b
+                                </span>
+                              ) : mark === 't' ? (
+                                <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md bg-blue-100 text-blue-900 border border-blue-300 font-extrabold text-[11px] shadow-2xs">
+                                  t
+                                </span>
+                              ) : (
+                                <span className="text-neutral-300 text-[10px]">·</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="py-2 px-2.5 text-center font-mono font-bold border-l-2 border-teal-200 bg-teal-50/30">
+                          {row.totalActiveDays > 0 ? (
+                            <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-lg bg-teal-100 text-teal-900 border border-teal-300 text-xs font-extrabold">
+                              {row.totalActiveDays}
+                            </span>
+                          ) : (
+                            <span className="text-neutral-400 text-[11px]">0</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot className="bg-teal-50/95 border-t-2 border-teal-300 font-bold sticky bottom-0 z-20">
+                  <tr>
+                    <td
+                      colSpan={2}
+                      className="py-2.5 px-3 text-right text-teal-950 uppercase tracking-wider text-[11px] border-r-2 border-teal-300 sticky left-0 z-30 bg-teal-100"
+                    >
+                      JAMI KUNLIK BAJARILGANLAR:
+                    </td>
+                    {b6DatesList.map((dStr) => {
+                      const dayStat = b6SummaryStats.perDayTotals[dStr];
+                      const cnt = dayStat?.total || 0;
+                      return (
+                        <td
+                          key={dStr}
+                          title={`t: ${dayStat?.t || 0} ta, b: ${dayStat?.b || 0} ta, t+b: ${dayStat?.tb || 0} ta`}
+                          className="py-2 px-1 text-center font-mono text-xs border-r border-teal-200"
+                        >
+                          {cnt > 0 ? (
+                            <span className="font-extrabold text-teal-900">{cnt}</span>
+                          ) : (
+                            <span className="text-neutral-400 text-[10px]">0</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className="py-2.5 px-3 text-center font-mono text-xs sm:text-sm font-extrabold text-emerald-950 bg-emerald-100 border-l-2 border-teal-300">
+                      {b6SummaryStats.totalActions}
+                    </td>
                   </tr>
                 </tfoot>
               </table>

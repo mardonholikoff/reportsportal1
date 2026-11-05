@@ -18,7 +18,12 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
     await onLogin(username, password);
   };
 
-  const isAdminAccount = username.trim() === 'adminc' || username.trim() === 'adminc1';
+  const trimmedUser = username.trim().toLowerCase();
+  const isManualPasswordAccount =
+    trimmedUser === 'adminc' ||
+    trimmedUser === 'adminc1' ||
+    trimmedUser === 'agentc1' ||
+    trimmedUser === 'agentp1';
 
   return (
     <div className="min-h-screen flex flex-col justify-between bg-[#FAF7F7] selection:bg-rose-200">
@@ -30,7 +35,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
       {/* Main Login Card - Clean and minimal */}
       <div className="flex-1 flex items-center justify-center px-4 py-8">
         <div className="w-full max-w-sm bg-white rounded-3xl shadow-xl border border-rose-100/90 overflow-hidden p-6 sm:p-8">
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} autoComplete="off" className="space-y-4">
             {error && (
               <div className="flex items-start gap-2.5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -54,12 +59,18 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   id="usernameInput"
                   type="text"
                   required
-                  autoComplete="username"
+                  autoComplete="off"
                   value={username}
                   onChange={(e) => {
                     const val = e.target.value;
                     setUsername(val);
-                    if (val.trim() === 'adminc1' || val.trim() === 'adminc') {
+                    const clean = val.trim().toLowerCase();
+                    if (
+                      clean === 'adminc1' ||
+                      clean === 'adminc' ||
+                      clean === 'agentc1' ||
+                      clean === 'agentp1'
+                    ) {
                       setPassword('');
                     }
                   }}
@@ -67,7 +78,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   className="w-full pl-10 pr-3.5 py-3 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-sm text-neutral-900 font-medium placeholder:text-neutral-400 outline-none transition bg-neutral-50/40 focus:bg-white"
                 />
               </div>
-              {isAdminAccount && (
+              {isManualPasswordAccount && (
                 <p className="mt-1 text-[11px] text-amber-700 font-medium">
                   {username.trim()} uchun parol avtomatik to'ldirilmaydi (qo'lda kiriting)
                 </p>
@@ -90,7 +101,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   id="passwordInput"
                   type={showPassword ? 'text' : 'password'}
                   required
-                  autoComplete="current-password"
+                  autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Parol"
@@ -119,14 +130,14 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
             {/* Quick Login Profiles */}
             <div className="pt-2 border-t border-neutral-100 space-y-1.5 text-center">
               <span className="text-[10px] uppercase font-bold text-neutral-400 tracking-wider block">
-                Tezkor kirish
+                Tezkor kirish (faqat login tanlanadi)
               </span>
               <div className="flex items-center justify-center gap-1.5 flex-wrap">
                 <button
                   type="button"
                   onClick={() => {
                     setUsername('agentc1');
-                    setPassword('1cagent');
+                    setPassword(''); // agentc1 uchun parol avtomatik to'ldirilmasin!
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
                 >
@@ -136,7 +147,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   type="button"
                   onClick={() => {
                     setUsername('agentp1');
-                    setPassword('1pagent');
+                    setPassword(''); // agentp1 uchun parol avtomatik to'ldirilmasin!
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
                 >
@@ -146,7 +157,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   type="button"
                   onClick={() => {
                     setUsername('adminc');
-                    setPassword(''); // adminc orqali bosilganda ham paroli avtomatik to'ldirilmasin!
+                    setPassword(''); // adminc uchun parol avtomatik to'ldirilmasin!
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-neutral-100 text-neutral-800 hover:bg-neutral-200 border border-neutral-200 transition cursor-pointer"
                 >
@@ -156,7 +167,7 @@ export const LoginView: React.FC<Props> = ({ onLogin, isLoading, error }) => {
                   type="button"
                   onClick={() => {
                     setUsername('adminc1');
-                    setPassword(''); // adminc1 uchun avtomatik to'ldirilmaydi!
+                    setPassword(''); // adminc1 uchun parol avtomatik to'ldirilmasin!
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-neutral-100 text-neutral-800 hover:bg-neutral-200 border border-neutral-200 transition cursor-pointer"
                 >

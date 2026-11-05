@@ -23,10 +23,12 @@ import {
   Clock,
   Trash2,
   User,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import { RejaPrintModal } from './RejaPrintModal';
 import { StickyTableWrapper } from './StickyTableWrapper';
+import { exportPlansDetailedToExcel } from '../utils/exportPlansDetailedExcel';
 
 interface Props {
   plans: DailyPlanItem[];
@@ -525,16 +527,43 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
             </button>
           </div>
 
-          {displayedPlans.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setIsPlanPdfModalOpen(true)}
-              className="flex items-center gap-1.5 bg-neutral-900 hover:bg-black text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
-              title="Rejadagi mijozlar ro'yxatini qora borderli PDF formatda chiqarish"
-            >
-              <Printer className="w-4 h-4" />
-              <span>Rejani PDF (Print)</span>
-            </button>
+          {(displayedPlans.length > 0 || validPlans.length > 0) && (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  exportPlansDetailedToExcel(
+                    displayedPlans.length > 0 ? displayedPlans : validPlans,
+                    resolvedClients,
+                    allSystemPlans,
+                    "Kunlik Reja va Bajarilgan Amallar Jadvali (Batafsil)",
+                    `Ko'rinish: ${
+                      planViewFilter === 'active'
+                        ? 'Faol (Yopilmagan) rejalar'
+                        : planViewFilter === 'closed'
+                        ? 'Yopilgan rejalar'
+                        : 'Barcha (Yopilgan va Yopilmagan) rejalar'
+                    }`,
+                    'Agent_Reja_va_Amallar'
+                  )
+                }
+                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+                title="Yopilgan va yopilmagan amallar jadvalini to'liq va batafsil Excel (.xlsx) formatda yuklab olish"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Excel (.xlsx)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsPlanPdfModalOpen(true)}
+                className="flex items-center gap-1.5 bg-neutral-900 hover:bg-black text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+                title="Yopilgan va yopilmagan amallar jadvalini batafsil PDF / Print / Excel formatda yuklab olish"
+              >
+                <Printer className="w-4 h-4" />
+                <span>PDF / Print</span>
+              </button>
+            </>
           )}
 
           {onOpenMonthlyPlan && (

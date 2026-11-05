@@ -26,6 +26,25 @@ export interface ClientAuditLog {
   paymentMethodLabel?: string;
 }
 
+export interface ClientReminder {
+  id: string;
+  clientId: string;
+  clientName: string;
+  clientPhone: string;
+  clientAddress: string;
+  clientRegion?: string;
+  clientDistrict?: string;
+  clientLandmark?: string;
+  planItemId?: string;
+  agentUsername: string;
+  reminderDate: string; // YYYY-MM-DD formatdagi eslatma sanasi
+  note: string; // Eslatma izohi
+  createdAt: string; // ISO string
+  status: 'kutilmoqda' | 'bajarildi';
+  completedAt?: string;
+  completedBy?: string;
+}
+
 export interface Client {
   id: string;
   name: string;
@@ -44,6 +63,7 @@ export interface Client {
   createdBy: string; // 'adminc' | 'agentp1'
   syncStatus: 'synced' | 'pending' | 'offline';
   logs?: ClientAuditLog[];
+  reminders?: ClientReminder[];
   lastPlanClosedAt?: string;
   lastPlanCloseReason?: string;
   lastPlanClosedBy?: string;
@@ -91,6 +111,8 @@ export interface DeliveryPaymentInfo {
   debtAmount: number;
   paidAmountUzs?: number;
   exchangeRate?: number;
+  splits?: FinancialPaymentSplit[];
+  isPartialCredit?: boolean;
 }
 
 export interface FinancialPaymentSplit {
@@ -246,6 +268,8 @@ export interface SystemLog {
   actionTitle: string;
   details: string;
   ipAddress: string;
+  macAddress?: string;
+  deviceInfo?: string;
   metadata?: Record<string, any>;
   createdAt?: string;
 }

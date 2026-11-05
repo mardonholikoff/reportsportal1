@@ -31,6 +31,7 @@ import {
   MonthlyPlanDecadeTargets,
   MonthlyPlanClientItem,
   MonthlyProductPlanClientItem,
+  ClientReminder,
 } from './types';
 import { LoginView } from './components/LoginView';
 import { Navbar } from './components/Navbar';
@@ -55,14 +56,17 @@ import { CreateMonthlyPlanModal } from './components/CreateMonthlyPlanModal';
 import { MonthlyProductPlanProgressCard } from './components/MonthlyProductPlanProgressCard';
 import { CreateMonthlyProductPlanModal } from './components/CreateMonthlyProductPlanModal';
 import { AddWarehouseDebtModal } from './components/AddWarehouseDebtModal';
+import { AgentRemindersSection } from './components/AgentRemindersSection';
 import {
   addSystemLog,
   getLocalSystemLogs,
+  saveLocalSystemLogs,
   deleteLocalSystemLogs,
   deleteSystemLogsFromFirestore,
   saveArchiveRecord,
   savePeriodArchive,
   subscribeToFirestoreData,
+  pullAllFromFirestoreServer,
   bootstrapFirestoreData,
   syncClientToFirestore,
   syncClientsBulkToFirestore,
@@ -90,6 +94,8 @@ import {
   Users,
   ShieldAlert,
   FileSpreadsheet,
+  BellRing,
+  Target,
 } from 'lucide-react';
 
 export default function App() {
@@ -97,7 +103,9 @@ export default function App() {
   const isOnline = useOnlineStatus();
 
   // Agent active navigation tab (tahlil agentlar uchun olib tashlangan)
-  const [agentActiveTab, setAgentActiveTab] = useState<'reja' | 'mijozlar' | 'ombor'>('reja');
+  const [agentActiveTab, setAgentActiveTab] = useState<
+    'reja' | 'eslatmalar' | 'mijozlar' | 'ombor' | 'oylik_reja'
+  >('reja');
 
   // System audit logs state (adminc1 va adminlar nazorati)
   const [systemLogs, setSystemLogs] = useState<SystemLog[]>(() => getLocalSystemLogs());
@@ -557,7 +565,7 @@ export default function App() {
     }
   };
 
-  // Subscribe to storage changes & Firebase Firestore real-time sync
+  // Subscribe to storage changes & Firebase Firestore real-time sync (Web & PWA continuous auto-sync)
   useEffect(() => {
     // 1. Initial bootstrap to Firestore if remote is empty
     bootstrapFirestoreData(
@@ -566,9 +574,8 @@ export default function App() {
       storageService.getWarehouseProducts()
     );
 
-    // 2. Realtime listener to Firestore (automatic offline-persistence sync + local merge)
-    const unsubFirestore = subscribeToFirestoreData({
-      onClientsChange: (remoteClients) => {
+    const firestoreCallbacks = {
+      onClientsChange: (remoteClients: Client[]) => {
         if (remoteClients) {
           const deletedIds = getDeletedClientIds();
           const cleanRemote = remoteClients.filter((c) => !deletedIds.has(c.id));
@@ -599,11 +606,9 @@ export default function App() {
           setDailyPlans([...storageService.getActive24hPlans()]);
         }
       },
-      onPlansChange: (remotePlans) => {
+      onPlansChange: (remotePlans: DailyPlanItem[]) => {
         if (remotePlans) {
           const deletedIds = getDeletedClientIds();
-          const currentClients = storageService.getClients();
-          const activeClientIds = new Set(currentClients.map((c) => c.id));
 
           // Purge remote plans ONLY if they belong to explicitly deleted clients
           remotePlans.forEach((rp) => {
@@ -612,13 +617,9 @@ export default function App() {
             }
           });
 
-          const cleanRemote = remotePlans.filter(
-            (p) =>
-              !deletedIds.has(p.clientId) &&
-              (activeClientIds.size === 0 || activeClientIds.has(p.clientId))
-          );
+          const cleanRemote = remotePlans.filter((p) => !deletedIds.has(p.clientId));
 
-          // Deduplicate by clientId so each client appears only once, and remove duplicate docs from Firestore
+          // Deduplicate by clientId+planDate so each client appears once per date, and remove duplicate docs from Firestore
           const { uniquePlans, duplicateIds } =
             storageService.deduplicatePlansByClient(cleanRemote);
           if (duplicateIds.length > 0) {
@@ -635,7 +636,7 @@ export default function App() {
           );
         }
       },
-      onWarehouseChange: (remoteProducts) => {
+      onWarehouseChange: (remoteProducts: WarehouseProduct[]) => {
         if (remoteProducts) {
           const deletedWhIds = getDeletedWarehouseIds();
           const cleanRemote = remoteProducts.filter((w) => !deletedWhIds.has(w.id));
@@ -643,7 +644,7 @@ export default function App() {
           setWarehouseProducts([...cleanRemote]);
         }
       },
-      onLogsChange: (remoteLogs) => {
+      onLogsChange: (remoteLogs: SystemLog[]) => {
         if (remoteLogs && remoteLogs.length > 0) {
           // Only purge clients/warehouse items that are still present in active local storage
           const activeClientIds = new Set(storageService.getClients().map((c) => c.id));
@@ -678,10 +679,11 @@ export default function App() {
           if (anyWarehouseDeletedFound) {
             setWarehouseProducts([...storageService.getWarehouseProducts()]);
           }
+          saveLocalSystemLogs(remoteLogs);
           setSystemLogs([...remoteLogs]);
         }
       },
-      onMonthlyPlansChange: (remoteMonthlyPlans) => {
+      onMonthlyPlansChange: (remoteMonthlyPlans: MonthlyPlan[]) => {
         if (remoteMonthlyPlans && remoteMonthlyPlans.length > 0) {
           const localPlans = storageService.getMonthlyPlans();
           const localMap = new Map<string, MonthlyPlan>();
@@ -715,7 +717,35 @@ export default function App() {
           setMonthlyPlans([...storageService.getMonthlyPlans()]);
         }
       },
-    });
+    };
+
+    // 2. Realtime listener to Firestore (instant WebSocket/WebChannel push)
+    const unsubFirestore = subscribeToFirestoreData(firestoreCallbacks);
+
+    // 3. Automatic server pull & offline queue flush (for PWA & Web zero-touch sync)
+    const runSilentAutoSync = async () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      try {
+        // Flush any queued offline mutations automatically
+        const queue = storageService.getSyncQueue();
+        if (queue.length > 0) {
+          for (const item of queue) {
+            if ((item.action === 'create' || item.action === 'update') && item.client) {
+              await syncClientToFirestore(item.client);
+            }
+          }
+          storageService.clearSyncQueue();
+          setPendingSyncCount(0);
+        }
+        // Pull latest state directly from Firestore server
+        await pullAllFromFirestoreServer(firestoreCallbacks);
+      } catch {
+        // silent background sync
+      }
+    };
+
+    // Immediate pull on app entry / login
+    runSilentAutoSync();
 
     const updateFromStorage = () => {
       const freshClients = storageService.getClients();
@@ -732,20 +762,45 @@ export default function App() {
     updateFromStorage();
     const unsubscribe = storageService.subscribe(updateFromStorage);
 
-    // Sync immediately when tab regains visibility or window focus
+    // Sync immediately when tab/PWA regains visibility, window focus, pageshow, or network online
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
         storageService.invalidateAllCaches();
         updateFromStorage();
+        runSilentAutoSync();
       }
     };
+    const handleOnline = () => {
+      storageService.invalidateAllCaches();
+      updateFromStorage();
+      runSilentAutoSync();
+    };
+    const handleCrossTabStorage = () => {
+      storageService.invalidateAllCaches();
+      updateFromStorage();
+    };
+
     window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener('pageshow', handleVisibilityOrFocus);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('storage', handleCrossTabStorage);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
+    // Continuous 8-second heartbeat so PWA/Web never drifts even if a mobile carrier drops idle WebSockets
+    const heartbeatTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        runSilentAutoSync();
+      }
+    }, 8000);
+
     return () => {
+      clearInterval(heartbeatTimer);
       unsubscribe();
       unsubFirestore();
       window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener('pageshow', handleVisibilityOrFocus);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('storage', handleCrossTabStorage);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [user]);
@@ -1002,6 +1057,105 @@ export default function App() {
     setDailyPlans([...storageService.getActive24hPlans()]);
     showToast("Reja izohi yangilandi.");
   };
+
+  // All client reminders derived from clients
+  const allReminders = useMemo(() => {
+    const _len = clients.length;
+    void _len;
+    return storageService.getReminders();
+  }, [clients]);
+
+  const pendingRemindersCount = useMemo(
+    () => allReminders.filter((r) => r.status === 'kutilmoqda').length,
+    [allReminders]
+  );
+
+  // Handle Save Reminder from ExecutePlanModal
+  const handleSaveReminder = useCallback(
+    (data: { clientId: string; planId?: string; reminderDate: string; note: string }) => {
+      const currentUsername = user?.username || 'agentp1';
+      const res = storageService.addReminder({
+        clientId: data.clientId,
+        planId: data.planId,
+        reminderDate: data.reminderDate,
+        note: data.note,
+        createdBy: currentUsername,
+      });
+      if (res && res.updatedClient) {
+        setClients([...storageService.getClients()]);
+        syncClientToFirestore(res.updatedClient);
+        addSystemLog({
+          userId: currentUsername,
+          userRole: user?.role || 'agent',
+          actionType: 'amal_bajarish',
+          actionTitle: `Mijoz uchun eslatma qo'yildi: ${res.updatedClient.name} (${data.reminderDate})`,
+          details: `Eslatma sanasi: ${data.reminderDate}. Izoh: ${data.note}`,
+        });
+        showToast(
+          `${res.updatedClient.name} uchun ${formatDateDMY(data.reminderDate)} sanasiga eslatma saqlandi!`
+        );
+      }
+    },
+    [user]
+  );
+
+  // Handle Toggle Reminder Status (Kutilmoqda <-> Bajarildi)
+  const handleToggleReminderStatus = useCallback(
+    (reminderId: string, clientId: string) => {
+      const currentUsername = user?.username || 'agentp1';
+      const updatedClient = storageService.toggleReminderStatus(
+        reminderId,
+        clientId,
+        currentUsername
+      );
+      if (updatedClient) {
+        setClients([...storageService.getClients()]);
+        syncClientToFirestore(updatedClient);
+        showToast('Eslatma holati yangilandi.');
+      }
+    },
+    [user]
+  );
+
+  // Handle Delete Reminder
+  const handleDeleteReminder = useCallback((reminderId: string, clientId: string) => {
+    const updatedClient = storageService.deleteReminder(reminderId, clientId);
+    if (updatedClient) {
+      setClients([...storageService.getClients()]);
+      syncClientToFirestore(updatedClient);
+      showToast("Eslatma o'chirildi.");
+    }
+  }, []);
+
+  // Handle Execute Client Plan directly from Reminder Table
+  const handleExecuteClientFromReminder = useCallback(
+    (reminder: ClientReminder) => {
+      const openPlan = dailyPlans.find(
+        (p) =>
+          p.clientId === reminder.clientId &&
+          !p.isClosed &&
+          p.status !== 'yopildi'
+      );
+      if (openPlan) {
+        setExecutingPlanItem(openPlan);
+        return;
+      }
+      const currentUsername = user?.username || 'agentp1';
+      const created = storageService.createDailyPlan(currentUsername, [
+        {
+          clientId: reminder.clientId,
+          plannedAction: 'joyiga borildi',
+          planNote: `Eslatma (${reminder.reminderDate}): ${reminder.note}`,
+        },
+      ]);
+      setDailyPlans([...storageService.getActive24hPlans()]);
+      created.forEach((item) => syncPlanToFirestore(item));
+      if (created.length > 0) {
+        setExecutingPlanItem(created[0]);
+      }
+    },
+    [dailyPlans, user]
+  );
 
   // Handle Execute Daily Plan (Agent submits report - works offline & online)
   const handleSavePlanReport = (
@@ -1300,6 +1454,30 @@ export default function App() {
 
               <button
                 type="button"
+                onClick={() => setAgentActiveTab('eslatmalar')}
+                className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  agentActiveTab === 'eslatmalar'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'text-neutral-700 hover:bg-amber-50/70'
+                }`}
+              >
+                <BellRing className="w-4 h-4 shrink-0" />
+                <span>Eslatmalar</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    agentActiveTab === 'eslatmalar'
+                      ? 'bg-white text-amber-800'
+                      : pendingRemindersCount > 0
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-neutral-100 text-neutral-700'
+                  }`}
+                >
+                  {pendingRemindersCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setAgentActiveTab('mijozlar')}
                 className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
                   agentActiveTab === 'mijozlar'
@@ -1337,30 +1515,36 @@ export default function App() {
                   {warehouseProducts.length}
                 </span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setAgentActiveTab('oylik_reja')}
+                className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                  agentActiveTab === 'oylik_reja'
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'text-neutral-700 hover:bg-rose-50/50'
+                }`}
+              >
+                <Target className="w-4 h-4 shrink-0" />
+                <span>1 oylik reja</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    agentActiveTab === 'oylik_reja' ? 'bg-white text-rose-800' : 'bg-neutral-100 text-neutral-700'
+                  }`}
+                >
+                  2
+                </span>
+              </button>
             </div>
 
-            {/* Tab 1: Bugungi kunlik reja + Yuqorida 1 oylik qarz undiruv va 1 oylik mahsulot berish rejalari */}
+            {/* Tab 1: Bugungi kunlik reja */}
             {agentActiveTab === 'reja' && (
               <div className="space-y-4 animate-in fade-in duration-150">
-                <MonthlyPlanProgressCard
-                  plan={activeMonthlyPlan}
-                  userRole={user.role}
-                  currentUsername={user.username}
-                  onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
-                />
-
-                <MonthlyProductPlanProgressCard
-                  plan={activeMonthlyProductPlan}
-                  userRole={user.role}
-                  currentUsername={user.username}
-                  onOpenCreatePlan={() => setIsCreateMonthlyProductPlanOpen(true)}
-                />
-
                 <AgentDailyPlanTable
                   plans={dailyPlans}
                   clients={clients}
                   onOpenCreatePlan={() => setIsCreatePlanOpen(true)}
-                  onOpenMonthlyPlan={() => setIsCreateMonthlyPlanOpen(true)}
+                  onOpenMonthlyPlan={() => setAgentActiveTab('oylik_reja')}
                   onOpenExecuteModal={(item) => setExecutingPlanItem(item)}
                   onMarkPlannedActionDone={(item) =>
                     handleSavePlanReport(item.id, {
@@ -1375,7 +1559,26 @@ export default function App() {
               </div>
             )}
 
-            {/* Tab 2: Mijozlar va hisob-kitoblar */}
+            {/* Tab 2: Eslatmalar (Faqat shu blokda Kalendar va Jadval ko'rinishida) */}
+            {agentActiveTab === 'eslatmalar' && (
+              <div className="space-y-4 animate-in fade-in duration-150">
+                <AgentRemindersSection
+                  reminders={allReminders}
+                  clients={clients}
+                  allPlans={dailyPlans}
+                  currentAgent={user.username}
+                  onToggleReminderStatus={handleToggleReminderStatus}
+                  onDeleteReminder={handleDeleteReminder}
+                  onExecuteClientFromReminder={handleExecuteClientFromReminder}
+                  onViewClientHistory={(client) => {
+                    setSelectedClient(client);
+                    setIsDetailModalOpen(true);
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Tab 3: Mijozlar va hisob-kitoblar */}
             {agentActiveTab === 'mijozlar' && (
               <div className="bg-white rounded-3xl border border-rose-100 shadow-xs p-4 sm:p-6 space-y-4 animate-in fade-in duration-150">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-rose-100/70">
@@ -1426,7 +1629,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Tab 3: 2. Ombor jadvali */}
+            {/* Tab 4: Ombor jadvali */}
             {agentActiveTab === 'ombor' && (
               <div className="bg-white rounded-3xl border border-rose-100 shadow-xs p-4 sm:p-6 space-y-4 animate-in fade-in duration-150">
                 <div className="pb-3 border-b border-rose-100/70 flex items-center justify-between">
@@ -1444,6 +1647,25 @@ export default function App() {
                 </div>
 
                 <AgentWarehouseTable products={warehouseProducts} />
+              </div>
+            )}
+
+            {/* Tab 5 (Ombordan keyingi qo'shimcha joy): 1 oylik qarz va 1 oylik mahsulot berish rejalari */}
+            {agentActiveTab === 'oylik_reja' && (
+              <div className="space-y-4 animate-in fade-in duration-150">
+                <MonthlyPlanProgressCard
+                  plan={activeMonthlyPlan}
+                  userRole={user.role}
+                  currentUsername={user.username}
+                  onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
+                />
+
+                <MonthlyProductPlanProgressCard
+                  plan={activeMonthlyProductPlan}
+                  userRole={user.role}
+                  currentUsername={user.username}
+                  onOpenCreatePlan={() => setIsCreateMonthlyProductPlanOpen(true)}
+                />
               </div>
             )}
           </div>
@@ -1975,6 +2197,7 @@ export default function App() {
         onClose={() => setExecutingPlanItem(null)}
         onSaveReport={handleSavePlanReport}
         onCloseWithoutAction={(planId, reason) => handleClosePlanItem(planId, reason, true)}
+        onSaveReminder={handleSaveReminder}
         client={executingPlanItem ? clients.find((c) => c.id === executingPlanItem.clientId) : null}
         warehouseProducts={warehouseProducts}
       />

@@ -1,11 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Client, DailyPlanItem } from '../types';
 import { formatDateDMY, formatMoney, getAgentDisplayName } from '../utils/format';
 import { getClientLastOperations } from '../utils/clientActivityDates';
-import { Printer, X, Download, CheckCircle2, Image as ImageIcon, Share2 } from 'lucide-react';
+import {
+  computePlanTotals,
+  exportPlansDetailedToExcel,
+} from '../utils/exportPlansDetailedExcel';
+import {
+  Printer,
+  X,
+  Download,
+  CheckCircle2,
+  Image as ImageIcon,
+  Share2,
+  FileSpreadsheet,
+  Filter,
+} from 'lucide-react';
 
 interface RejaPrintModalProps {
   isOpen: boolean;
@@ -17,11 +30,14 @@ interface RejaPrintModalProps {
   allSystemPlans: DailyPlanItem[];
 }
 
+type ExportScopeType = 'current' | 'all' | 'open' | 'closed' | 'done';
+
 const formatPlannedActionLabel = (action?: string) => {
-  if (action === 'telefon qilindi') return 'Telefon qilish';
+  if (action === 'telefon' || action === 'telefon qilindi') return 'Telefon qilish';
   if (action === 'joyiga borildi') return 'Joyiga borish';
-  if (action === 'telefon qilindi + joyiga borildi') return 'Telefon + Joyiga borish';
-  return action || '';
+  if (action === 'ikkisi ham' || action === 'telefon qilindi + joyiga borildi')
+    return 'Telefon + Joyiga borish';
+  return action || 'Joyiga borish';
 };
 
 const isPlanClosedWithoutAction = (item: DailyPlanItem): boolean => {
@@ -36,7 +52,7 @@ const getPlanStatusLabel = (item: DailyPlanItem): string => {
   if (isClosed) {
     return isPlanClosedWithoutAction(item) ? 'Bajarilmasdan yopilgan' : 'Bajarib yopilgan';
   }
-  if (item.status === 'bajarildi') return 'Bajarildi';
+  if (item.status === 'bajarildi' || item.actionDone) return 'Bajarildi (Ochiq)';
   return 'Rejada (Ochiq)';
 };
 
@@ -47,6 +63,85 @@ function sanitizePdfText(input: string | undefined | null): string {
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/\u2116/g, '#')
     .replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ');
+}
+
+function buildExecutedActionSummary(item: DailyPlanItem): string {
+  const lines: string[] = [];
+  if (item.actionDone) {
+    lines.push(`Bajarilgan: ${formatPlannedActionLabel(item.actionDone)}`);
+  }
+
+  const historyList =
+    item.actionsHistory && item.actionsHistory.length > 0
+      ? item.actionsHistory
+      : item.actionDone
+      ? [
+          {
+            timestamp: item.completedAt || item.createdAt,
+            author: item.lastExecutedBy || item.agentUsername,
+            actionDone: item.actionDone,
+            financialAction: item.financialAction,
+            productsDelivered: item.productsDelivered,
+            deliveryPayment: item.deliveryPayment,
+            productsReturned: item.productsReturned,
+            reportNote: item.reportNote,
+          },
+        ]
+      : [];
+
+  historyList.forEach((act, idx) => {
+    const prefix = historyList.length > 1 ? `[#${idx + 1}] ` : '';
+    if (act.financialAction && act.financialAction.amount > 0) {
+      const fa = act.financialAction;
+      let payStr = `${prefix}To'lov (${fa.methodLabel}): ${formatMoney(fa.amount)} USD`;
+      if (fa.amountUzs && fa.exchangeRate) {
+        payStr += ` (${new Intl.NumberFormat('en-US').format(fa.amountUzs)} so'm @ ${new Intl.NumberFormat('en-US').format(fa.exchangeRate)})`;
+      }
+      if (fa.splits && fa.splits.length > 0) {
+        const sp = fa.splits
+          .map((s) => `${s.methodLabel}: ${formatMoney(s.amount)}$`)
+          .join(' + ');
+        payStr += ` [${sp}]`;
+      }
+      lines.push(payStr);
+    }
+
+    if (act.productsDelivered && act.productsDelivered.length > 0) {
+      const pList = act.productsDelivered
+        .map(
+          (p) =>
+            `${p.name} (${p.quantity} ${p.unit} = ${formatMoney(
+              p.totalPrice || p.quantity * p.unitPrice
+            )})`
+        )
+        .join(', ');
+      let dpText = '';
+      if (act.deliveryPayment) {
+        const dp = act.deliveryPayment;
+        dpText = ` [${dp.paymentLabel}`;
+        if (dp.paidAmount && dp.paidAmount > 0) {
+          dpText += `: to'landi ${formatMoney(dp.paidAmount)}`;
+        }
+        if (dp.debtAmount && dp.debtAmount > 0) {
+          dpText += `, nasiya +${formatMoney(dp.debtAmount)}`;
+        }
+        dpText += ']';
+      }
+      lines.push(`${prefix}Berildi: ${pList}${dpText}`);
+    }
+
+    if (act.productsReturned && act.productsReturned.length > 0) {
+      const rList = act.productsReturned
+        .map((r) => `${r.name} (${r.quantity} ${r.unit})`)
+        .join(', ');
+      lines.push(`${prefix}Qaytarildi: ${rList}`);
+    }
+  });
+
+  if (lines.length === 0) {
+    return "Hali amal bajarilmagan";
+  }
+  return lines.join('\n');
 }
 
 function wrapCanvasText(
@@ -90,11 +185,14 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
 }) => {
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [isGeneratingExcel, setIsGeneratingExcel] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [scope, setScope] = useState<ExportScopeType>('current');
 
   useEffect(() => {
     if (isOpen) {
       document.body.classList.add('reja-print-active');
+      setScope('current');
     } else {
       document.body.classList.remove('reja-print-active');
       setStatusMessage(null);
@@ -104,9 +202,33 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     };
   }, [isOpen]);
 
+  const effectivePlans = useMemo(() => {
+    const basePool = allSystemPlans && allSystemPlans.length > 0 ? allSystemPlans : plans;
+    if (scope === 'current') return plans;
+    if (scope === 'all') return basePool;
+    if (scope === 'open') {
+      return basePool.filter((p) => !p.isClosed && p.status !== 'yopildi');
+    }
+    if (scope === 'closed') {
+      return basePool.filter((p) => Boolean(p.isClosed || p.status === 'yopildi'));
+    }
+    if (scope === 'done') {
+      return basePool.filter((p) => Boolean(p.status === 'bajarildi' || p.actionDone));
+    }
+    return plans;
+  }, [scope, plans, allSystemPlans]);
+
   if (!isOpen) return null;
 
-  const totalPlannedAmount = plans.reduce((acc, p) => acc + (p.plannedAmount || 0), 0);
+  const totalPlannedAmount = effectivePlans.reduce((acc, p) => acc + (p.plannedAmount || 0), 0);
+  const totalExecutedPayments = effectivePlans.reduce(
+    (acc, p) => acc + computePlanTotals(p).totalPaymentAmount,
+    0
+  );
+  const totalExecutedProducts = effectivePlans.reduce(
+    (acc, p) => acc + computePlanTotals(p).totalProductsValue,
+    0
+  );
   const printedAtStr = formatDateDMY(new Date().toISOString());
 
   const showTempMessage = (msg: string) => {
@@ -115,7 +237,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
   };
 
   const buildRowsData = () => {
-    return plans.map((item, index) => {
+    return effectivePlans.map((item, index) => {
       const plannedLabel = formatPlannedActionLabel(item.plannedAction || item.actionDone);
       const lastOps = getClientLastOperations(item.clientId, clients, allSystemPlans);
 
@@ -160,17 +282,22 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       const opsCell = `${finLine}\n${prodLine}`;
 
       const actionAndAmount = [
-        plannedLabel || '-',
+        `Reja: ${plannedLabel || '-'}`,
         item.plannedAmount && item.plannedAmount > 0
           ? `Undirish: ${formatMoney(item.plannedAmount)}`
           : '',
+        buildExecutedActionSummary(item),
       ]
         .filter(Boolean)
         .join('\n');
 
       const statusStr = getPlanStatusLabel(item);
-      const noteStr = item.closeReason || item.planNote || item.reportNote || '';
-      const statusCell = noteStr ? `${statusStr}\n${noteStr}` : statusStr;
+      const noteParts: string[] = [];
+      if (item.closeReason) noteParts.push(`Sabab: ${item.closeReason}`);
+      if (item.reportNote && item.reportNote !== item.closeReason)
+        noteParts.push(`Hisobot: ${item.reportNote}`);
+      if (item.planNote) noteParts.push(`Izoh: ${item.planNote}`);
+      const statusCell = noteParts.length > 0 ? `${statusStr}\n${noteParts.join('\n')}` : statusStr;
 
       return [
         String(index + 1),
@@ -186,17 +313,37 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     });
   };
 
+  const handleDownloadExcel = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsGeneratingExcel(true);
+    try {
+      await exportPlansDetailedToExcel(
+        effectivePlans,
+        clients,
+        allSystemPlans,
+        title,
+        subtitle,
+        'Reja_va_Amallar_Batafsil'
+      );
+      showTempMessage('Batafsil Excel (.xlsx) fayl yuklab olindi!');
+    } catch (err) {
+      console.error('Excel export error:', err);
+    } finally {
+      setIsGeneratingExcel(false);
+    }
+  };
+
   // Generates a super-crisp 3x Retina PNG Canvas of the entire plan table
   const generateHighResImageCanvas = (): HTMLCanvasElement => {
-    const scale = 3; // 3x DPI for ultra-sharp zoomable text on Telegram/WhatsApp/Mobile
-    const logicalWidth = 1480;
+    const scale = 3;
+    const logicalWidth = 1520;
     const padX = 24;
     const padY = 24;
     const innerWidth = logicalWidth - padX * 2;
 
-    const colRatios = [0.035, 0.115, 0.125, 0.095, 0.135, 0.11, 0.185, 0.11, 0.09];
+    const colRatios = [0.035, 0.11, 0.12, 0.09, 0.125, 0.105, 0.165, 0.15, 0.1];
     const colWidths = colRatios.map((r) => Math.floor(innerWidth * r));
-    // Adjust last column to match exact innerWidth
     const usedWidth = colWidths.slice(0, -1).reduce((a, b) => a + b, 0);
     colWidths[colWidths.length - 1] = innerWidth - usedWidth;
 
@@ -208,13 +355,12 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       'Manzil',
       'Joriy qarz / Haqdorlik',
       'Oxirgi marta pul bergan va mahsulot amaliyoti (d/m/y)',
-      'Tanlangan amal va Undirish',
-      'Holati / Izoh',
+      "Rejadagi va Bajarilgan amallar (To'lov / Mahsulot)",
+      'Holati / Sabab / Izoh',
     ];
 
     const rawRows = buildRowsData();
 
-    // Measure canvas
     const measureCanvas = document.createElement('canvas');
     const mCtx = measureCanvas.getContext('2d')!;
     const fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -223,7 +369,6 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     const cellPadY = 8;
     const lineHeight = 16;
 
-    // Measure header height
     mCtx.font = `800 12px ${fontFamily}`;
     const wrappedHeaders = headers.map((h, cIdx) =>
       wrapCanvasText(mCtx, h, colWidths[cIdx] - cellPadX * 2)
@@ -231,7 +376,6 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     const maxHeaderLines = Math.max(...wrappedHeaders.map((lines) => lines.length), 1);
     const headerRowHeight = maxHeaderLines * lineHeight + cellPadY * 2;
 
-    // Measure body rows height
     mCtx.font = `600 11.5px ${fontFamily}`;
     const wrappedBodyRows = rawRows.map((row) =>
       row.map((cellText, cIdx) =>
@@ -256,16 +400,13 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     const ctx = canvas.getContext('2d')!;
     ctx.scale(scale, scale);
 
-    // White background
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, logicalWidth, logicalHeight);
 
-    // Outer border
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2.5;
     ctx.strokeRect(10, 10, logicalWidth - 20, logicalHeight - 20);
 
-    // Header Box
     const headerBottomY = padY + topHeaderBoxHeight;
     ctx.beginPath();
     ctx.moveTo(padX, headerBottomY);
@@ -273,22 +414,19 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // Title
     ctx.fillStyle = '#000000';
     ctx.font = `800 20px ${fontFamily}`;
     ctx.textBaseline = 'top';
     ctx.fillText(title.toUpperCase(), padX, padY + 6);
 
-    // Subtitle
     ctx.font = `600 13px ${fontFamily}`;
-    const subText = `Chop etilgan sana: ${printedAtStr} | Jami mijozlar: ${plans.length} ta${
+    const subText = `Chop etilgan sana: ${printedAtStr} | Jami mijozlar: ${effectivePlans.length} ta${
       subtitle ? ` | ${subtitle}` : ''
     }`;
     ctx.fillText(subText, padX, padY + 36);
 
-    // Right summary box
-    const totalStr = `Undirish rejasi jami: ${formatMoney(totalPlannedAmount)}`;
-    ctx.font = `800 13.5px monospace`;
+    const totalStr = `Reja: ${formatMoney(totalPlannedAmount)} | To'lov: ${formatMoney(totalExecutedPayments)} | Mahsulot: ${formatMoney(totalExecutedProducts)}`;
+    ctx.font = `800 12.5px monospace`;
     const totalBoxW = ctx.measureText(totalStr).width + 24;
     const totalBoxH = 34;
     const totalBoxX = logicalWidth - padX - totalBoxW;
@@ -297,7 +435,6 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     ctx.strokeRect(totalBoxX, totalBoxY, totalBoxW, totalBoxH);
     ctx.fillText(totalStr, totalBoxX + 12, totalBoxY + 9);
 
-    // Draw Table Header
     let curY = headerBottomY + gapBetweenHeaderAndTable;
     ctx.fillStyle = '#f3f4f6';
     ctx.fillRect(padX, curY, innerWidth, headerRowHeight);
@@ -325,12 +462,10 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
 
     curY += headerRowHeight;
 
-    // Draw Body Rows
     for (let rIdx = 0; rIdx < wrappedBodyRows.length; rIdx++) {
       const rowH = rowHeights[rIdx];
       const rowLines = wrappedBodyRows[rIdx];
 
-      // Subtle zebra background for readability while keeping crisp black borders
       ctx.fillStyle = rIdx % 2 === 1 ? '#fafafa' : '#ffffff';
       ctx.fillRect(padX, curY, innerWidth, rowH);
 
@@ -361,7 +496,6 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       curY += rowH;
     }
 
-    // Outer table border emphasis
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
     ctx.strokeRect(
@@ -418,7 +552,6 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
           const fileName = `Rejadagi_mijozlar_${fileDate}.png`;
           const file = new File([blob], fileName, { type: 'image/png' });
 
-          // 1. Try native Web Share API with file (Telegram, WhatsApp, mobile/desktop share sheet)
           if (
             typeof navigator !== 'undefined' &&
             navigator.share &&
@@ -427,7 +560,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
             try {
               await navigator.share({
                 title: `${title} (${fileDate})`,
-                text: `${title} — Jami: ${plans.length} ta mijoz`,
+                text: `${title} — Jami: ${effectivePlans.length} ta mijoz`,
                 files: [file],
               });
               showTempMessage('Rasm ulashildi!');
@@ -439,7 +572,6 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
             }
           }
 
-          // 2. Fallback: copy image to clipboard if supported, and also download it
           let copiedToClipboard = false;
           if (
             typeof navigator !== 'undefined' &&
@@ -452,7 +584,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
               ]);
               copiedToClipboard = true;
             } catch {
-              // ignore clipboard error
+              // ignore
             }
           }
 
@@ -495,27 +627,25 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       const pageWidth = doc.internal.pageSize.getWidth(); // 297mm
       const marginX = 8;
 
-      // Header Box
       doc.setDrawColor(0, 0, 0);
       doc.setLineWidth(0.5);
       doc.rect(marginX, 8, pageWidth - marginX * 2, 18);
 
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(13);
+      doc.setFontSize(12);
       doc.setTextColor(0, 0, 0);
       doc.text(sanitizePdfText(title), marginX + 4, 15);
 
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9);
-      const subHeader = `Sana: ${sanitizePdfText(printedAtStr)} | Jami mijozlar: ${plans.length} ta${
+      doc.setFontSize(8.5);
+      const subHeader = `Sana: ${sanitizePdfText(printedAtStr)} | Jami: ${effectivePlans.length} ta${
         subtitle ? ` | ${sanitizePdfText(subtitle)}` : ''
       }`;
       doc.text(subHeader, marginX + 4, 22);
 
-      // Right summary in header
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      const totalStr = `Undirish rejasi jami: ${sanitizePdfText(formatMoney(totalPlannedAmount))}`;
+      doc.setFontSize(9);
+      const totalStr = `Reja: ${sanitizePdfText(formatMoney(totalPlannedAmount))} | To'lov: ${sanitizePdfText(formatMoney(totalExecutedPayments))} | Mahsulot: ${sanitizePdfText(formatMoney(totalExecutedProducts))}`;
       doc.text(totalStr, pageWidth - marginX - 4, 18, { align: 'right' });
 
       const tableRows = buildRowsData().map((row) =>
@@ -525,7 +655,7 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       autoTable(doc, {
         startY: 29,
         margin: { left: marginX, right: marginX, bottom: 10 },
-        tableWidth: pageWidth - marginX * 2, // Full 281mm width across A4 Landscape
+        tableWidth: pageWidth - marginX * 2,
         head: [
           [
             '#',
@@ -535,15 +665,15 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
             'Manzil',
             'Joriy qarz / Haqdorlik',
             "Oxirgi marta pul bergan va mahsulot amaliyoti (d/m/y)",
-            'Tanlangan amal va Undirish',
-            'Holati / Izoh',
+            "Rejadagi va Bajarilgan amallar (To'lov / Mahsulot)",
+            'Holati / Sabab / Izoh',
           ],
         ],
         body: tableRows,
         theme: 'grid',
         styles: {
           font: 'helvetica',
-          fontSize: 8,
+          fontSize: 7.5,
           cellPadding: 2,
           textColor: [0, 0, 0],
           lineColor: [0, 0, 0],
@@ -555,20 +685,20 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
           fillColor: [235, 235, 235],
           textColor: [0, 0, 0],
           fontStyle: 'bold',
-          fontSize: 8,
+          fontSize: 7.5,
           lineColor: [0, 0, 0],
           lineWidth: 0.4,
         },
         columnStyles: {
           0: { cellWidth: 8, halign: 'center', fontStyle: 'bold' },
-          1: { cellWidth: 30 },
-          2: { cellWidth: 34, fontStyle: 'bold' },
-          3: { cellWidth: 26 },
-          4: { cellWidth: 38 },
-          5: { cellWidth: 31, fontStyle: 'bold' },
-          6: { cellWidth: 54 },
-          7: { cellWidth: 33 },
-          8: { cellWidth: 27 },
+          1: { cellWidth: 28 },
+          2: { cellWidth: 32, fontStyle: 'bold' },
+          3: { cellWidth: 24 },
+          4: { cellWidth: 34 },
+          5: { cellWidth: 29, fontStyle: 'bold' },
+          6: { cellWidth: 46 },
+          7: { cellWidth: 50 },
+          8: { cellWidth: 30 },
         },
         didDrawPage: (data) => {
           const pageCount = doc.getNumberOfPages();
@@ -585,9 +715,9 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
       });
 
       const fileDate = new Date().toISOString().slice(0, 10);
-      doc.save(`Rejadagi_mijozlar_${fileDate}.pdf`);
+      doc.save(`Reja_va_Amallar_Batafsil_${fileDate}.pdf`);
 
-      showTempMessage('PDF yuklab olindi!');
+      showTempMessage('Batafsil PDF yuklab olindi!');
     } catch (err) {
       console.error('PDF generation error:', err);
       document.body.classList.add('reja-print-active');
@@ -598,187 +728,59 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
   };
 
   const renderSheetContent = () => (
-    <div
-      style={{
-        width: '100%',
-        backgroundColor: '#ffffff',
-        color: '#000000',
-        border: '2px solid #000000',
-        padding: '16px',
-        boxSizing: 'border-box',
-        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      }}
-    >
+    <div className="w-full bg-white text-black border-2 border-black p-4 box-border font-sans">
       {/* Header */}
-      <div
-        style={{
-          borderBottom: '2px solid #000000',
-          paddingBottom: '10px',
-          marginBottom: '12px',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          gap: '16px',
-        }}
-      >
+      <div className="border-b-2 border-black pb-2.5 mb-3 flex flex-wrap justify-between items-start gap-4">
         <div>
-          <h1
-            style={{
-              fontSize: '18px',
-              fontWeight: 800,
-              textTransform: 'uppercase',
-              margin: 0,
-              color: '#000000',
-              letterSpacing: '0.02em',
-            }}
-          >
+          <h1 className="text-lg font-extrabold uppercase m-0 text-black tracking-wide">
             {title}
           </h1>
-          <p
-            style={{
-              fontSize: '11.5px',
-              fontWeight: 600,
-              margin: '4px 0 0 0',
-              color: '#000000',
-            }}
-          >
-            Chop etilgan sana: {printedAtStr} | Jami mijozlar: {plans.length} ta
+          <p className="text-xs font-semibold mt-1 mb-0 text-black">
+            Chop etilgan sana: {printedAtStr} | Jami qatorlar: {effectivePlans.length} ta
             {subtitle ? ` | ${subtitle}` : ''}
           </p>
         </div>
 
-        <div
-          style={{
-            border: '1.5px solid #000000',
-            padding: '6px 12px',
-            fontSize: '12px',
-            fontWeight: 800,
-            fontFamily: 'monospace',
-            textAlign: 'right',
-            color: '#000000',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          Undirish rejasi jami: {formatMoney(totalPlannedAmount)}
+        <div className="border-2 border-black px-3 py-1.5 text-xs font-extrabold font-mono text-right text-black whitespace-nowrap">
+          Reja: {formatMoney(totalPlannedAmount)} | To&apos;lov: {formatMoney(totalExecutedPayments)} | Mahsulot: {formatMoney(totalExecutedProducts)}
         </div>
       </div>
 
       {/* Full-width Black-Bordered Table */}
-      <table
-        style={{
-          width: '100%',
-          borderCollapse: 'collapse',
-          tableLayout: 'fixed',
-          border: '2px solid #000000',
-          fontSize: '10.5px',
-          color: '#000000',
-        }}
-      >
+      <table className="w-full border-collapse table-fixed border-2 border-black text-[10.5px] text-black">
         <thead>
-          <tr style={{ backgroundColor: '#f3f4f6' }}>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 4px',
-                textAlign: 'center',
-                fontWeight: 800,
-                width: '3.5%',
-              }}
-            >
+          <tr className="bg-neutral-100">
+            <th className="border border-black px-1 py-1.5 text-center font-extrabold w-[3.5%]">
               №
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '11%',
-              }}
-            >
-              Qaysi agent orqali qo'shilgan
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[10.5%]">
+              Qaysi agent orqali qo&apos;shilgan
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '12.5%',
-              }}
-            >
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[11.5%]">
               Mijoz F.I.Sh
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '9.5%',
-              }}
-            >
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[9%]">
               Telefon
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '13.5%',
-              }}
-            >
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[12%]">
               Manzil
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '11.5%',
-              }}
-            >
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[10.5%]">
               Joriy qarz / Haqdorlik
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '19%',
-              }}
-            >
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[16%]">
               Oxirgi marta pul bergan va mahsulot amaliyoti (d/m/y)
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '11%',
-              }}
-            >
-              Tanlangan amal va Undirish
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[17%]">
+              Rejadagi va Bajarilgan amallar (To&apos;lov / Mahsulot)
             </th>
-            <th
-              style={{
-                border: '1px solid #000000',
-                padding: '6px 5px',
-                textAlign: 'left',
-                fontWeight: 800,
-                width: '8.5%',
-              }}
-            >
-              Holati / Izoh
+            <th className="border border-black px-1.5 py-1.5 text-left font-extrabold w-[10%]">
+              Holati / Sabab / Izoh
             </th>
           </tr>
         </thead>
         <tbody>
-          {plans.map((item, index) => {
+          {effectivePlans.map((item, index) => {
             const plannedLabel = formatPlannedActionLabel(
               item.plannedAction || item.actionDone
             );
@@ -792,98 +794,46 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
               (item.actionsHistory && item.actionsHistory.length > 0
                 ? item.actionsHistory[0].author
                 : undefined);
+            const executedSummary = buildExecutedActionSummary(item);
+
             return (
-              <tr
-                key={item.id}
-                style={{
-                  pageBreakInside: 'avoid',
-                  breakInside: 'avoid',
-                }}
-              >
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 4px',
-                    textAlign: 'center',
-                    fontFamily: 'monospace',
-                    fontWeight: 700,
-                    verticalAlign: 'top',
-                  }}
-                >
+              <tr key={item.id} className="break-inside-avoid">
+                <td className="border border-black px-1 py-1.5 text-center font-mono font-bold align-top">
                   {index + 1}
                 </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    verticalAlign: 'top',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  <div style={{ fontWeight: 800 }}>
+                <td className="border border-black px-1.5 py-1.5 align-top break-words">
+                  <div className="font-extrabold">
                     Tuzdi: {getAgentDisplayName(item.agentUsername)}
                   </div>
                   {executor && (
-                    <div style={{ fontWeight: 700, fontSize: '9.5px', marginTop: '1px' }}>
+                    <div className="font-bold text-[9.5px] mt-0.5">
                       Bajardi: {getAgentDisplayName(executor)}
                     </div>
                   )}
-                  <div style={{ fontSize: '9px', marginTop: '2px', fontFamily: 'monospace' }}>
+                  <div className="text-[9px] mt-0.5 font-mono">
                     {formatDateDMY(item.planDate || item.createdAt)}
                   </div>
                 </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    fontWeight: 700,
-                    verticalAlign: 'top',
-                    wordBreak: 'break-word',
-                  }}
-                >
+                <td className="border border-black px-1.5 py-1.5 font-bold align-top break-words">
                   {item.clientName}
                 </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    fontFamily: 'monospace',
-                    verticalAlign: 'top',
-                    wordBreak: 'break-word',
-                  }}
-                >
+                <td className="border border-black px-1.5 py-1.5 font-mono align-top break-words">
                   {item.clientPhone}
                 </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    verticalAlign: 'top',
-                    wordBreak: 'break-word',
-                  }}
-                >
+                <td className="border border-black px-1.5 py-1.5 align-top break-words">
                   {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') ||
                     item.clientAddress ||
                     '-'}
                   {item.clientLandmark ? ` (${item.clientLandmark})` : ''}
                 </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    verticalAlign: 'top',
-                    fontFamily: 'monospace',
-                    fontSize: '10px',
-                    wordBreak: 'break-word',
-                  }}
-                >
+                <td className="border border-black px-1.5 py-1.5 align-top font-mono text-[10px] break-words">
                   {lastOps.currentDebt > 0 && (
-                    <div style={{ fontWeight: 800 }}>
+                    <div className="font-extrabold">
                       Qarzdorlik: {formatMoney(lastOps.currentDebt)}
                     </div>
                   )}
                   {lastOps.currentAdvance > 0 && (
-                    <div style={{ fontWeight: 800, marginTop: lastOps.currentDebt > 0 ? '2px' : 0 }}>
+                    <div className={`font-extrabold ${lastOps.currentDebt > 0 ? 'mt-0.5' : ''}`}>
                       Haqdorlik: {formatMoney(lastOps.currentAdvance)}
                     </div>
                   )}
@@ -891,68 +841,42 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
                     <span>0 USD</span>
                   )}
                 </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    verticalAlign: 'top',
-                    fontSize: '10px',
-                    wordBreak: 'break-word',
-                  }}
-                >
+                <td className="border border-black px-1.5 py-1.5 align-top text-[10px] break-words">
                   <div>
                     <strong>Oxirgi pul bergan: </strong>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>
-                      {payDetail}
-                    </span>
+                    <span className="font-mono font-bold">{payDetail}</span>
                   </div>
-                  <div style={{ marginTop: '3px' }}>
+                  <div className="mt-1">
                     <strong>
                       {lastOps.lastProductType === 'qaytarilgan'
                         ? 'Mahsulot qaytarilgan: '
                         : 'Mahsulot berilgan: '}
                     </strong>
-                    <span style={{ fontFamily: 'monospace' }}>
+                    <span className="font-mono">
                       {lastOps.lastProductFormatted || "Amaliyot yo'q"}
                     </span>
                   </div>
                 </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    verticalAlign: 'top',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  <div style={{ fontWeight: 600 }}>{plannedLabel || '-'}</div>
+                <td className="border border-black px-1.5 py-1.5 align-top break-words">
+                  <div className="font-bold">Reja: {plannedLabel || '-'}</div>
                   {item.plannedAmount && item.plannedAmount > 0 ? (
-                    <div
-                      style={{
-                        fontFamily: 'monospace',
-                        fontWeight: 700,
-                        fontSize: '9.5px',
-                        marginTop: '2px',
-                      }}
-                    >
+                    <div className="font-mono font-bold text-[9.5px] mt-0.5">
                       Undirish: {formatMoney(item.plannedAmount)}
                     </div>
                   ) : null}
-                </td>
-                <td
-                  style={{
-                    border: '1px solid #000000',
-                    padding: '5px 5px',
-                    verticalAlign: 'top',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  <div style={{ fontWeight: 700 }}>
-                    {getPlanStatusLabel(item)}
+                  <div className="mt-1 pt-1 border-t border-neutral-300 text-[9.5px] whitespace-pre-line">
+                    {executedSummary}
                   </div>
-                  {(item.closeReason || item.planNote || item.reportNote) && (
-                    <div style={{ fontSize: '9.5px', marginTop: '2px' }}>
-                      {item.closeReason || item.planNote || item.reportNote}
+                </td>
+                <td className="border border-black px-1.5 py-1.5 align-top break-words">
+                  <div className="font-bold">{getPlanStatusLabel(item)}</div>
+                  {(item.closeReason || item.reportNote || item.planNote) && (
+                    <div className="text-[9.5px] mt-0.5 whitespace-pre-line">
+                      {item.closeReason
+                        ? `Sabab: ${item.closeReason}`
+                        : item.reportNote
+                        ? `Hisobot: ${item.reportNote}`
+                        : `Izoh: ${item.planNote}`}
                     </div>
                   )}
                 </td>
@@ -975,10 +899,10 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
               <Printer className="w-5 h-5 text-rose-400 shrink-0" />
               <div>
                 <h3 className="text-sm sm:text-base font-bold leading-tight">
-                  {title} (PDF / Tiniq Rasm / Share)
+                  {title} (Excel / PDF / Tiniq Rasm)
                 </h3>
                 <p className="text-[11px] text-neutral-300">
-                  To'liq A4 qora borderli jadval ({plans.length} ta mijoz) — PDF yoki tiniq rasm (PNG) sifatida saqlash va ulashish
+                  Yopilgan va yopilmagan barcha amallar jadvali ({effectivePlans.length} ta qator) — Excel (.xlsx), PDF yoki PNG formatda yuklash
                 </p>
               </div>
             </div>
@@ -991,23 +915,13 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
               )}
               <button
                 type="button"
-                disabled={isGeneratingImage}
-                onClick={handleDownloadImage}
-                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-                title="Jadvalni yuqori aniqlikdagi tiniq PNG rasm formatida yuklab olish"
-              >
-                <ImageIcon className="w-4 h-4" />
-                <span>{isGeneratingImage ? 'Tayyorlanmoqda...' : 'Rasm (PNG) yuklash'}</span>
-              </button>
-              <button
-                type="button"
-                disabled={isGeneratingImage}
-                onClick={handleShareImage}
+                disabled={isGeneratingExcel}
+                onClick={handleDownloadExcel}
                 className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-                title="Rasmni Telegram, WhatsApp yoki boshqa ilovalarga ulashish (Share)"
+                title="To'liq va batafsil Excel (.xlsx) formatda yuklab olish"
               >
-                <Share2 className="w-4 h-4" />
-                <span>Ulashish (Share)</span>
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>{isGeneratingExcel ? 'Yuklanmoqda...' : 'Excel (.xlsx) yuklash'}</span>
               </button>
               <button
                 type="button"
@@ -1016,7 +930,27 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
                 className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 active:bg-rose-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <Download className="w-4 h-4" />
-                <span>{isGeneratingPdf ? 'PDF tayyorlanmoqda...' : 'Print / PDF saqlash'}</span>
+                <span>{isGeneratingPdf ? 'PDF tayyorlanmoqda...' : 'PDF / Print saqlash'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={isGeneratingImage}
+                onClick={handleDownloadImage}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                title="Jadvalni yuqori aniqlikdagi tiniq PNG rasm formatida yuklab olish"
+              >
+                <ImageIcon className="w-4 h-4" />
+                <span>{isGeneratingImage ? 'Tayyorlanmoqda...' : 'Rasm (PNG)'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={isGeneratingImage}
+                onClick={handleShareImage}
+                className="px-3 py-2 rounded-xl bg-neutral-700 hover:bg-neutral-600 disabled:opacity-60 text-white text-xs sm:text-sm font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                title="Rasmni Telegram, WhatsApp yoki boshqa ilovalarga ulashish (Share)"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Share</span>
               </button>
               <button
                 type="button"
@@ -1029,6 +963,64 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
             </div>
           </div>
 
+          {/* Scope Filter Bar */}
+          <div className="px-4 sm:px-5 py-2.5 bg-neutral-50 border-b border-neutral-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-700">
+              <Filter className="w-3.5 h-3.5 text-neutral-500" />
+              <span>Yuklab olish qamrovi:</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { id: 'current', label: `Ko'rsatilayotgan ro'yxat (${plans.length})` },
+                  {
+                    id: 'all',
+                    label: `Barchasi: Yopilgan va Yopilmagan (${
+                      allSystemPlans && allSystemPlans.length > 0 ? allSystemPlans.length : plans.length
+                    })`,
+                  },
+                  {
+                    id: 'open',
+                    label: `Faqat yopilmaganlar (${
+                      (allSystemPlans && allSystemPlans.length > 0 ? allSystemPlans : plans).filter(
+                        (p) => !p.isClosed && p.status !== 'yopildi'
+                      ).length
+                    })`,
+                  },
+                  {
+                    id: 'closed',
+                    label: `Faqat yopilganlar (${
+                      (allSystemPlans && allSystemPlans.length > 0 ? allSystemPlans : plans).filter(
+                        (p) => Boolean(p.isClosed || p.status === 'yopildi')
+                      ).length
+                    })`,
+                  },
+                  {
+                    id: 'done',
+                    label: `Amal bajarilganlar (${
+                      (allSystemPlans && allSystemPlans.length > 0 ? allSystemPlans : plans).filter(
+                        (p) => Boolean(p.status === 'bajarildi' || p.actionDone)
+                      ).length
+                    })`,
+                  },
+                ] as const
+              ).map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setScope(tab.id)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                    scope === tab.id
+                      ? 'bg-neutral-900 text-white shadow-xs'
+                      : 'bg-white border border-neutral-300 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Screen Preview Body */}
           <div className="p-3 sm:p-6 overflow-y-auto bg-neutral-100 flex-1">
             {renderSheetContent()}
@@ -1037,9 +1029,27 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
           {/* Bottom Controls */}
           <div className="px-5 py-3 bg-white border-t border-neutral-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
             <span className="text-xs text-neutral-600">
-              * Jadvalni <strong>PDF</strong> yoki <strong>tiniq PNG rasm</strong> formatida yuklab olishingiz va <strong>Share</strong> tugmasi orqali ulashishingiz mumkin.
+              * Yopilgan va yopilmagan har qanday amallarni to&apos;liq va batafsil holatda <strong>Excel (.xlsx)</strong>, <strong>PDF</strong> yoki <strong>PNG rasm</strong> formatida yuklab olishingiz mumkin.
             </span>
             <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                disabled={isGeneratingExcel}
+                onClick={handleDownloadExcel}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Excel (.xlsx) yuklash</span>
+              </button>
+              <button
+                type="button"
+                disabled={isGeneratingPdf}
+                onClick={handleDownloadAndPrintPdf}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{isGeneratingPdf ? 'Tayyorlanmoqda...' : 'PDF / Print saqlash'}</span>
+              </button>
               <button
                 type="button"
                 disabled={isGeneratingImage}
@@ -1048,24 +1058,6 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
               >
                 <ImageIcon className="w-3.5 h-3.5" />
                 <span>Rasm (PNG) yuklash</span>
-              </button>
-              <button
-                type="button"
-                disabled={isGeneratingImage}
-                onClick={handleShareImage}
-                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Share2 className="w-3.5 h-3.5" />
-                <span>Rasmni ulashish (Share)</span>
-              </button>
-              <button
-                type="button"
-                disabled={isGeneratingPdf}
-                onClick={handleDownloadAndPrintPdf}
-                className="px-4 py-2 rounded-xl bg-neutral-900 hover:bg-black disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5 text-rose-400" />
-                <span>{isGeneratingPdf ? 'Tayyorlanmoqda...' : 'Print / PDF saqlash'}</span>
               </button>
               <button
                 type="button"
@@ -1090,4 +1082,3 @@ export const RejaPrintModal: React.FC<RejaPrintModalProps> = ({
     </>
   );
 };
-

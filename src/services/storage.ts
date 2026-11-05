@@ -15,6 +15,7 @@ import {
   MonthlyPlanClientItem,
   MonthlyProductPlanClientItem,
   PlannedProductDeliveryItem,
+  ClientReminder,
 } from '../types';
 import { parseLegacyAddress, formatAddress } from '../utils/location';
 
@@ -860,17 +861,13 @@ class StorageService {
         return [];
       }
       const deletedIds = getDeletedClientIds();
-      if (!this.clientsMapCache) {
-        this.getClients();
-      }
       const parsed: DailyPlanItem[] = JSON.parse(raw);
       const filtered = parsed.filter(
         (p) =>
           p &&
           p.clientId &&
           !deletedIds.has(p.clientId) &&
-          !isClosedPlanExpired7Days(p) &&
-          (this.clientsMapCache ? this.clientsMapCache.has(p.clientId) : true)
+          !isClosedPlanExpired7Days(p)
       );
       const { uniquePlans, duplicateIds } = this.deduplicatePlansByClient(filtered);
       if (duplicateIds.length > 0 || filtered.length !== parsed.length) {
@@ -1328,7 +1325,9 @@ class StorageService {
           ? 'Reja bajarilmasdan yopildi'
           : 'Reja yakunlandi va yopildi',
         details: `${author} tomonidan ushbu mijoz bo'yicha reja ${
-          isUnperformedClose ? 'amal bajarilmasdan' : 'amallar yakunlanib'
+          isUnperformedClose
+            ? 'amal bajarilmasdan'
+            : `amallar yakunlanib (Amal: ${plan.actionDone || 'joyiga borildi'})`
         } yopildi. Yopilish sababi: ${finalReason}`,
       });
       this.updateClient(client.id, {
@@ -2833,6 +2832,121 @@ class StorageService {
       isExpired,
       totalPaymentsCount,
     };
+  }
+
+  // =========================================================================
+  // CLIENT REMINDERS (Mijozlar bo'yicha eslatmalar — Kalendar va Jadval uchun)
+  // =========================================================================
+
+  public getReminders(): ClientReminder[] {
+    const clients = this.getClients();
+    const map = new Map<string, ClientReminder>();
+
+    clients.forEach((c) => {
+      if (Array.isArray(c.reminders)) {
+        c.reminders.forEach((r) => {
+          if (r && r.id && r.reminderDate) {
+            map.set(r.id, {
+              ...r,
+              clientId: c.id,
+              clientName: c.name,
+              clientPhone: c.phone,
+              clientAddress: c.address,
+            });
+          }
+        });
+      }
+    });
+
+    return Array.from(map.values()).sort((a, b) => {
+      if (a.reminderDate !== b.reminderDate) {
+        return a.reminderDate.localeCompare(b.reminderDate);
+      }
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }
+
+  public addReminder(data: {
+    clientId: string;
+    planId?: string;
+    reminderDate: string;
+    note: string;
+    createdBy: string;
+  }): { reminder: ClientReminder; updatedClient: Client | null } | null {
+    const client = this.getClientById(data.clientId);
+    if (!client) return null;
+
+    const nowStr = new Date().toISOString();
+    const reminder: ClientReminder = {
+      id: 'rem_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      clientId: client.id,
+      clientName: client.name,
+      clientPhone: client.phone,
+      clientAddress: client.address,
+      planItemId: data.planId,
+      agentUsername: data.createdBy,
+      reminderDate: data.reminderDate,
+      note: data.note.trim(),
+      createdAt: nowStr,
+      status: 'kutilmoqda',
+    };
+
+    const existingReminders = Array.isArray(client.reminders) ? [...client.reminders] : [];
+    existingReminders.unshift(reminder);
+
+    const currentLogs = client.logs ? [...client.logs] : [];
+    currentLogs.unshift({
+      id: 'log_' + Date.now() + '_rem',
+      clientId: client.id,
+      author: data.createdBy,
+      timestamp: nowStr,
+      type: 'visit_action',
+      title: `Eslatma belgilandi (${data.reminderDate})`,
+      details: `${data.createdBy} tomonidan ${data.reminderDate} sanasiga eslatma qo'yildi: "${data.note.trim()}"`,
+    });
+
+    const updatedClient = this.updateClient(client.id, {
+      reminders: existingReminders,
+      logs: currentLogs,
+    });
+
+    return { reminder, updatedClient };
+  }
+
+  public toggleReminderStatus(
+    reminderId: string,
+    clientId: string,
+    author: string
+  ): Client | null {
+    const client = this.getClientById(clientId);
+    if (!client || !Array.isArray(client.reminders)) return null;
+
+    const nowStr = new Date().toISOString();
+    const updatedReminders = client.reminders.map((r) => {
+      if (r.id !== reminderId) return r;
+      const nextStatus: 'kutilmoqda' | 'bajarildi' =
+        r.status === 'bajarildi' ? 'kutilmoqda' : 'bajarildi';
+      return {
+        ...r,
+        status: nextStatus,
+        completedAt: nextStatus === 'bajarildi' ? nowStr : undefined,
+        completedBy: nextStatus === 'bajarildi' ? author : undefined,
+      };
+    });
+
+    return this.updateClient(client.id, {
+      reminders: updatedReminders,
+    });
+  }
+
+  public deleteReminder(reminderId: string, clientId: string): Client | null {
+    const client = this.getClientById(clientId);
+    if (!client || !Array.isArray(client.reminders)) return null;
+
+    const updatedReminders = client.reminders.filter((r) => r.id !== reminderId);
+    return this.updateClient(client.id, {
+      reminders: updatedReminders,
+    });
   }
 }
 

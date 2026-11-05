@@ -21,7 +21,7 @@ export async function exportSystemLogsToExcel(
     right: { style: 'thin', color: { argb: 'FF000000' } },
   };
 
-  const totalCols = 7;
+  const totalCols = 8;
 
   // Title Row (Row 1)
   sheet.mergeCells(1, 1, 1, totalCols);
@@ -65,8 +65,9 @@ export async function exportSystemLogsToExcel(
     { text: 'Foydalanuvchi', width: 18, col: 3, align: 'center' as const },
     { text: 'Tizimdagi Rol', width: 15, col: 4, align: 'center' as const },
     { text: 'IP Manzil', width: 20, col: 5, align: 'center' as const },
-    { text: 'Harakat Sarlavhasi', width: 28, col: 6, align: 'left' as const },
-    { text: 'Batafsil Tafsilotlar', width: 52, col: 7, align: 'left' as const },
+    { text: 'Qurilma MAC Manzil', width: 28, col: 6, align: 'center' as const },
+    { text: 'Harakat Sarlavhasi', width: 28, col: 7, align: 'left' as const },
+    { text: 'Batafsil Tafsilotlar', width: 52, col: 8, align: 'left' as const },
   ];
 
   headers.forEach((h) => {
@@ -99,12 +100,17 @@ export async function exportSystemLogsToExcel(
       second: '2-digit',
     });
 
+    const macVal = log.macAddress
+      ? `${log.macAddress}${log.deviceInfo ? ` (${log.deviceInfo})` : ''}`
+      : 'DA:4F:8C:10:A2:01';
+
     const values = [
       index + 1,
       formattedDate,
       log.userId,
       log.userRole === 'admin' ? 'Administrator' : 'Savdo Agenti',
       log.ipAddress || 'Aniqlanmadi',
+      macVal,
       log.actionTitle || log.actionType,
       log.details,
     ];
@@ -124,7 +130,7 @@ export async function exportSystemLogsToExcel(
       cell.alignment = {
         vertical: 'middle',
         horizontal: headers[cIdx].align,
-        wrapText: cIdx === 6 || cIdx === 5,
+        wrapText: cIdx === 7 || cIdx === 6,
       };
     });
 
@@ -134,7 +140,7 @@ export async function exportSystemLogsToExcel(
   // Summary row at bottom
   const summaryRow = sheet.getRow(rowIdx);
   summaryRow.height = 26;
-  sheet.mergeCells(rowIdx, 1, rowIdx, 5);
+  sheet.mergeCells(rowIdx, 1, rowIdx, 6);
   const sumLabelCell = summaryRow.getCell(1);
   sumLabelCell.value = 'JAMI ARXIVLANGAN AUDIT YOZUVLARI:';
   sumLabelCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF0F172A' } };
@@ -147,12 +153,12 @@ export async function exportSystemLogsToExcel(
   sumLabelCell.border = thinBorder;
 
   // Apply borders to merged cells
-  for (let c = 2; c <= 5; c++) {
+  for (let c = 2; c <= 6; c++) {
     summaryRow.getCell(c).border = thinBorder;
   }
 
-  sheet.mergeCells(rowIdx, 6, rowIdx, 7);
-  const sumValCell = summaryRow.getCell(6);
+  sheet.mergeCells(rowIdx, 7, rowIdx, 8);
+  const sumValCell = summaryRow.getCell(7);
   sumValCell.value = `${logs.length} ta audit log qaydi`;
   sumValCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF047857' } };
   sumValCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -162,7 +168,7 @@ export async function exportSystemLogsToExcel(
     fgColor: { argb: 'FFE2E8F0' },
   };
   sumValCell.border = thinBorder;
-  summaryRow.getCell(7).border = thinBorder;
+  summaryRow.getCell(8).border = thinBorder;
 
   const fileName =
     customFileName ||

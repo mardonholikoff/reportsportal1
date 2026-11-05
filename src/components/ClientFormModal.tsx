@@ -209,7 +209,7 @@ export const ClientFormModal: React.FC<Props> = ({
   };
 
   const handleAddProduct = () => {
-    setProducts((prev) => [...prev, emptyProduct()]);
+    setProducts((prev) => [emptyProduct(), ...prev]);
   };
 
   const handleRemoveProduct = (index: number) => {

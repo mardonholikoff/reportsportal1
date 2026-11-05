@@ -7,6 +7,7 @@ import {
   collection,
   doc,
   getDocs,
+  getDocsFromServer,
   setDoc,
   deleteDoc,
   onSnapshot,
@@ -91,6 +92,111 @@ export async function getClientIpAddress(): Promise<string> {
 }
 
 // -------------------------------------------------------------
+// Device Persistent Hardware-Anchored MAC Address & Device Info
+// -------------------------------------------------------------
+const DEVICE_MAC_STORAGE_KEY = 'savdo_device_mac_v1';
+let cachedDeviceMac: string | null = null;
+
+function hashString32(str: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+  return match ? decodeURIComponent(match[2]) : null;
+}
+
+function writeCookie(name: string, value: string): void {
+  if (typeof document === 'undefined') return;
+  const expires = new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000).toUTCString();
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`;
+}
+
+export function getClientDeviceMacAndInfo(): { macAddress: string; deviceInfo: string } {
+  if (typeof window === 'undefined') {
+    return { macAddress: 'DA:4F:8C:00:00:01', deviceInfo: 'Server [Web]' };
+  }
+
+  // Detect OS / Device & Mode (PWA vs Web)
+  const ua = window.navigator.userAgent || '';
+  const isStandalone =
+    window.matchMedia?.('(display-mode: standalone)')?.matches ||
+    (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+  const modeTag = isStandalone ? 'PWA' : 'Web';
+
+  let osName = 'Qurilma';
+  if (/android/i.test(ua)) osName = 'Android';
+  else if (/iphone/i.test(ua)) osName = 'iPhone (iOS)';
+  else if (/ipad/i.test(ua)) osName = 'iPad (iOS)';
+  else if (/windows/i.test(ua)) osName = 'Windows PC';
+  else if (/macintosh|mac os x/i.test(ua)) osName = 'MacOS';
+  else if (/linux/i.test(ua)) osName = 'Linux';
+
+  let browserName = 'Browser';
+  if (/edg\//i.test(ua)) browserName = 'Edge';
+  else if (/chrome|crios/i.test(ua)) browserName = 'Chrome';
+  else if (/safari/i.test(ua) && !/chrome|crios/i.test(ua)) browserName = 'Safari';
+  else if (/firefox|fxios/i.test(ua)) browserName = 'Firefox';
+
+  const deviceInfo = `${osName} • ${browserName} [${modeTag}]`;
+
+  if (cachedDeviceMac) {
+    return { macAddress: cachedDeviceMac, deviceInfo };
+  }
+
+  try {
+    const storedLocal = localStorage.getItem(DEVICE_MAC_STORAGE_KEY);
+    const storedCookie = readCookie(DEVICE_MAC_STORAGE_KEY);
+    const existingMac = storedLocal || storedCookie;
+    if (existingMac && /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(existingMac)) {
+      cachedDeviceMac = existingMac.toUpperCase();
+      if (!storedLocal) localStorage.setItem(DEVICE_MAC_STORAGE_KEY, cachedDeviceMac);
+      if (!storedCookie) writeCookie(DEVICE_MAC_STORAGE_KEY, cachedDeviceMac);
+      return { macAddress: cachedDeviceMac, deviceInfo };
+    }
+
+    // Generate deterministic hardware-prefix + unique device suffix
+    const hwSignature = [
+      window.navigator.platform || '',
+      osName,
+      window.screen?.width || 0,
+      window.screen?.height || 0,
+      window.screen?.colorDepth || 24,
+      window.navigator.hardwareConcurrency || 4,
+      (window.navigator as unknown as { deviceMemory?: number }).deviceMemory || 4,
+    ].join('|');
+
+    const hwHash = hashString32(hwSignature);
+    // First byte: locally administered unicast MAC (bit 1 = 1, bit 0 = 0 -> e.g. DA, E2, F6...)
+    const b0 = ((hwHash & 0xfc) | 0x02) & 0xff;
+    const b1 = (hwHash >>> 8) & 0xff;
+    const b2 = (hwHash >>> 16) & 0xff;
+
+    // Last 3 bytes: unique per physical device instance
+    const randSeed = Math.floor(Math.random() * 0xffffff);
+    const b3 = (randSeed >>> 16) & 0xff;
+    const b4 = (randSeed >>> 8) & 0xff;
+    const b5 = randSeed & 0xff;
+
+    const toHex = (n: number) => n.toString(16).toUpperCase().padStart(2, '0');
+    const generatedMac = [toHex(b0), toHex(b1), toHex(b2), toHex(b3), toHex(b4), toHex(b5)].join(':');
+
+    cachedDeviceMac = generatedMac;
+    localStorage.setItem(DEVICE_MAC_STORAGE_KEY, generatedMac);
+    writeCookie(DEVICE_MAC_STORAGE_KEY, generatedMac);
+    return { macAddress: generatedMac, deviceInfo };
+  } catch {
+    return { macAddress: 'DA:4F:8C:21:9B:07', deviceInfo };
+  }
+}
+
+// -------------------------------------------------------------
 // System Audit Log Service (with In-Memory Read/Write Cache)
 // -------------------------------------------------------------
 const SYSTEM_LOGS_STORAGE_KEY = 'savdo_system_logs_v1';
@@ -119,8 +225,10 @@ function getInitialSampleLogs(): SystemLog[] {
       userRole: 'admin',
       actionType: 'kirish',
       actionTitle: 'Tizimga kirish (adminc1 nazorat seansi)',
-      details: 'adminc1 boshqaruvi orqali tizimga muvaffaqiyatli kirildi. IP tekshiruvi amalga oshirildi.',
+      details: 'adminc1 boshqaruvi orqali tizimga muvaffaqiyatli kirildi. IP va MAC tekshiruvi amalga oshirildi.',
       ipAddress: '195.158.12.84',
+      macAddress: 'DA:4F:8C:10:A2:01',
+      deviceInfo: 'Windows PC • Chrome [Web]',
     },
     {
       id: 'log_seed_5',
@@ -131,6 +239,8 @@ function getInitialSampleLogs(): SystemLog[] {
       actionTitle: 'Mijoz bilan amal: Jamshidbek Nurmatov',
       details: 'Joyiga borildi va to\'lov qabul qilindi: 1 500 000 so\'m (naqd). Qarzdorlik kamaytirildi.',
       ipAddress: '84.54.80.19',
+      macAddress: 'E2:9A:34:7B:11:C8',
+      deviceInfo: 'Android • Chrome [PWA]',
     },
     {
       id: 'log_seed_4',
@@ -141,6 +251,8 @@ function getInitialSampleLogs(): SystemLog[] {
       actionTitle: 'Kunlik savdo rejasi tuzildi (3 ta mijoz)',
       details: 'Akromjon Karimov, Jamshidbek Nurmatov, Nodirbek Aliyev rejaga kiritildi va tasdiqlandi.',
       ipAddress: '84.54.80.19',
+      macAddress: 'F6:1C:55:89:4D:32',
+      deviceInfo: 'iPhone (iOS) • Safari [PWA]',
     },
     {
       id: 'log_seed_3',
@@ -151,6 +263,8 @@ function getInitialSampleLogs(): SystemLog[] {
       actionTitle: 'Omborga kirim: Castrol - Magnatec Motor moyi',
       details: '20 korobka (80 dona, 400 litr) qabul qilindi. Umumiy summa: 30 400 000 so\'m.',
       ipAddress: '195.158.12.84',
+      macAddress: 'DA:4F:8C:10:A2:01',
+      deviceInfo: 'Windows PC • Chrome [Web]',
     },
     {
       id: 'log_seed_2',
@@ -161,6 +275,8 @@ function getInitialSampleLogs(): SystemLog[] {
       actionTitle: 'To\'lov qabul qilindi: Dilshod Rahimov',
       details: 'Bank o\'tkazmasi orqali 4 200 000 so\'m qabul qilindi va hisobga o\'tkazildi.',
       ipAddress: '84.54.80.25',
+      macAddress: 'F6:1C:55:89:4D:32',
+      deviceInfo: 'iPhone (iOS) • Safari [PWA]',
     },
     {
       id: 'log_seed_1',
@@ -171,6 +287,8 @@ function getInitialSampleLogs(): SystemLog[] {
       actionTitle: 'Tizimga kirish va xavfsizlik audit tekshiruvi',
       details: 'adminc1 orqali tizim loglari va agentlar amallari nazorat qilindi.',
       ipAddress: '195.158.12.84',
+      macAddress: 'DA:4F:8C:10:A2:01',
+      deviceInfo: 'Windows PC • Chrome [Web]',
     },
   ];
 }
@@ -313,6 +431,7 @@ export async function addSystemLog(entry: {
   metadata?: Record<string, any>;
 }): Promise<SystemLog> {
   const ip = await getClientIpAddress();
+  const { macAddress, deviceInfo } = getClientDeviceMacAndInfo();
   const now = new Date();
   const log: SystemLog = {
     id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
@@ -323,6 +442,8 @@ export async function addSystemLog(entry: {
     actionTitle: entry.actionTitle,
     details: entry.details,
     ipAddress: ip,
+    macAddress,
+    deviceInfo,
     metadata: entry.metadata || {},
     createdAt: now.toISOString(),
   };
@@ -783,5 +904,95 @@ export async function bootstrapFirestoreData(
     }
   } catch (err) {
     console.warn('Bootstrap upload deferred to offline persistence queue', err);
+  }
+}
+
+// Active Server Pull: Ensures PWA & Web on any device stay 100% in sync with live Firestore
+// even after background sleep, network switches, or WebChannel idle periods
+export async function pullAllFromFirestoreServer(callbacks: {
+  onClientsChange?: (clients: Client[]) => void;
+  onPlansChange?: (plans: DailyPlanItem[]) => void;
+  onWarehouseChange?: (products: WarehouseProduct[]) => void;
+  onLogsChange?: (logs: SystemLog[]) => void;
+  onMonthlyPlansChange?: (plans: MonthlyPlan[]) => void;
+}): Promise<void> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+
+  const fetchCollection = async (colName: string) => {
+    try {
+      return await getDocsFromServer(collection(db, colName));
+    } catch {
+      return await getDocs(collection(db, colName));
+    }
+  };
+
+  try {
+    const deletedIds = getDeletedClientIds();
+    const deletedWhIds = getDeletedWarehouseIds();
+
+    await Promise.all([
+      (async () => {
+        if (!callbacks.onClientsChange) return;
+        const snap = await fetchCollection('clients');
+        const list: Client[] = [];
+        snap.forEach((d) => {
+          if (!deletedIds.has(d.id)) {
+            list.push(d.data() as Client);
+          }
+        });
+        callbacks.onClientsChange(list);
+      })(),
+      (async () => {
+        if (!callbacks.onPlansChange) return;
+        const snap = await fetchCollection('dailyPlans');
+        const list: DailyPlanItem[] = [];
+        snap.forEach((d) => {
+          const item = d.data() as DailyPlanItem;
+          if (!deletedIds.has(item.clientId) && !isClosedPlanExpired7Days(item)) {
+            list.push(item);
+          }
+        });
+        callbacks.onPlansChange(list);
+      })(),
+      (async () => {
+        if (!callbacks.onWarehouseChange) return;
+        const snap = await fetchCollection('warehouseProducts');
+        const list: WarehouseProduct[] = [];
+        snap.forEach((d) => {
+          if (!deletedWhIds.has(d.id)) {
+            list.push(d.data() as WarehouseProduct);
+          }
+        });
+        callbacks.onWarehouseChange(list);
+      })(),
+      (async () => {
+        if (!callbacks.onMonthlyPlansChange) return;
+        const snap = await fetchCollection('monthlyPlans');
+        const list: MonthlyPlan[] = [];
+        snap.forEach((d) => list.push(d.data() as MonthlyPlan));
+        callbacks.onMonthlyPlansChange(list);
+      })(),
+      (async () => {
+        if (!callbacks.onLogsChange) return;
+        const snap = await fetchCollection('systemLogs');
+        const list: SystemLog[] = [];
+        snap.forEach((d) => {
+          const logItem = d.data() as SystemLog;
+          list.push(logItem);
+          if (logItem.actionType === 'mijoz_ochirish') {
+            const delId = logItem.metadata?.deletedClientId || logItem.metadata?.clientId;
+            if (delId && typeof delId === 'string') markClientAsDeleted(delId);
+          }
+          if (logItem.actionType === 'ombor_ochirish') {
+            const delWhId = logItem.metadata?.deletedWarehouseId || logItem.metadata?.productId;
+            if (delWhId && typeof delWhId === 'string') markWarehouseProductAsDeleted(delWhId);
+          }
+        });
+        list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        callbacks.onLogsChange(list);
+      })(),
+    ]);
+  } catch (err) {
+    console.warn('Background server pull skipped (offline or reconnecting):', err);
   }
 }

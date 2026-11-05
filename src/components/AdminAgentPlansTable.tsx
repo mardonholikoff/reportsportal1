@@ -31,7 +31,9 @@ import {
   Calendar,
   Printer,
   Trash2,
+  FileSpreadsheet,
 } from 'lucide-react';
+import { exportPlansDetailedToExcel } from '../utils/exportPlansDetailedExcel';
 
 interface Props {
   plans: DailyPlanItem[];
@@ -331,22 +333,44 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
         // 2. Delivery payment from Section 3
         if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
-          const amt = act.deliveryPayment.paidAmount;
-          totalReceipts += amt;
-          const pt = act.deliveryPayment.paymentType;
-
-          if (pt === 'bank') {
-            receiptsByType.bank.amount += amt;
-            receiptsByType.bank.count++;
-          } else if (pt === 'karta') {
-            receiptsByType.karta.amount += amt;
-            receiptsByType.karta.count++;
-          } else if (pt === 'qr') {
-            receiptsByType.qr.amount += amt;
-            receiptsByType.qr.count++;
+          if (act.deliveryPayment.splits && act.deliveryPayment.splits.length > 0) {
+            act.deliveryPayment.splits.forEach((sp) => {
+              const amt = sp.amount || 0;
+              if (amt <= 0) return;
+              totalReceipts += amt;
+              const mStr = (sp.method || sp.methodLabel || '').toLowerCase();
+              if (mStr.includes('bank')) {
+                receiptsByType.bank.amount += amt;
+                receiptsByType.bank.count++;
+              } else if (mStr.includes('karta')) {
+                receiptsByType.karta.amount += amt;
+                receiptsByType.karta.count++;
+              } else if (mStr.includes('qr')) {
+                receiptsByType.qr.amount += amt;
+                receiptsByType.qr.count++;
+              } else {
+                receiptsByType.naqd.amount += amt;
+                receiptsByType.naqd.count++;
+              }
+            });
           } else {
-            receiptsByType.naqd.amount += amt;
-            receiptsByType.naqd.count++;
+            const amt = act.deliveryPayment.paidAmount;
+            totalReceipts += amt;
+            const pt = act.deliveryPayment.paymentType;
+
+            if (pt === 'bank') {
+              receiptsByType.bank.amount += amt;
+              receiptsByType.bank.count++;
+            } else if (pt === 'karta') {
+              receiptsByType.karta.amount += amt;
+              receiptsByType.karta.count++;
+            } else if (pt === 'qr') {
+              receiptsByType.qr.amount += amt;
+              receiptsByType.qr.count++;
+            } else {
+              receiptsByType.naqd.amount += amt;
+              receiptsByType.naqd.count++;
+            }
           }
         }
 
@@ -898,17 +922,44 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             </button>
           </div>
 
-          {/* Rejani PDF (Print) tugmasi (Admin uchun) */}
-          {filteredPlans.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setIsAdminPdfModalOpen(true)}
-              className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-              title="Rejadagi tanlangan mijozlarni to'liq A4 listda PDF / Print qilish"
-            >
-              <Printer className="w-3.5 h-3.5 text-rose-400" />
-              <span>Rejani PDF (Print)</span>
-            </button>
+          {/* Rejani va amallarni Excel (.xlsx) va PDF (Print) yuklash tugmalari (Admin uchun) */}
+          {(filteredPlans.length > 0 || allSystemPlans.length > 0) && (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  exportPlansDetailedToExcel(
+                    filteredPlans.length > 0 ? filteredPlans : allSystemPlans,
+                    resolvedClients,
+                    allSystemPlans,
+                    "Agentlar Kunlik Rejalari va Bajarilgan Amallar Jadvali (Batafsil)",
+                    `Holat: ${
+                      statusFilter === 'jarayonda'
+                        ? 'Yopilmagan (Ochiq) rejalar'
+                        : statusFilter === 'bajarildi'
+                        ? 'Yopilgan rejalar'
+                        : 'Barcha (Yopilgan va Yopilmagan) rejalar'
+                    } | Sana: ${dateScopeLabel}`,
+                    'Admin_Reja_va_Amallar_Batafsil'
+                  )
+                }
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                title="Yopilgan va yopilmagan har qanday amallarni to'liq va batafsil Excel (.xlsx) formatda yuklab olish"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Excel (.xlsx)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsAdminPdfModalOpen(true)}
+                className="px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
+                title="Yopilgan va yopilmagan har qanday amallarni to'liq va batafsil PDF / Print / Excel formatda yuklab olish"
+              >
+                <Printer className="w-3.5 h-3.5 text-rose-400" />
+                <span>PDF / Print</span>
+              </button>
+            </>
           )}
         </div>
       </div>

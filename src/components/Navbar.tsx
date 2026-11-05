@@ -53,15 +53,23 @@ export const Navbar: React.FC<Props> = ({
                 ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                 : 'bg-rose-50 text-rose-800 border-rose-200 animate-pulse'
             }`}
-            title={isOnline ? "Internetga ulangan" : "Oflayn rejim"}
+            title={
+              isOnline
+                ? "Baza bilan doimiy avto-sinxron aloqa faol (PWA / Web)"
+                : "Oflayn rejim — internet yonganda avtomatik sinxronlanadi"
+            }
           >
             {isOnline ? (
-              <Wifi className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
+              </span>
             ) : (
               <WifiOff className="w-3.5 h-3.5 text-rose-600 shrink-0" />
             )}
+            <Wifi className={`w-3.5 h-3.5 shrink-0 ${isOnline ? 'text-emerald-600' : 'hidden'}`} />
             <span className="hidden sm:inline">
-              {isOnline ? "Onlayn" : "Oflayn"}
+              {isOnline ? "Onlayn (Avto-sinxron)" : "Oflayn"}
             </span>
             {pendingSyncCount > 0 && (
               <span className="ml-0.5 text-[10px] font-bold bg-rose-200 text-rose-900 px-1 rounded-full">

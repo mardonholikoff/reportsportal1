@@ -34,6 +34,8 @@ import {
   RotateCcw,
   ChevronDown,
   Calculator,
+  BellRing,
+  Calendar,
 } from 'lucide-react';
 
 interface Props {
@@ -69,6 +71,12 @@ interface Props {
     closeAfterSave?: boolean
   ) => void;
   onCloseWithoutAction?: (planItemId: string, reason: string) => void;
+  onSaveReminder?: (data: {
+    clientId: string;
+    planId?: string;
+    reminderDate: string;
+    note: string;
+  }) => void;
   client?: Client | null;
   warehouseProducts?: WarehouseProduct[];
 }
@@ -342,6 +350,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   onClose,
   onSaveReport,
   onCloseWithoutAction,
+  onSaveReminder,
   client,
   warehouseProducts,
 }) => {
@@ -382,15 +391,26 @@ export const ExecutePlanModal: React.FC<Props> = ({
   });
   const [paymentNote, setPaymentNote] = useState('');
 
-  // Section 3: Products delivered (with bidirectional discount % / USD + optional UZS -> USD conversion)
+  // Section 3: Products delivered (with bidirectional discount % / USD + multi-method / partial credit + optional UZS -> USD conversion)
   const [hasProducts, setHasProducts] = useState(false);
   const [products, setProducts] = useState<ProductItem[]>([createEmptyProductRow()]);
   const [orderDiscountPercent, setOrderDiscountPercent] = useState<number | ''>('');
   const [orderDiscountAmount, setOrderDiscountAmount] = useState<number | ''>('');
-  const [deliveryPaymentType, setDeliveryPaymentType] = useState<DeliveryPaymentType>('naqd');
-  const [deliveryPaidAmount, setDeliveryPaidAmount] = useState<number | ''>('');
+  const [deliveryPayMode, setDeliveryPayMode] = useState<'full' | 'partial' | 'qarzga'>('full');
+  const [selectedDeliveryMethods, setSelectedDeliveryMethods] = useState<FinancialMethodType[]>(['naqd']);
+  const [deliveryAmountsUsd, setDeliveryAmountsUsd] = useState<Partial<Record<FinancialMethodType, number | ''>>>({
+    naqd: '',
+    bank_otkazma: '',
+    karta_otkazma: '',
+    qr_otkazma: '',
+  });
+  const [deliveryAmountsUzs, setDeliveryAmountsUzs] = useState<Partial<Record<FinancialMethodType, number | ''>>>({
+    naqd: '',
+    bank_otkazma: '',
+    karta_otkazma: '',
+    qr_otkazma: '',
+  });
   const [isDeliveryUzsMode, setIsDeliveryUzsMode] = useState(false);
-  const [deliveryPaidAmountUzs, setDeliveryPaidAmountUzs] = useState<number | ''>('');
 
   // Section 4: Products returned state: { [productId]: returnedQuantity }
   const [returnsMap, setReturnsMap] = useState<Record<string, number | ''>>({});
@@ -401,6 +421,21 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
   // Section 5: General report note
   const [reportNote, setReportNote] = useState('');
+
+  // Section 6: Reminder (Eslatma qo'yish — yopilmagan mijozlar uchun)
+  const getDefaultReminderDate = (daysAhead: number = 1): string => {
+    const dt = new Date();
+    dt.setDate(dt.getDate() + daysAhead);
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+  const [hasReminder, setHasReminder] = useState(false);
+  const [reminderDate, setReminderDate] = useState<string>(() => getDefaultReminderDate(1));
+  const [reminderNote, setReminderNote] = useState('');
+  const [reminderError, setReminderError] = useState<string | null>(null);
+  const [reminderSuccessMsg, setReminderSuccessMsg] = useState<string | null>(null);
 
   // Nakladnoy modal state
   const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
@@ -432,14 +467,30 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setProducts([createEmptyProductRow()]);
       setOrderDiscountPercent('');
       setOrderDiscountAmount('');
-      setDeliveryPaymentType('naqd');
-      setDeliveryPaidAmount('');
+      setDeliveryPayMode('full');
+      setSelectedDeliveryMethods(['naqd']);
+      setDeliveryAmountsUsd({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      });
+      setDeliveryAmountsUzs({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      });
       setIsDeliveryUzsMode(false);
-      setDeliveryPaidAmountUzs('');
       setReturnsMap({});
       setHasExtraReturns(false);
       setExtraReturns([]);
       setReportNote('');
+      setHasReminder(false);
+      setReminderDate(getDefaultReminderDate(1));
+      setReminderNote('');
+      setReminderError(null);
+      setReminderSuccessMsg(null);
     }
   }, [isOpen, planItem?.id]);
 
@@ -501,8 +552,17 @@ export const ExecutePlanModal: React.FC<Props> = ({
         });
         return nextUsd;
       });
-      if (isDeliveryUzsMode && typeof deliveryPaidAmountUzs === 'number' && deliveryPaidAmountUzs > 0) {
-        setDeliveryPaidAmount(Math.round((deliveryPaidAmountUzs / parsedRate) * 100) / 100);
+      if (isDeliveryUzsMode) {
+        setDeliveryAmountsUsd((prevUsd) => {
+          const nextUsd = { ...prevUsd };
+          selectedDeliveryMethods.forEach((mId) => {
+            const uzsVal = deliveryAmountsUzs[mId];
+            if (typeof uzsVal === 'number' && uzsVal > 0) {
+              nextUsd[mId] = Math.round((uzsVal / parsedRate) * 100) / 100;
+            }
+          });
+          return nextUsd;
+        });
       }
     }
   };
@@ -624,28 +684,195 @@ export const ExecutePlanModal: React.FC<Props> = ({
       );
   }, [products]);
 
+  // Keep orderDiscountAmount synced if orderDiscountPercent is set when rowDiscountedDeliveredSum changes
+  useEffect(() => {
+    if (typeof orderDiscountPercent === 'number' && orderDiscountPercent > 0) {
+      const recalculatedAmt =
+        Math.round(((rowDiscountedDeliveredSum * orderDiscountPercent) / 100) * 100) / 100;
+      setOrderDiscountAmount(recalculatedAmt);
+    } else if (
+      typeof orderDiscountAmount === 'number' &&
+      orderDiscountAmount > rowDiscountedDeliveredSum &&
+      rowDiscountedDeliveredSum > 0
+    ) {
+      setOrderDiscountAmount(rowDiscountedDeliveredSum);
+    }
+  }, [rowDiscountedDeliveredSum]);
+
   // Final total delivery value (USD)
   const totalDeliveredSum = useMemo(() => {
     const extraDisc = typeof orderDiscountAmount === 'number' ? orderDiscountAmount : 0;
     return Math.max(0, Math.round((rowDiscountedDeliveredSum - extraDisc) * 100) / 100);
   }, [rowDiscountedDeliveredSum, orderDiscountAmount]);
 
-  // Sync delivery paid amount when total delivery price changes (if not in qarzga mode)
+  // Sync delivery paid amount when total delivery price changes in 'full' mode (with 1 selected method)
   useEffect(() => {
-    if (deliveryPaymentType === 'qarzga') {
-      setDeliveryPaidAmount(0);
-      setDeliveryPaidAmountUzs('');
-    } else {
-      setDeliveryPaidAmount(totalDeliveredSum);
+    if (deliveryPayMode === 'qarzga') {
+      setDeliveryAmountsUsd({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
+      setDeliveryAmountsUzs({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
+    } else if (deliveryPayMode === 'full' && selectedDeliveryMethods.length === 1) {
+      const mId = selectedDeliveryMethods[0];
+      setDeliveryAmountsUsd({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+        [mId]: totalDeliveredSum > 0 ? totalDeliveredSum : '',
+      });
       if (isDeliveryUzsMode && numExchangeRate > 0) {
-        setDeliveryPaidAmountUzs(totalDeliveredSum > 0 ? Math.round(totalDeliveredSum * numExchangeRate) : '');
+        setDeliveryAmountsUzs({
+          naqd: '',
+          bank_otkazma: '',
+          karta_otkazma: '',
+          qr_otkazma: '',
+          [mId]: totalDeliveredSum > 0 ? Math.round(totalDeliveredSum * numExchangeRate) : '',
+        });
       }
     }
-  }, [totalDeliveredSum, deliveryPaymentType]);
+  }, [totalDeliveredSum, deliveryPayMode, selectedDeliveryMethods.length]);
 
-  // Section 3: Add / remove product row
+  const handleToggleDeliveryMethod = (methodId: FinancialMethodType) => {
+    setSelectedDeliveryMethods((prev) => {
+      if (prev.includes(methodId)) {
+        if (prev.length <= 1) return prev;
+        const next = prev.filter((id) => id !== methodId);
+        setDeliveryAmountsUsd((old) => ({ ...old, [methodId]: '' }));
+        setDeliveryAmountsUzs((old) => ({ ...old, [methodId]: '' }));
+        return next;
+      }
+      // Adding a 2nd or 3rd method switches to partial/multi split mode so user can enter amounts per method
+      if (prev.length >= 1 && deliveryPayMode === 'full') {
+        setDeliveryPayMode('partial');
+      }
+      return [...prev, methodId];
+    });
+  };
+
+  const handleDeliveryMethodUzsChange = (methodId: FinancialMethodType, rawVal: string) => {
+    const uzsVal = rawVal === '' ? '' : parseFloat(rawVal) || 0;
+    setDeliveryAmountsUzs((prev) => ({ ...prev, [methodId]: uzsVal }));
+    if (uzsVal === '' || uzsVal <= 0) {
+      setDeliveryAmountsUsd((prev) => ({ ...prev, [methodId]: '' }));
+    } else if (numExchangeRate > 0) {
+      const calcUsd = Math.round((uzsVal / numExchangeRate) * 100) / 100;
+      setDeliveryAmountsUsd((prev) => ({ ...prev, [methodId]: calcUsd }));
+      if (deliveryPayMode === 'full' && calcUsd < totalDeliveredSum) {
+        setDeliveryPayMode('partial');
+      }
+    }
+  };
+
+  const handleDeliveryMethodUsdChange = (methodId: FinancialMethodType, rawVal: string) => {
+    const usdVal = rawVal === '' ? '' : parseFloat(rawVal) || 0;
+    setDeliveryAmountsUsd((prev) => ({ ...prev, [methodId]: usdVal }));
+    if (usdVal === '' || usdVal <= 0) {
+      setDeliveryAmountsUzs((prev) => ({ ...prev, [methodId]: '' }));
+    } else {
+      if (numExchangeRate > 0) {
+        setDeliveryAmountsUzs((prev) => ({
+          ...prev,
+          [methodId]: Math.round(usdVal * numExchangeRate),
+        }));
+      }
+      if (deliveryPayMode === 'full' && usdVal < totalDeliveredSum) {
+        setDeliveryPayMode('partial');
+      }
+    }
+  };
+
+  const activeDeliverySplits = useMemo<FinancialPaymentSplit[]>(() => {
+    if (deliveryPayMode === 'qarzga') return [];
+    return selectedDeliveryMethods
+      .map((mId) => {
+        const meta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === mId);
+        const usdAmt =
+          typeof deliveryAmountsUsd[mId] === 'number'
+            ? (deliveryAmountsUsd[mId] as number)
+            : Number(deliveryAmountsUsd[mId]) || 0;
+        const rawUzsAmt =
+          typeof deliveryAmountsUzs[mId] === 'number'
+            ? (deliveryAmountsUzs[mId] as number)
+            : Number(deliveryAmountsUzs[mId]) || 0;
+        const effectiveUzs =
+          isDeliveryUzsMode
+            ? rawUzsAmt > 0
+              ? Math.round(rawUzsAmt)
+              : usdAmt > 0
+              ? Math.round(usdAmt * numExchangeRate)
+              : 0
+            : 0;
+        return {
+          method: mId,
+          methodLabel: meta?.label || "To'lov",
+          amount: Math.round(usdAmt * 100) / 100,
+          amountUzs: isDeliveryUzsMode && effectiveUzs > 0 ? effectiveUzs : undefined,
+          exchangeRate: isDeliveryUzsMode && effectiveUzs > 0 && numExchangeRate > 0 ? numExchangeRate : undefined,
+        };
+      })
+      .filter((s) => s.amount > 0);
+  }, [deliveryPayMode, selectedDeliveryMethods, deliveryAmountsUsd, deliveryAmountsUzs, isDeliveryUzsMode, numExchangeRate]);
+
+  const totalDeliveryPaidUsd = useMemo(() => {
+    if (deliveryPayMode === 'qarzga') return 0;
+    const sum = activeDeliverySplits.reduce((acc, s) => acc + s.amount, 0);
+    return Math.round(sum * 100) / 100;
+  }, [deliveryPayMode, activeDeliverySplits]);
+
+  const totalDeliveryPaidUzs = useMemo(() => {
+    if (deliveryPayMode === 'qarzga' || !isDeliveryUzsMode) return 0;
+    return activeDeliverySplits.reduce(
+      (acc, s) => acc + (s.amountUzs !== undefined ? s.amountUzs : Math.round(s.amount * numExchangeRate)),
+      0
+    );
+  }, [deliveryPayMode, isDeliveryUzsMode, activeDeliverySplits, numExchangeRate]);
+
+  const remainingDeliveryDebtUsd = useMemo(() => {
+    if (deliveryPayMode === 'qarzga') return totalDeliveredSum;
+    return Math.max(0, Math.round((totalDeliveredSum - totalDeliveryPaidUsd) * 100) / 100);
+  }, [deliveryPayMode, totalDeliveredSum, totalDeliveryPaidUsd]);
+
+  const deliveryPaymentSummary = useMemo(() => {
+    if (deliveryPayMode === 'qarzga' || totalDeliveryPaidUsd <= 0) {
+      return {
+        paymentType: 'qarzga' as DeliveryPaymentType,
+        paymentLabel: 'Nasiyaga (Qarzga)',
+      };
+    }
+
+    const firstMethod = activeDeliverySplits[0]?.method || selectedDeliveryMethods[0] || 'naqd';
+    const mappedType: DeliveryPaymentType =
+      firstMethod === 'bank_otkazma'
+        ? 'bank'
+        : firstMethod === 'karta_otkazma'
+        ? 'karta'
+        : firstMethod === 'qr_otkazma'
+        ? 'qr'
+        : 'naqd';
+
+    const splitLabels = activeDeliverySplits.map((sp) => {
+      if (sp.amountUzs && sp.amountUzs > 0) {
+        return `${sp.methodLabel}: ${new Intl.NumberFormat('uz-UZ').format(sp.amountUzs)} so'm (${formatMoney(sp.amount)})`;
+      }
+      return activeDeliverySplits.length === 1 && remainingDeliveryDebtUsd === 0
+        ? sp.methodLabel
+        : `${sp.methodLabel}: ${formatMoney(sp.amount)}`;
+    });
+
+    const baseLabel = splitLabels.join(' + ');
+    const finalLabel =
+      remainingDeliveryDebtUsd > 0
+        ? `Qisman to'lov (${baseLabel}) + Nasiya (${formatMoney(remainingDeliveryDebtUsd)})`
+        : baseLabel;
+
+    return {
+      paymentType: mappedType,
+      paymentLabel: finalLabel,
+    };
+  }, [deliveryPayMode, totalDeliveryPaidUsd, activeDeliverySplits, selectedDeliveryMethods, remainingDeliveryDebtUsd]);
+
+  // Section 3: Add / remove product row (Yangi mahsulot tepada paydo bo'ladi, eskisi pastga suriladi)
   const handleAddProductRow = () => {
-    setProducts((prev) => [...prev, createEmptyProductRow()]);
+    setProducts((prev) => [createEmptyProductRow(), ...prev]);
   };
 
   const handleRemoveProductRow = (index: number) => {
@@ -874,10 +1101,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
     setReturnsMap((prev) => ({ ...prev, [prodId]: maxQty }));
   };
 
-  // Section 4.2: Berilmagan mahsulot qaytarish handlers
+  // Section 4.2: Berilmagan mahsulot qaytarish handlers (Yangi qator tepada paydo bo'ladi)
   const handleAddExtraReturnRow = () => {
     setExtraReturns((prev) => [
-      ...prev,
       {
         id: `ext_ret_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         warehouseId: '',
@@ -887,6 +1113,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
         unitPrice: 0,
         totalPrice: 0,
       },
+      ...prev,
     ]);
   };
 
@@ -1035,17 +1262,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     const validReturned = [...directReturned, ...extraReturnedList];
 
-    const effectivePaid =
-      deliveryPaymentType === 'qarzga'
-        ? 0
-        : deliveryPaidAmount === ''
-        ? totalDeliveredSum
-        : Number(deliveryPaidAmount) || 0;
-
-    const debtAdded =
-      deliveryPaymentType === 'qarzga'
-        ? totalDeliveredSum
-        : Math.max(0, Math.round((totalDeliveredSum - effectivePaid) * 100) / 100);
+    const effectivePaid = totalDeliveryPaidUsd;
+    const debtAdded = remainingDeliveryDebtUsd;
 
     const numFinPay = totalPaymentUsd;
     const finNoteCombined = [combinedPaymentSummary.autoBreakdownNote, paymentNote.trim()]
@@ -1079,9 +1297,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       paymentInfo:
         validDelivered.length > 0
           ? {
-              paymentLabel:
-                DELIVERY_PAYMENT_OPTIONS.find((o) => o.id === deliveryPaymentType)?.label ||
-                deliveryPaymentType,
+              paymentLabel: deliveryPaymentSummary.paymentLabel,
               paidAmount: effectivePaid,
               debtAmount: debtAdded,
               previousDebt: client?.currentDebt || 0,
@@ -1128,54 +1344,48 @@ export const ExecutePlanModal: React.FC<Props> = ({
           }
         : undefined;
 
-    // 2. Delivered products & delivery payment (Section 3 - strictly USD, with optional UZS conversion metadata)
+    // 2. Delivered products & delivery payment (Section 3 - proportional order discount + multi-method / partial credit + UZS conversion)
     const extraOrderDisc = typeof orderDiscountAmount === 'number' ? orderDiscountAmount : 0;
-    const validProducts = hasProducts
-      ? products
-          .filter((p) => p.name.trim() !== '')
-          .map((p, idx, arr) => {
-            if (extraOrderDisc > 0 && idx === 0 && arr.length > 0) {
-              const adjustedTotal = Math.max(0, Math.round((p.totalPrice - extraOrderDisc) * 100) / 100);
-              return {
-                ...p,
-                discountAmount: Math.round(((p.discountAmount || 0) + extraOrderDisc) * 100) / 100,
-                totalPrice: adjustedTotal,
-              };
-            }
-            return p;
-          })
+    const rawValidProducts = hasProducts
+      ? products.filter((p) => p.name.trim() !== '')
       : [];
 
-    const effectivePaid =
-      deliveryPaymentType === 'qarzga'
-        ? 0
-        : deliveryPaidAmount === ''
-        ? totalDeliveredSum
-        : Number(deliveryPaidAmount) || 0;
+    let remainingDiscToDistribute = extraOrderDisc;
+    const validProducts = rawValidProducts.map((p, idx, arr) => {
+      if (extraOrderDisc <= 0 || rowDiscountedDeliveredSum <= 0) return p;
+      const rowVal = p.totalPrice !== undefined ? p.totalPrice : (p.quantity || 0) * (p.unitPrice || 0);
+      const share =
+        idx === arr.length - 1
+          ? remainingDiscToDistribute
+          : Math.min(rowVal, Math.round((extraOrderDisc * (rowVal / rowDiscountedDeliveredSum)) * 100) / 100);
+      remainingDiscToDistribute = Math.max(0, Math.round((remainingDiscToDistribute - share) * 100) / 100);
+      const adjustedTotal = Math.max(0, Math.round((rowVal - share) * 100) / 100);
+      return {
+        ...p,
+        discountAmount: Math.round(((p.discountAmount || 0) + share) * 100) / 100,
+        totalPrice: adjustedTotal,
+      };
+    });
 
+    const effectivePaid = totalDeliveryPaidUsd;
     const effectiveDeliveryUzs =
-      isDeliveryUzsMode && deliveryPaymentType !== 'qarzga' && effectivePaid > 0
-        ? typeof deliveryPaidAmountUzs === 'number' && deliveryPaidAmountUzs > 0
-          ? Math.round(deliveryPaidAmountUzs)
-          : Math.round(effectivePaid * numExchangeRate)
+      isDeliveryUzsMode && deliveryPayMode !== 'qarzga' && effectivePaid > 0 && totalDeliveryPaidUzs > 0
+        ? Math.round(totalDeliveryPaidUzs)
         : undefined;
 
     const deliveryPayData: DeliveryPaymentInfo | undefined =
       hasProducts && validProducts.length > 0
         ? {
-            paymentType: deliveryPaymentType,
-            paymentLabel:
-              DELIVERY_PAYMENT_OPTIONS.find((o) => o.id === deliveryPaymentType)?.label ||
-              deliveryPaymentType,
+            paymentType: deliveryPaymentSummary.paymentType,
+            paymentLabel: deliveryPaymentSummary.paymentLabel,
             currency: 'USD',
             paidAmount: effectivePaid,
             paidAmountUzs: effectiveDeliveryUzs,
             exchangeRate: effectiveDeliveryUzs ? numExchangeRate : undefined,
             totalAmount: totalDeliveredSum,
-            debtAmount:
-              deliveryPaymentType === 'qarzga'
-                ? totalDeliveredSum
-                : Math.max(0, Math.round((totalDeliveredSum - effectivePaid) * 100) / 100),
+            debtAmount: remainingDeliveryDebtUsd,
+            splits: activeDeliverySplits.length > 0 ? activeDeliverySplits : undefined,
+            isPartialCredit: remainingDeliveryDebtUsd > 0 && effectivePaid > 0,
           }
         : undefined;
 
@@ -1223,11 +1433,43 @@ export const ExecutePlanModal: React.FC<Props> = ({
       validProducts.length > 0 ||
       productsReturned.length > 0;
 
+    // Agar eslatma belgilangan bo'lsa, avval uni tekshiramiz va saqlaymiz
+    if (hasReminder) {
+      const effectiveRemNote = reminderNote.trim() || reportNote.trim();
+      if (!reminderDate) {
+        setReminderError('Eslatma uchun sanani tanlang!');
+        return;
+      }
+      if (!effectiveRemNote) {
+        setReminderError('Eslatma izohini kiriting!');
+        return;
+      }
+      setReminderError(null);
+      if (onSaveReminder) {
+        onSaveReminder({
+          clientId: planItem.clientId,
+          planId: planItem.id,
+          reminderDate,
+          note: effectiveRemNote,
+        });
+      }
+      // Agar agent faqat eslatma belgilab "Hisobotni saqlash" bosgan bo'lsa (va yopishni bosmagan bo'lsa),
+      // rejani bajarilmasdan yopib yubormasdan, eslatmani saqlab oynani yopamiz
+      if (!hasAnyActionOrData && !closeAfterSave) {
+        onClose();
+        return;
+      }
+    }
+
     // Agar amal bajarildi bosilmagan bo'lsa va moliyaviy/mahsulot amaliyoti kiritilmagan bo'lsa,
     // yopish tugmasi bosilganda avtomatik ravishda "Bajarilmasdan yopilgan" bo'lib yopiladi
     if (!hasAnyActionOrData) {
       if (closeAfterSave && onCloseWithoutAction) {
-        const reason = reportNote.trim() || 'Bajarilmasdan yopildi';
+        const reason =
+          reportNote.trim() ||
+          (hasReminder && reminderNote.trim()
+            ? `Eslatma (${reminderDate}): ${reminderNote.trim()}`
+            : 'Bajarilmasdan yopildi');
         onCloseWithoutAction(planItem.id, reason);
         onClose();
         return;
@@ -1254,6 +1496,30 @@ export const ExecutePlanModal: React.FC<Props> = ({
     );
 
     onClose();
+  };
+
+  const handleSaveReminderOnly = () => {
+    if (!planItem) return;
+    const effectiveRemNote = reminderNote.trim() || reportNote.trim();
+    if (!reminderDate) {
+      setReminderError('Eslatma uchun sanani tanlang!');
+      return;
+    };
+    if (!effectiveRemNote) {
+      setReminderError('Eslatma izohini kiriting!');
+      return;
+    }
+    setReminderError(null);
+    if (onSaveReminder) {
+      onSaveReminder({
+        clientId: planItem.clientId,
+        planId: planItem.id,
+        reminderDate,
+        note: effectiveRemNote,
+      });
+      setReminderSuccessMsg(`Eslatma ${reminderDate} sanasiga muvaffaqiyatli saqlandi!`);
+      setTimeout(() => setReminderSuccessMsg(null), 3500);
+    }
   };
 
   // Submit Handler
@@ -1865,8 +2131,13 @@ export const ExecutePlanModal: React.FC<Props> = ({
                             className="p-3.5 bg-white rounded-xl border border-neutral-200 space-y-2.5 shadow-2xs transition hover:border-rose-200"
                           >
                             <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-neutral-700">
-                                Mahsulot #{idx + 1}
+                              <span className="text-xs font-bold text-neutral-700 flex items-center gap-1.5">
+                                <span>Mahsulot #{products.length - idx}</span>
+                                {idx === 0 && products.length > 1 && (
+                                  <span className="text-[10px] font-bold bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded-md">
+                                    Yangi qo'shilgan
+                                  </span>
+                                )}
                               </span>
                               {products.length > 1 && (
                                 <button
@@ -2048,18 +2319,79 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     </div>
                   )}
 
-                  {/* 3-BLOK OXIRIDA: OXIRGI SUMMA, TO'LOV SHAKLI VA KONVERTATSIYA */}
+                  {/* 3-BLOK OXIRIDA: UMUMIY SUMMAGA CHEGIRMA, OXIRGI SUMMA, QISMAN TO'LOV / NASIYA VA KO'P USULLI TO'LOV */}
                   {(totalDeliveredSum > 0 || rawBaseDeliveredSum > 0) && (
-                    <div className="p-4 rounded-2xl bg-white border border-rose-200 shadow-xs space-y-3.5">
-                      {/* Oxirgi umumiy summa */}
+                    <div className="p-4 rounded-2xl bg-white border border-rose-200 shadow-xs space-y-4">
+                      {/* 1. UMUMIY SUMMAGA FOIZLI (%) VA RAQAMLI (USD) CHEGIRMA BLOKI */}
+                      <div className="p-3 rounded-xl bg-rose-50/50 border border-rose-200/80 space-y-2.5">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <span className="text-xs font-extrabold text-rose-950 flex items-center gap-1.5">
+                            <Percent className="w-3.5 h-3.5 text-rose-700" />
+                            <span>Umumiy summaga qo'shimcha chegirma (Foiz % yoki Raqamli USD)</span>
+                          </span>
+                          <span className="text-[11px] font-mono font-bold text-neutral-700">
+                            Qatorlar jami: {formatMoney(rowDiscountedDeliveredSum)}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                          <div>
+                            <label className="block text-[10px] font-bold text-rose-800 mb-1 flex items-center gap-1">
+                              <Percent className="w-3 h-3 text-rose-600" />
+                              <span>Umumiy foiz chegirma (%)</span>
+                            </label>
+                            <input
+                              type="number"
+                              disabled={isClosed}
+                              min="0"
+                              max="100"
+                              step="any"
+                              placeholder="0%"
+                              value={orderDiscountPercent}
+                              onChange={(e) => handleOrderDiscountPercentChange(e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-white rounded-lg border border-rose-200 focus:border-rose-500 text-xs font-mono font-bold text-neutral-900 outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-rose-800 mb-1 flex items-center gap-1">
+                              <DollarSign className="w-3 h-3 text-rose-600" />
+                              <span>Umumiy raqamli chegirma (USD)</span>
+                            </label>
+                            <input
+                              type="number"
+                              disabled={isClosed}
+                              min="0"
+                              max={rowDiscountedDeliveredSum}
+                              step="any"
+                              placeholder="0 USD"
+                              value={orderDiscountAmount}
+                              onChange={(e) => handleOrderDiscountAmountChange(e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-white rounded-lg border border-rose-200 focus:border-rose-500 text-xs font-mono font-bold text-neutral-900 outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                              Chegirmadan keyingi umumiy summa
+                            </label>
+                            <div className="px-2.5 py-1.5 bg-emerald-50 border border-emerald-300 rounded-lg text-xs font-mono font-extrabold text-emerald-950 flex items-center justify-between h-[32px]">
+                              <span>Jami:</span>
+                              <span>{formatMoney(totalDeliveredSum)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Oxirgi umumiy summa sarlavhasi */}
                       <div className="flex items-center justify-between pb-2.5 border-b border-neutral-100">
                         <div>
                           <span className="text-xs font-bold text-neutral-800 block">
-                            Topshirilgan mahsulotlar oxirgi summasi:
+                            Topshirilgan mahsulotlar yakuniy summasi:
                           </span>
                           {totalDiscountAll > 0 && (
                             <span className="text-[11px] text-neutral-500 font-mono">
-                              Narx: {formatMoney(rawBaseDeliveredSum)} | Chegirma: -{formatMoney(totalDiscountAll)}
+                              Boshlang'ich narx: {formatMoney(rawBaseDeliveredSum)} | Jami chegirma: -{formatMoney(totalDiscountAll)}
                             </span>
                           )}
                         </div>
@@ -2068,274 +2400,468 @@ export const ExecutePlanModal: React.FC<Props> = ({
                         </span>
                       </div>
 
-                      {/* Mahsulot uchun to'lov shakli */}
-                      <div>
-                        <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wide mb-2">
-                          Mahsulot uchun to'lov shakli <span className="text-rose-600">*</span>
+                      {/* 2. MAHSULOT UCHUN HISOB-KITOB REJIMI: TO'LIQ TO'LOV | QISMAN TO'LOV + QISMAN QARZ (NASIYA) | TO'LIQ NASIYA */}
+                      <div className="space-y-2.5">
+                        <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wide">
+                          Mahsulot uchun to'lov va nasiya holati <span className="text-rose-600">*</span>
                         </label>
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
-                          {DELIVERY_PAYMENT_OPTIONS.map((opt) => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              disabled={isClosed}
-                                onClick={() => {
-                                setDeliveryPaymentType(opt.id);
-                                if (opt.id === 'qarzga') {
-                                  setDeliveryPaidAmount(0);
-                                  setDeliveryPaidAmountUzs('');
-                                  setIsDeliveryUzsMode(false);
-                                } else {
-                                  setDeliveryPaidAmount(totalDeliveredSum);
-                                  if (isDeliveryUzsMode && numExchangeRate > 0) {
-                                    setDeliveryPaidAmountUzs(
-                                      totalDeliveredSum > 0 ? Math.round(totalDeliveredSum * numExchangeRate) : ''
-                                    );
-                                  }
-                                }
-                              }}
-                              className={`p-2 rounded-xl text-xs font-bold border text-center transition cursor-pointer min-h-[40px] flex items-center justify-center ${
-                                deliveryPaymentType === opt.id
-                                  ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
-                                  : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-rose-50/50'
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
 
-                      {/* Mahsulot uchun to'lovni so'mda (UZS) kurs bilan kiritib dollarga ($) o'tkazish opsiyasi */}
-                      <div
-                        className={`p-3 rounded-xl border transition-all ${
-                          isDeliveryUzsMode
-                            ? 'bg-amber-50/90 border-amber-300 shadow-2xs'
-                            : 'bg-neutral-50/70 border-neutral-200'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between flex-wrap gap-2">
-                          <label
-                            htmlFor="isDeliveryUzsModeCheck"
-                            className="flex items-center gap-2.5 cursor-pointer select-none"
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                          <button
+                            type="button"
+                            disabled={isClosed}
+                            onClick={() => {
+                              setDeliveryPayMode('full');
+                              const firstMethod = selectedDeliveryMethods[0] || 'naqd';
+                              setSelectedDeliveryMethods([firstMethod]);
+                              setDeliveryAmountsUsd({
+                                naqd: '',
+                                bank_otkazma: '',
+                                karta_otkazma: '',
+                                qr_otkazma: '',
+                                [firstMethod]: totalDeliveredSum,
+                              });
+                              if (isDeliveryUzsMode && numExchangeRate > 0) {
+                                setDeliveryAmountsUzs({
+                                  naqd: '',
+                                  bank_otkazma: '',
+                                  karta_otkazma: '',
+                                  qr_otkazma: '',
+                                  [firstMethod]: Math.round(totalDeliveredSum * numExchangeRate),
+                                });
+                              }
+                            }}
+                            className={`p-2.5 rounded-xl text-xs font-bold border text-center transition cursor-pointer min-h-[42px] flex items-center justify-center gap-1.5 ${
+                              deliveryPayMode === 'full'
+                                ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                                : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-emerald-50/50'
+                            }`}
                           >
-                            <input
-                              id="isDeliveryUzsModeCheck"
-                              type="checkbox"
-                              disabled={isClosed}
-                              checked={isDeliveryUzsMode}
-                              onChange={(e) => {
-                                const checked = e.target.checked;
-                                setIsDeliveryUzsMode(checked);
-                                if (checked) {
-                                  if (deliveryPaymentType === 'qarzga') {
-                                    setDeliveryPaymentType('naqd');
-                                    setDeliveryPaidAmount(totalDeliveredSum);
-                                  }
-                                  const curUsd =
-                                    deliveryPaymentType === 'qarzga'
-                                      ? totalDeliveredSum
-                                      : typeof deliveryPaidAmount === 'number'
-                                      ? deliveryPaidAmount
-                                      : totalDeliveredSum;
-                                  if (numExchangeRate > 0 && curUsd > 0) {
-                                    setDeliveryPaidAmountUzs(Math.round(curUsd * numExchangeRate));
-                                  }
-                                } else {
-                                  setDeliveryPaidAmountUzs('');
-                                }
-                              }}
-                              className="w-4 h-4 text-amber-600 rounded border-neutral-300 cursor-pointer"
-                            />
-                            <div>
-                              <span className="text-xs font-extrabold text-neutral-900 flex items-center gap-1.5">
-                                <Calculator className="w-3.5 h-3.5 text-amber-700" />
-                                <span>
-                                  Mahsulot to'lovi so'mda (UZS) bo'lsa, kursni kiritib dollarga ($) o'tkazish
-                                </span>
-                              </span>
-                              <span className="block text-[10px] text-neutral-500">
-                                {isDeliveryUzsMode
-                                  ? "So'mda to'langan summa va kursni kiriting — avtomatik dollarga ($) o'tkaziladi"
-                                  : "Tanlanmagan: mahsulot to'lovi avtomatik ravishda dollarda ($) kiritiladi"}
-                              </span>
-                            </div>
-                          </label>
+                            <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span>To'liq to'lov</span>
+                          </button>
 
-                          {isDeliveryUzsMode && (
-                            <div className="flex items-center gap-1.5 bg-white border border-amber-300 px-2.5 py-1 rounded-xl shadow-2xs">
-                              <span className="text-[11px] font-extrabold text-amber-900">1$ kursi (so'm):</span>
-                              <input
-                                type="number"
-                                disabled={isClosed}
-                                min="1"
-                                step="any"
-                                value={splitExchangeRate}
-                                onChange={(e) => handleExchangeRateChange(e.target.value)}
-                                className="w-24 px-2 py-0.5 rounded-lg border border-amber-300 bg-amber-50/40 focus:bg-white font-mono font-bold text-xs text-neutral-900 outline-none focus:border-amber-600"
-                              />
-                            </div>
-                          )}
+                          <button
+                            type="button"
+                            disabled={isClosed}
+                            onClick={() => {
+                              setDeliveryPayMode('partial');
+                            }}
+                            className={`p-2.5 rounded-xl text-xs font-bold border text-center transition cursor-pointer min-h-[42px] flex items-center justify-center gap-1.5 ${
+                              deliveryPayMode === 'partial'
+                                ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
+                                : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-rose-50/50'
+                            }`}
+                          >
+                            <Coins className="w-3.5 h-3.5 shrink-0" />
+                            <span>Qisman to'lov + Qisman qarz (Nasiya)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isClosed}
+                            onClick={() => {
+                              setDeliveryPayMode('qarzga');
+                              setIsDeliveryUzsMode(false);
+                              setDeliveryAmountsUsd({
+                                naqd: '',
+                                bank_otkazma: '',
+                                karta_otkazma: '',
+                                qr_otkazma: '',
+                              });
+                              setDeliveryAmountsUzs({
+                                naqd: '',
+                                bank_otkazma: '',
+                                karta_otkazma: '',
+                                qr_otkazma: '',
+                              });
+                            }}
+                            className={`p-2.5 rounded-xl text-xs font-bold border text-center transition cursor-pointer min-h-[42px] flex items-center justify-center gap-1.5 ${
+                              deliveryPayMode === 'qarzga'
+                                ? 'bg-neutral-900 text-white border-neutral-900 shadow-xs'
+                                : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                            }`}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span>To'liq nasiyaga (Qarzga)</span>
+                          </button>
                         </div>
+
+                        {/* Qisman to'lov va qisman qarz qilish belgilash qutisi (Checkbox) */}
+                        {deliveryPayMode !== 'qarzga' && (
+                          <div
+                            className={`p-3 rounded-xl border transition-all ${
+                              deliveryPayMode === 'partial'
+                                ? 'bg-rose-50/90 border-rose-300 shadow-2xs'
+                                : 'bg-neutral-50/70 border-neutral-200'
+                            }`}
+                          >
+                            <label
+                              htmlFor="isPartialDeliveryPayCheck"
+                              className="flex items-center gap-2.5 cursor-pointer select-none"
+                            >
+                              <input
+                                id="isPartialDeliveryPayCheck"
+                                type="checkbox"
+                                disabled={isClosed}
+                                checked={deliveryPayMode === 'partial'}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setDeliveryPayMode('partial');
+                                  } else {
+                                    setDeliveryPayMode('full');
+                                    const firstMethod = selectedDeliveryMethods[0] || 'naqd';
+                                    setSelectedDeliveryMethods([firstMethod]);
+                                    setDeliveryAmountsUsd({
+                                      naqd: '',
+                                      bank_otkazma: '',
+                                      karta_otkazma: '',
+                                      qr_otkazma: '',
+                                      [firstMethod]: totalDeliveredSum,
+                                    });
+                                    if (isDeliveryUzsMode && numExchangeRate > 0) {
+                                      setDeliveryAmountsUzs({
+                                        naqd: '',
+                                        bank_otkazma: '',
+                                        karta_otkazma: '',
+                                        qr_otkazma: '',
+                                        [firstMethod]: Math.round(totalDeliveredSum * numExchangeRate),
+                                      });
+                                    }
+                                  }
+                                }}
+                                className="w-4 h-4 text-rose-600 rounded border-neutral-300 cursor-pointer"
+                              />
+                              <div>
+                                <span className="text-xs font-extrabold text-neutral-900 block">
+                                  Mahsulot uchun qisman pul berildi va qolgani qarz (nasiya) bo'lsin
+                                </span>
+                                <span className="block text-[10px] text-neutral-600">
+                                  Belgilansa, kiritilgan to'lov(lar)dan ortib qolgan summa avtomatik ravishda mijozning qarziga (nasiyaga) qo'shiladi
+                                </span>
+                              </div>
+                            </label>
+                          </div>
+                        )}
                       </div>
 
-                      {/* Agar to'lov usuli naqd, bank, karta yoki qr bo'lsa: to'lanadigan summa */}
-                      {deliveryPaymentType !== 'qarzga' && (
-                        <div className="p-3 bg-neutral-50 rounded-xl border border-neutral-200 space-y-2.5">
-                          {isDeliveryUzsMode ? (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                              <div>
-                                <div className="flex items-center justify-between gap-1 mb-1">
-                                  <label className="text-[11px] font-bold text-amber-900">
-                                    So'mda to'lanayotgan summa (UZS):
-                                  </label>
+                      {/* 3. TO'LOV TURLARINI TANLASH (BIR XIL, IKKITA YOKI UCHTASINI TANLASH + SO'MDA KURS BILAN YOKI DOLLARDA) */}
+                      {deliveryPayMode !== 'qarzga' && (
+                        <div className="space-y-3 pt-1">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-neutral-700 mb-1.5">
+                              To'lov turlarini tanlang (bir, ikki yoki bir nechtasini bosib faollashtirish mumkin):
+                            </label>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              {FINANCIAL_PAYMENT_METHODS.map((m) => {
+                                const isSelected = selectedDeliveryMethods.includes(m.id);
+                                return (
                                   <button
+                                    key={m.id}
                                     type="button"
                                     disabled={isClosed}
-                                    onClick={() => {
-                                      const fullUzs = Math.round(totalDeliveredSum * numExchangeRate);
-                                      setDeliveryPaidAmountUzs(fullUzs);
-                                      setDeliveryPaidAmount(totalDeliveredSum);
-                                    }}
-                                    className="text-[10px] font-bold text-amber-800 bg-amber-100 hover:bg-amber-200 px-2 py-0.5 rounded-md border border-amber-300 cursor-pointer"
+                                    onClick={() => handleToggleDeliveryMethod(m.id)}
+                                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                                      isSelected
+                                        ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
+                                        : 'bg-white text-neutral-700 border-neutral-200 hover:bg-rose-50/50'
+                                    }`}
                                   >
-                                    To'liq ({new Intl.NumberFormat('uz-UZ').format(Math.round(totalDeliveredSum * numExchangeRate))} so'm)
+                                    <span
+                                      className={`w-3.5 h-3.5 rounded flex items-center justify-center border text-[10px] ${
+                                        isSelected
+                                          ? 'bg-white text-rose-700 border-white font-black'
+                                          : 'border-neutral-300 bg-neutral-50 text-transparent'
+                                      }`}
+                                    >
+                                      ✓
+                                    </span>
+                                    <span>{m.label}</span>
                                   </button>
-                                </div>
-                                <input
-                                  type="number"
-                                  disabled={isClosed}
-                                  min="0"
-                                  step="any"
-                                  placeholder="Masalan: 1280000"
-                                  value={deliveryPaidAmountUzs}
-                                  onChange={(e) => {
-                                    const raw = e.target.value;
-                                    if (raw === '') {
-                                      setDeliveryPaidAmountUzs('');
-                                      setDeliveryPaidAmount(0);
-                                    } else {
-                                      const uzsNum = parseFloat(raw) || 0;
-                                      setDeliveryPaidAmountUzs(uzsNum);
-                                      if (numExchangeRate > 0) {
-                                        setDeliveryPaidAmount(Math.round((uzsNum / numExchangeRate) * 100) / 100);
-                                      }
-                                    }
-                                  }}
-                                  className="w-full px-3 py-1.5 bg-white rounded-lg border border-amber-300 font-mono font-bold text-sm text-neutral-900 outline-none focus:border-amber-600"
-                                />
-                                {typeof deliveryPaidAmountUzs === 'number' && deliveryPaidAmountUzs > 0 && (
-                                  <div className="text-[10px] font-mono text-amber-800 mt-0.5">
-                                    {new Intl.NumberFormat('uz-UZ').format(deliveryPaidAmountUzs)} so'm ÷{' '}
-                                    {new Intl.NumberFormat('uz-UZ').format(numExchangeRate)} ={' '}
-                                    {formatMoney(typeof deliveryPaidAmount === 'number' ? deliveryPaidAmount : 0)}
-                                  </div>
-                                )}
-                              </div>
-
-                              <div>
-                                <div className="flex items-center justify-between gap-1 mb-1">
-                                  <label className="text-[11px] font-bold text-emerald-900">
-                                    Dollarda ($) hisoblangan summa (USD):
-                                  </label>
-                                  <button
-                                    type="button"
-                                    disabled={isClosed}
-                                    onClick={() => {
-                                      setDeliveryPaidAmount(totalDeliveredSum);
-                                      setDeliveryPaidAmountUzs(Math.round(totalDeliveredSum * numExchangeRate));
-                                    }}
-                                    className="text-[10px] font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 px-2 py-0.5 rounded-md border border-emerald-300 cursor-pointer"
-                                  >
-                                    To'liq ({formatMoney(totalDeliveredSum)})
-                                  </button>
-                                </div>
-                                <input
-                                  type="number"
-                                  disabled={isClosed}
-                                  min="0"
-                                  step="any"
-                                  placeholder="0"
-                                  value={deliveryPaidAmount}
-                                  onChange={(e) => {
-                                    const raw = e.target.value;
-                                    if (raw === '') {
-                                      setDeliveryPaidAmount('');
-                                      setDeliveryPaidAmountUzs('');
-                                    } else {
-                                      const usdNum = parseFloat(raw) || 0;
-                                      setDeliveryPaidAmount(usdNum);
-                                      if (numExchangeRate > 0) {
-                                        setDeliveryPaidAmountUzs(Math.round(usdNum * numExchangeRate));
-                                      }
-                                    }
-                                  }}
-                                  className="w-full px-3 py-1.5 bg-white rounded-lg border border-emerald-300 font-mono font-bold text-sm text-neutral-900 outline-none focus:border-emerald-600"
-                                />
-                              </div>
+                                );
+                              })}
                             </div>
-                          ) : (
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                              <label className="text-xs font-bold text-neutral-800">
-                                Hozir to'lanayotgan summa (USD):
+                          </div>
+
+                          {/* Mahsulot uchun to'lovni so'mda (UZS) kurs bilan kiritib dollarga ($) o'tkazish opsiyasi */}
+                          <div
+                            className={`p-3 rounded-xl border transition-all ${
+                              isDeliveryUzsMode
+                                ? 'bg-amber-50/90 border-amber-300 shadow-2xs'
+                                : 'bg-neutral-50/70 border-neutral-200'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <label
+                                htmlFor="isDeliveryUzsModeCheck"
+                                className="flex items-center gap-2.5 cursor-pointer select-none"
+                              >
+                                <input
+                                  id="isDeliveryUzsModeCheck"
+                                  type="checkbox"
+                                  disabled={isClosed}
+                                  checked={isDeliveryUzsMode}
+                                  onChange={(e) => {
+                                    const checked = e.target.checked;
+                                    setIsDeliveryUzsMode(checked);
+                                    if (checked && numExchangeRate > 0) {
+                                      setDeliveryAmountsUzs((prevUzs) => {
+                                        const nextUzs = { ...prevUzs };
+                                        selectedDeliveryMethods.forEach((mId) => {
+                                          const usdVal = deliveryAmountsUsd[mId];
+                                          const curUzs = prevUzs[mId];
+                                          if (
+                                            (curUzs === '' || curUzs === undefined || curUzs === 0) &&
+                                            typeof usdVal === 'number' &&
+                                            usdVal > 0
+                                          ) {
+                                            nextUzs[mId] = Math.round(usdVal * numExchangeRate);
+                                          }
+                                        });
+                                        return nextUzs;
+                                      });
+                                    }
+                                  }}
+                                  className="w-4 h-4 text-amber-600 rounded border-neutral-300 cursor-pointer"
+                                />
+                                <div>
+                                  <span className="text-xs font-extrabold text-neutral-900 flex items-center gap-1.5">
+                                    <Calculator className="w-3.5 h-3.5 text-amber-700" />
+                                    <span>
+                                      Mahsulot to'lovi so'mda (UZS) bo'lsa, kursni kiritib dollarga ($) o'tkazish
+                                    </span>
+                                  </span>
+                                  <span className="block text-[10px] text-neutral-500">
+                                    {isDeliveryUzsMode
+                                      ? "So'mda to'langan summa va kursni kiriting — avtomatik dollarga ($) o'tkaziladi"
+                                      : "Tanlanmagan: mahsulot to'lovi avtomatik ravishda dollarda ($) kiritiladi"}
+                                  </span>
+                                </div>
                               </label>
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="number"
-                                  disabled={isClosed}
-                                  min="0"
-                                  step="any"
-                                  placeholder="0"
-                                  value={deliveryPaidAmount}
-                                  onChange={(e) =>
-                                    setDeliveryPaidAmount(
-                                      e.target.value === '' ? '' : parseFloat(e.target.value) || 0
-                                    )
-                                  }
-                                  className="w-36 px-3 py-1.5 bg-white rounded-lg border border-neutral-300 font-mono font-bold text-sm text-neutral-900 outline-none focus:border-rose-500"
-                                />
-                                <button
-                                  type="button"
-                                  disabled={isClosed}
-                                  onClick={() => setDeliveryPaidAmount(totalDeliveredSum)}
-                                  className="text-[11px] font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 px-2 py-1.5 rounded-lg border border-rose-200 cursor-pointer"
+
+                              {isDeliveryUzsMode && (
+                                <div className="flex items-center gap-1.5 bg-white border border-amber-300 px-2.5 py-1 rounded-xl shadow-2xs">
+                                  <span className="text-[11px] font-extrabold text-amber-900">1$ kursi (so'm):</span>
+                                  <input
+                                    type="number"
+                                    disabled={isClosed}
+                                    min="1"
+                                    step="any"
+                                    value={splitExchangeRate}
+                                    onChange={(e) => handleExchangeRateChange(e.target.value)}
+                                    className="w-24 px-2 py-0.5 rounded-lg border border-amber-300 bg-amber-50/40 focus:bg-white font-mono font-bold text-xs text-neutral-900 outline-none focus:border-amber-600"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Har bir tanlangan mahsulot to'lov turi uchun kiritish qatorlari */}
+                          <div className="space-y-2.5">
+                            {selectedDeliveryMethods.map((methodId, idx) => {
+                              const methodMeta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === methodId);
+                              const uzsVal = deliveryAmountsUzs[methodId];
+                              const usdVal = deliveryAmountsUsd[methodId];
+                              const otherMethodsUsdSum = selectedDeliveryMethods
+                                .filter((id) => id !== methodId)
+                                .reduce((acc, id) => acc + (Number(deliveryAmountsUsd[id]) || 0), 0);
+                              const remainingForThisMethodUsd = Math.max(
+                                0,
+                                Math.round((totalDeliveredSum - otherMethodsUsdSum) * 100) / 100
+                              );
+
+                              return (
+                                <div
+                                  key={methodId}
+                                  className="p-3 rounded-xl bg-neutral-50 border border-rose-200/90 shadow-2xs space-y-2"
                                 >
-                                  To'liq ({formatMoney(totalDeliveredSum)})
-                                </button>
+                                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                                    <span className="text-xs font-extrabold text-rose-900 flex items-center gap-1.5">
+                                      <span className="w-5 h-5 rounded-md bg-rose-100 text-rose-800 flex items-center justify-center text-[11px] font-mono">
+                                        {idx + 1}
+                                      </span>
+                                      <span>{methodMeta?.label || "To'lov"}</span>
+                                    </span>
+
+                                    <div className="flex items-center gap-2">
+                                      {remainingForThisMethodUsd > 0 && !isClosed && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setDeliveryAmountsUsd((prev) => ({
+                                              ...prev,
+                                              [methodId]: remainingForThisMethodUsd,
+                                            }));
+                                            if (isDeliveryUzsMode && numExchangeRate > 0) {
+                                              setDeliveryAmountsUzs((prev) => ({
+                                                ...prev,
+                                                [methodId]: Math.round(remainingForThisMethodUsd * numExchangeRate),
+                                              }));
+                                            }
+                                          }}
+                                          className="text-[10px] font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 px-2 py-0.5 rounded-md border border-emerald-300 cursor-pointer"
+                                        >
+                                          {selectedDeliveryMethods.length === 1
+                                            ? `To'liq (${formatMoney(remainingForThisMethodUsd)})`
+                                            : `Qolganini yozish (${formatMoney(remainingForThisMethodUsd)})`}
+                                        </button>
+                                      )}
+                                      {selectedDeliveryMethods.length > 1 && !isClosed && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleToggleDeliveryMethod(methodId)}
+                                          className="text-[11px] font-semibold text-neutral-400 hover:text-rose-600 px-1.5 py-0.5 rounded cursor-pointer"
+                                          title="Ushbu to'lov turini olib tashlash"
+                                        >
+                                          Olib tashlash ✕
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {isDeliveryUzsMode ? (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                      <div>
+                                        <label className="block text-[10px] font-bold text-amber-900 mb-1">
+                                          {methodMeta?.label} — So'mda (UZS) kiritish
+                                        </label>
+                                        <input
+                                          type="number"
+                                          disabled={isClosed}
+                                          min="0"
+                                          step="any"
+                                          placeholder="Masalan: 300000"
+                                          value={uzsVal}
+                                          onChange={(e) => handleDeliveryMethodUzsChange(methodId, e.target.value)}
+                                          className="w-full px-3 py-2 rounded-xl border border-amber-300 bg-white font-mono font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-amber-600"
+                                        />
+                                        {typeof uzsVal === 'number' && uzsVal > 0 && (
+                                          <div className="text-[10px] font-mono text-amber-800 mt-0.5">
+                                            {new Intl.NumberFormat('uz-UZ').format(uzsVal)} so'm ÷{' '}
+                                            {new Intl.NumberFormat('uz-UZ').format(numExchangeRate)} ={' '}
+                                            {formatMoney(typeof usdVal === 'number' ? usdVal : 0)}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      <div>
+                                        <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                                          {methodMeta?.label} — Dollarda ($) hisoblangan summa
+                                        </label>
+                                        <input
+                                          type="number"
+                                          disabled={isClosed}
+                                          min="0"
+                                          step="any"
+                                          placeholder="Avtomatik ($)"
+                                          value={usdVal}
+                                          onChange={(e) => handleDeliveryMethodUsdChange(methodId, e.target.value)}
+                                          className="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-white font-mono font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-emerald-600"
+                                        />
+                                        {typeof usdVal === 'number' && usdVal > 0 && (
+                                          <div className="text-[10px] font-mono text-emerald-800 mt-0.5">
+                                            Hisobda (USD): {formatMoney(usdVal)}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                                        {methodMeta?.label} — Dollarda (USD $) summa
+                                      </label>
+                                      <input
+                                        type="number"
+                                        disabled={isClosed}
+                                        min="0"
+                                        step="any"
+                                        placeholder="Masalan: 50"
+                                        value={usdVal}
+                                        onChange={(e) => handleDeliveryMethodUsdChange(methodId, e.target.value)}
+                                        className="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-white font-mono font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-emerald-600"
+                                      />
+                                      {typeof usdVal === 'number' && usdVal > 0 && (
+                                        <div className="text-[10px] font-mono text-emerald-800 mt-0.5">
+                                          Hisobda (USD): {formatMoney(usdVal)}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Umumiy to'langan va Qolgan nasiya (qarz) xulosasi */}
+                          <div className="p-3.5 rounded-xl bg-emerald-50/90 border border-emerald-300 space-y-2">
+                            {activeDeliverySplits.length > 0 && (
+                              <div className="text-[11px] font-bold text-emerald-950 flex flex-wrap items-center gap-x-2 gap-y-1">
+                                {activeDeliverySplits.map((sp, i) => (
+                                  <React.Fragment key={sp.method}>
+                                    {i > 0 && <span className="text-emerald-700 font-black">+</span>}
+                                    <span className="bg-white px-2 py-0.5 rounded-lg border border-emerald-200 font-mono text-[11px]">
+                                      <strong>{sp.methodLabel}:</strong>{' '}
+                                      {sp.amountUzs && sp.amountUzs > 0
+                                        ? `${new Intl.NumberFormat('uz-UZ').format(sp.amountUzs)} so'm (${formatMoney(sp.amount)})`
+                                        : formatMoney(sp.amount)}
+                                    </span>
+                                  </React.Fragment>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="pt-1.5 border-t border-emerald-200/80 flex items-center justify-between flex-wrap gap-2">
+                              <span className="text-xs font-extrabold text-emerald-900 uppercase">
+                                Hozir to'langan jami:
+                              </span>
+                              <div className="text-right font-mono">
+                                {isDeliveryUzsMode && totalDeliveryPaidUzs > 0 && (
+                                  <span className="text-xs sm:text-sm font-black text-amber-900 mr-2">
+                                    {new Intl.NumberFormat('uz-UZ').format(totalDeliveryPaidUzs)} so'm
+                                  </span>
+                                )}
+                                <span className="text-xs sm:text-sm font-black text-emerald-800 bg-white px-2.5 py-0.5 rounded-lg border border-emerald-300">
+                                  {formatMoney(totalDeliveryPaidUsd)}
+                                </span>
                               </div>
                             </div>
-                          )}
 
-                          {typeof deliveryPaidAmount === 'number' && (
-                            <div className="text-xs font-medium pt-1 border-t border-neutral-200/80">
-                              {deliveryPaidAmount === totalDeliveredSum && (
-                                <span className="text-emerald-700 flex items-center gap-1">
-                                  <Check className="w-3.5 h-3.5" />
-                                  Mahsulot qiymati to'liq to'landi (Mijozga yangi qarz qo'shilmaydi).
+                            <div className="pt-1.5 border-t border-emerald-200/80 text-xs font-medium">
+                              {totalDeliveryPaidUsd === totalDeliveredSum && (
+                                <span className="text-emerald-800 font-bold flex items-center gap-1.5">
+                                  <Check className="w-4 h-4 text-emerald-700 shrink-0" />
+                                  <span>Mahsulot qiymati to'liq to'landi (Mijozga yangi qarz qo'shilmaydi).</span>
                                 </span>
                               )}
-                              {deliveryPaidAmount < totalDeliveredSum && (
-                                <span className="text-rose-700 font-bold flex items-center gap-1">
-                                  <AlertCircle className="w-3.5 h-3.5" />
-                                  Qoldiq to'lanmagan summa (+{formatMoney(totalDeliveredSum - deliveryPaidAmount)}) mijozning qarzdorligiga qo'shiladi.
-                                </span>
+                              {totalDeliveryPaidUsd < totalDeliveredSum && (
+                                <div className="p-2.5 rounded-lg bg-rose-100/90 border border-rose-300 text-rose-950 flex items-center justify-between flex-wrap gap-2">
+                                  <span className="font-bold flex items-center gap-1.5">
+                                    <AlertCircle className="w-4 h-4 text-rose-700 shrink-0" />
+                                    <span>Qolgan qarzga (nasiyaga) qo'shiladigan summa:</span>
+                                  </span>
+                                  <span className="font-mono font-black text-sm text-rose-800 bg-white px-2.5 py-0.5 rounded-lg border border-rose-300">
+                                    +{formatMoney(remainingDeliveryDebtUsd)}
+                                  </span>
+                                </div>
                               )}
-                              {deliveryPaidAmount > totalDeliveredSum && (
-                                <span className="text-blue-700 font-bold flex items-center gap-1">
-                                  <Coins className="w-3.5 h-3.5" />
-                                  Ortiqcha to'lov (+{formatMoney(deliveryPaidAmount - totalDeliveredSum)}) mijozning eski qarzini yopadi yoki avansiga o'tadi.
+                              {totalDeliveryPaidUsd > totalDeliveredSum && (
+                                <span className="text-blue-800 font-bold flex items-center gap-1.5">
+                                  <Coins className="w-4 h-4 text-blue-700 shrink-0" />
+                                  <span>
+                                    Ortiqcha to'lov (+{formatMoney(totalDeliveryPaidUsd - totalDeliveredSum)}) mijozning eski qarzini yopadi yoki avansiga o'tadi.
+                                  </span>
                                 </span>
                               )}
                             </div>
-                          )}
+                          </div>
                         </div>
                       )}
 
-                      {deliveryPaymentType === 'qarzga' && (
+                      {deliveryPayMode === 'qarzga' && (
                         <div className="p-3 bg-rose-50 rounded-xl border border-rose-200 text-xs text-rose-900 flex items-center gap-2">
                           <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
                           <div>
-                            <strong>Nasiyaga berildi:</strong> Barcha{' '}
+                            <strong>To'liq nasiyaga berildi:</strong> Barcha{' '}
                             <strong className="font-mono">{formatMoney(totalDeliveredSum)}</strong>{' '}
                             mijozning joriy qarzdorligiga qo'shiladi.
                           </div>
@@ -2670,6 +3196,149 @@ export const ExecutePlanModal: React.FC<Props> = ({
                 className="w-full px-3 py-2 rounded-xl border border-neutral-200 text-xs text-neutral-900 outline-none focus:border-rose-500"
               />
             </div>
+
+            {/* SECTION 6: Eslatma qo'yish (Yopilmagan mijoz bilan amaliyot bajarishda) */}
+            {!isClosed && (
+              <div className="space-y-3 pt-3 border-t border-amber-200">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={hasReminder}
+                      onChange={(e) => {
+                        setHasReminder(e.target.checked);
+                        setReminderError(null);
+                      }}
+                      className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <span className="text-xs font-extrabold text-amber-900 uppercase tracking-wide flex items-center gap-1.5">
+                      <BellRing className="w-4 h-4 text-amber-600" />
+                      {showReturnSection
+                        ? "6. Eslatma qo'yish (Tanlangan sanaga eslatma)"
+                        : "5. Eslatma qo'yish (Tanlangan sanaga eslatma)"}
+                    </span>
+                  </label>
+                  {hasReminder && (
+                    <span className="text-[11px] font-bold text-amber-700 bg-amber-100 px-2.5 py-0.5 rounded-full">
+                      Kalendar va eslatmalar jadvalida ko&apos;rinadi
+                    </span>
+                  )}
+                </div>
+
+                {hasReminder && (
+                  <div className="p-3.5 rounded-2xl bg-amber-50/70 border border-amber-200 space-y-3 animate-in fade-in">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-amber-950 mb-1">
+                          Eslatma sanasi <span className="text-rose-600">*</span>
+                        </label>
+                        <div className="relative">
+                          <Calendar className="w-4 h-4 text-amber-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="date"
+                            value={reminderDate}
+                            onChange={(e) => {
+                              setReminderDate(e.target.value);
+                              setReminderError(null);
+                            }}
+                            className="w-full pl-9 pr-3 py-2 rounded-xl border border-amber-300 bg-white text-xs font-mono font-bold text-neutral-900 outline-none focus:border-amber-600"
+                          />
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                          {[
+                            { label: 'Bugun', days: 0 },
+                            { label: 'Ertaga', days: 1 },
+                            { label: '3 kundan keyin', days: 3 },
+                            { label: '1 haftadan keyin', days: 7 },
+                          ].map((preset) => {
+                            const targetYmd = getDefaultReminderDate(preset.days);
+                            return (
+                              <button
+                                key={preset.label}
+                                type="button"
+                                onClick={() => setReminderDate(targetYmd)}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                                  reminderDate === targetYmd
+                                    ? 'bg-amber-600 text-white'
+                                    : 'bg-white border border-amber-200 text-amber-900 hover:bg-amber-100'
+                                }`}
+                              >
+                                {preset.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-amber-950 mb-1">
+                          Eslatma izohi <span className="text-rose-600">*</span>
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder="Masalan: Shu sanada to'lov qiladi yoki mahsulot bo'yicha qayta bog'lanish kerak..."
+                          value={reminderNote}
+                          onChange={(e) => {
+                            setReminderNote(e.target.value);
+                            setReminderError(null);
+                          }}
+                          className="w-full px-3 py-2 rounded-xl border border-amber-300 bg-white text-xs text-neutral-900 outline-none focus:border-amber-600"
+                        />
+                        <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                          {[
+                            "To'lov qilishga va'da berdi",
+                            "Qayta qo'ng'iroq qilish kerak",
+                            'Yangi mahsulot buyurtma beradi',
+                            'Hisob-kitobni tekshirish',
+                          ].map((chip) => (
+                            <button
+                              key={chip}
+                              type="button"
+                              onClick={() =>
+                                setReminderNote((prev) =>
+                                  prev ? `${prev}, ${chip.toLowerCase()}` : chip
+                                )
+                              }
+                              className="px-2 py-0.5 rounded-md bg-white border border-amber-200 text-[10px] font-semibold text-amber-900 hover:bg-amber-100 cursor-pointer"
+                            >
+                              + {chip}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {reminderError && (
+                      <div className="p-2 rounded-xl bg-rose-100 border border-rose-200 text-rose-800 text-xs font-bold flex items-center gap-1.5">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        <span>{reminderError}</span>
+                      </div>
+                    )}
+
+                    {reminderSuccessMsg && (
+                      <div className="p-2 rounded-xl bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5">
+                        <CheckCircle className="w-4 h-4 shrink-0" />
+                        <span>{reminderSuccessMsg}</span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-between flex-wrap gap-2 pt-1">
+                      <span className="text-[11px] text-amber-900">
+                        * &quot;Hisobotni saqlash&quot; bosilganda ham ushbu eslatma avtomatik saqlanadi.
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleSaveReminderOnly}
+                        className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <BellRing className="w-3.5 h-3.5" />
+                        <span>Eslatmani hoziroq saqlash</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Modal Actions: Print Yuk xati ONLY shown when 2, 3, or 4 is active */}
             <div className="pt-3 border-t border-rose-100 flex flex-wrap items-center justify-between gap-2.5">
