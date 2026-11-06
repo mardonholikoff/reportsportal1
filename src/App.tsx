@@ -145,6 +145,7 @@ export default function App() {
   // Agent Daily Plan Modals
   const [isCreatePlanOpen, setIsCreatePlanOpen] = useState(false);
   const [executingPlanItem, setExecutingPlanItem] = useState<DailyPlanItem | null>(null);
+  const [executingPlanEditSoldMode, setExecutingPlanEditSoldMode] = useState(false);
 
   // Warehouse state (Ombor zaxirasi)
   const [warehouseProducts, setWarehouseProducts] = useState<WarehouseProduct[]>(() =>
@@ -1245,6 +1246,76 @@ export default function App() {
     }
   };
 
+  // Handle Update Sold Products & Payment Type on an open or closed plan item
+  const handleUpdateSoldProducts = (
+    planItemId: string,
+    data: {
+      productsDelivered: ProductItem[];
+      deliveryPayment?: DeliveryPaymentInfo;
+      reportNote?: string;
+    },
+    closeAfterSave?: boolean
+  ) => {
+    const currentUsername = user?.username || 'agentp1';
+    const totalSalesUsd = data.productsDelivered.reduce(
+      (sum, p) => sum + (p.totalPrice ?? p.quantity * p.unitPrice),
+      0
+    );
+    const resolvedDeliveryPayment: DeliveryPaymentInfo = data.deliveryPayment || {
+      paymentType: 'qarzga',
+      paymentLabel: "Qarzga (Nasiya)",
+      paidAmount: 0,
+      debtAmount: totalSalesUsd,
+      totalAmount: totalSalesUsd,
+    };
+    const result = storageService.updateSoldProductsOnPlanItem(planItemId, currentUsername, {
+      productsDelivered: data.productsDelivered,
+      deliveryPayment: resolvedDeliveryPayment,
+      reportNote: data.reportNote,
+    });
+    if (result.success) {
+      if (closeAfterSave && result.plan && !result.plan.isClosed) {
+        const autoCloseReason =
+          data.reportNote?.trim() || "Sotilgan mahsulotlar yangilandi va hisobot yopildi";
+        storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false);
+      }
+
+      const finalPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
+      if (finalPlan) syncPlanToFirestore(finalPlan);
+
+      if (result.client) {
+        const freshClient = storageService.getClientById(result.client.id);
+        if (freshClient) syncClientToFirestore(freshClient);
+      }
+
+      const prodSummary = data.productsDelivered
+        .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
+        .join(', ');
+      const payLabel =
+        resolvedDeliveryPayment.paymentLabel ||
+        resolvedDeliveryPayment.paymentType ||
+        "Nasiya";
+
+      addSystemLog({
+        userId: currentUsername,
+        userRole: user?.role || 'agent',
+        actionType: 'amal_bajarish',
+        actionTitle: `Sotilgan mahsulotlar va to'lov turi tahrirlandi (@${currentUsername})`,
+        details: `Mijoz: ${result.client?.name || finalPlan?.clientName || ''}. Yangilangan mahsulotlar: ${prodSummary}. To'lov shakli: ${payLabel}.`,
+      });
+
+      showToast(
+        `Sotilgan mahsulotlar va to'lov turi muvaffaqiyatli yangilandi (@${currentUsername})!`
+      );
+
+      setDailyPlans([...storageService.getActive24hPlans()]);
+      setClients([...storageService.getClients()]);
+      const updatedWh = storageService.getWarehouseProducts();
+      setWarehouseProducts(updatedWh);
+      syncWarehouseProductsBulkToFirestore(updatedWh);
+    }
+  };
+
   // Trigger Cloud Sync
   const handleTriggerSync = async () => {
     setIsSyncing(true);
@@ -1547,7 +1618,10 @@ export default function App() {
                   clients={clients}
                   onOpenCreatePlan={() => setIsCreatePlanOpen(true)}
                   onOpenMonthlyPlan={() => setAgentActiveTab('oylik_reja')}
-                  onOpenExecuteModal={(item) => setExecutingPlanItem(item)}
+                  onOpenExecuteModal={(item, editSold) => {
+                    setExecutingPlanEditSoldMode(Boolean(editSold));
+                    setExecutingPlanItem(item);
+                  }}
                   onMarkPlannedActionDone={(item) =>
                     handleSavePlanReport(item.id, {
                       actionDone: item.plannedAction || 'joyiga borildi',
@@ -1969,6 +2043,10 @@ export default function App() {
                     plans={dailyPlans}
                     clients={clients}
                     onRemovePlanItems={handleRemoveDailyPlanItems}
+                    onOpenExecuteModal={(item, editSold) => {
+                      setExecutingPlanEditSoldMode(Boolean(editSold));
+                      setExecutingPlanItem(item);
+                    }}
                   />
                 </div>
               </div>
@@ -2175,8 +2253,13 @@ export default function App() {
       <ExecutePlanModal
         planItem={executingPlanItem}
         isOpen={!!executingPlanItem}
-        onClose={() => setExecutingPlanItem(null)}
+        onClose={() => {
+          setExecutingPlanItem(null);
+          setExecutingPlanEditSoldMode(false);
+        }}
         onSaveReport={handleSavePlanReport}
+        onUpdateSoldProducts={handleUpdateSoldProducts}
+        initialEditSoldProducts={executingPlanEditSoldMode}
         onCloseWithoutAction={(planId, reason) => handleClosePlanItem(planId, reason, true)}
         onSaveReminder={handleSaveReminder}
         client={executingPlanItem ? clients.find((c) => c.id === executingPlanItem.clientId) : null}

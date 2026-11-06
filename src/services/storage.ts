@@ -44,6 +44,34 @@ export function isClosedPlanExpired7Days(plan: DailyPlanItem): boolean {
   return Date.now() - closedMs >= CLOSED_PLAN_RETENTION_MS;
 }
 
+export function getPlanSoldProductsData(plan: DailyPlanItem | null | undefined): {
+  productsDelivered: ProductItem[];
+  deliveryPayment?: DeliveryPaymentInfo;
+  historyIndex: number;
+} {
+  if (!plan) return { productsDelivered: [], historyIndex: -1 };
+  if (plan.actionsHistory && plan.actionsHistory.length > 0) {
+    const idx = plan.actionsHistory.findIndex(
+      (act) => act.productsDelivered && act.productsDelivered.length > 0
+    );
+    if (idx !== -1) {
+      return {
+        productsDelivered: plan.actionsHistory[idx].productsDelivered || [],
+        deliveryPayment: plan.actionsHistory[idx].deliveryPayment || plan.deliveryPayment,
+        historyIndex: idx,
+      };
+    }
+  }
+  if (plan.productsDelivered && plan.productsDelivered.length > 0) {
+    return {
+      productsDelivered: plan.productsDelivered,
+      deliveryPayment: plan.deliveryPayment,
+      historyIndex: -1,
+    };
+  }
+  return { productsDelivered: [], historyIndex: -1 };
+}
+
 let deletedClientIdsCache: Set<string> | null = null;
 let deletedWarehouseIdsCache: Set<string> | null = null;
 
@@ -1058,11 +1086,19 @@ class StorageService {
     plan.lastExecutedBy = author;
     plan.lastExecutedAt = nowStr;
     plan.actionDone = report.actionDone;
-    plan.financialAction = report.financialAction;
-    plan.productsDelivered = report.productsDelivered;
-    plan.deliveryPayment = report.deliveryPayment;
-    plan.productsReturned = report.productsReturned;
-    plan.reportNote = report.reportNote;
+    if (report.financialAction) {
+      plan.financialAction = report.financialAction;
+    }
+    if (report.productsDelivered && report.productsDelivered.length > 0) {
+      plan.productsDelivered = report.productsDelivered;
+      plan.deliveryPayment = report.deliveryPayment;
+    }
+    if (report.productsReturned && report.productsReturned.length > 0) {
+      plan.productsReturned = report.productsReturned;
+    }
+    if (report.reportNote !== undefined && report.reportNote.trim() !== '') {
+      plan.reportNote = report.reportNote;
+    }
     plan.actionsCount = (plan.actionsCount || 0) + 1;
     plan.actionsHistory = [
       {
@@ -1272,6 +1308,190 @@ class StorageService {
     });
 
     return { success: true, client: updatedClient || undefined };
+  }
+
+  // Yopilgan yoki hali yopilmagan rejadagi sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish
+  public updateSoldProductsOnPlanItem(
+    planItemId: string,
+    author: string,
+    updateData: {
+      productsDelivered: ProductItem[];
+      deliveryPayment: DeliveryPaymentInfo;
+      reportNote?: string;
+    }
+  ): { success: boolean; plan?: DailyPlanItem; client?: Client } {
+    const plans = this.getDailyPlans();
+    const planIndex = plans.findIndex((p) => p.id === planItemId);
+    if (planIndex === -1) return { success: false };
+
+    const plan = plans[planIndex];
+    const nowStr = new Date().toISOString();
+    const existingSold = getPlanSoldProductsData(plan);
+    const oldProducts = existingSold.productsDelivered || [];
+    const oldDeliveryPayment = existingSold.deliveryPayment;
+
+    const newProducts = (updateData.productsDelivered || []).filter(
+      (p) => p.name.trim() !== '' && (p.quantity || 0) > 0
+    );
+    if (newProducts.length === 0) return { success: false };
+
+    // 1. Oldingi sotilgan mahsulotlar miqdorini ombor zaxirasiga qaytarib qo'yamiz
+    oldProducts.forEach((op) => {
+      if (op.warehouseId && (op.quantity || 0) > 0) {
+        this.restoreProductToWarehouseStockOnly(op.warehouseId, op.quantity, op.unit);
+      }
+    });
+
+    // 2. Yangilangan sotilgan mahsulotlar miqdorini ombor zaxirasidan ayiramiz
+    newProducts.forEach((np) => {
+      if (np.warehouseId && (np.quantity || 0) > 0) {
+        this.deductProductFromWarehouse(np.warehouseId, np.quantity, np.unit);
+      }
+    });
+
+    // 3. Oldingi va yangi moliyaviy farqni hisoblaymiz
+    const oldTotalValue = oldProducts.reduce(
+      (sum, p) => sum + (p.totalPrice !== undefined ? p.totalPrice : (p.quantity || 0) * (p.unitPrice || 0)),
+      0
+    );
+    const oldPayType = oldDeliveryPayment?.paymentType || 'qarzga';
+    const oldPaidAmt =
+      oldDeliveryPayment?.paidAmount !== undefined
+        ? oldDeliveryPayment.paidAmount
+        : oldPayType === 'qarzga'
+        ? 0
+        : oldTotalValue;
+    const oldNetDebtEffect = oldTotalValue - oldPaidAmt;
+
+    const newTotalValue = newProducts.reduce(
+      (sum, p) => sum + (p.totalPrice !== undefined ? p.totalPrice : (p.quantity || 0) * (p.unitPrice || 0)),
+      0
+    );
+    const newDeliveryPayment = updateData.deliveryPayment;
+    const newPayType = newDeliveryPayment?.paymentType || 'qarzga';
+    const newPaidAmt =
+      newDeliveryPayment?.paidAmount !== undefined
+        ? newDeliveryPayment.paidAmount
+        : newPayType === 'qarzga'
+        ? 0
+        : newTotalValue;
+    const newNetDebtEffect = newTotalValue - newPaidAmt;
+
+    // 4. Reja elementini yangilaymiz (ham ochiq, ham yopilgan holatda ishlaydi)
+    plan.productsDelivered = newProducts;
+    plan.deliveryPayment = newDeliveryPayment;
+    plan.lastExecutedBy = author;
+    plan.lastExecutedAt = nowStr;
+    if (!plan.isClosed && plan.status !== 'yopildi') {
+      plan.status = 'bajarildi';
+    }
+    plan.closedWithoutAction = false;
+    if (!plan.actionDone) {
+      plan.actionDone = plan.plannedAction || 'joyiga borildi';
+    }
+    if (updateData.reportNote !== undefined && updateData.reportNote.trim() !== '') {
+      plan.reportNote = updateData.reportNote.trim();
+    }
+
+    if (plan.actionsHistory && plan.actionsHistory.length > 0 && existingSold.historyIndex !== -1) {
+      const targetIdx = existingSold.historyIndex;
+      plan.actionsHistory[targetIdx] = {
+        ...plan.actionsHistory[targetIdx],
+        productsDelivered: newProducts,
+        deliveryPayment: newDeliveryPayment,
+        reportNote:
+          updateData.reportNote && updateData.reportNote.trim() !== ''
+            ? updateData.reportNote.trim()
+            : plan.actionsHistory[targetIdx].reportNote,
+      };
+    } else if (plan.actionsHistory && plan.actionsHistory.length > 0) {
+      plan.actionsHistory[0] = {
+        ...plan.actionsHistory[0],
+        productsDelivered: newProducts,
+        deliveryPayment: newDeliveryPayment,
+        reportNote:
+          updateData.reportNote && updateData.reportNote.trim() !== ''
+            ? updateData.reportNote.trim()
+            : plan.actionsHistory[0].reportNote,
+      };
+    } else {
+      plan.actionsHistory = [
+        {
+          timestamp: nowStr,
+          author,
+          actionDone: plan.actionDone || 'joyiga borildi',
+          productsDelivered: newProducts,
+          deliveryPayment: newDeliveryPayment,
+          reportNote: updateData.reportNote?.trim() || plan.reportNote,
+        },
+      ];
+      plan.actionsCount = 1;
+    }
+
+    plans[planIndex] = plan;
+    this.saveDailyPlans(plans);
+
+    // 5. Mijozning mahsulotlar ro'yxati va qarz/haqdorlik balansini yangilaymiz
+    const client = this.getClients().find((c) => c.id === plan.clientId);
+    if (!client) return { success: true, plan };
+
+    const remainingClientProducts = [...(client.products || [])];
+    oldProducts.forEach((op) => {
+      let removeIdx = remainingClientProducts.findIndex((cp) => cp.id && op.id && cp.id === op.id);
+      if (removeIdx === -1) {
+        removeIdx = remainingClientProducts.findIndex(
+          (cp) => cp.name === op.name && cp.unit === op.unit && cp.quantity === op.quantity
+        );
+      }
+      if (removeIdx === -1) {
+        removeIdx = remainingClientProducts.findIndex((cp) => cp.name === op.name);
+      }
+      if (removeIdx !== -1) {
+        remainingClientProducts.splice(removeIdx, 1);
+      }
+    });
+
+    const updatedClientProducts = [...newProducts, ...remainingClientProducts];
+
+    const currentNetDebt = (client.currentDebt || 0) - (client.currentAdvance || 0);
+    const debtDelta = Math.round((newNetDebtEffect - oldNetDebtEffect) * 100) / 100;
+    const updatedNetDebt = Math.round((currentNetDebt + debtDelta) * 100) / 100;
+
+    const newDebt = updatedNetDebt >= 0 ? updatedNetDebt : 0;
+    const newAdvance = updatedNetDebt < 0 ? Math.abs(updatedNetDebt) : 0;
+
+    const prodSumStr = newProducts.map((p) => `${p.name} (${p.quantity} ${p.unit})`).join(', ');
+    const debtAdded = Math.max(0, Math.round((newTotalValue - newPaidAmt) * 100) / 100);
+    const payDesc =
+      newPayType === 'qarzga'
+        ? `Nasiyaga (Qarzga: +${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD)`
+        : `To'lov turi: ${newDeliveryPayment.paymentLabel || newPayType} (To'landi: ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(newPaidAmt)} USD${debtAdded > 0 ? `, Qarzga: +${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD` : ''})`;
+
+    const clientLogs = [...(client.logs || [])];
+    clientLogs.unshift({
+      id: 'log_' + Date.now() + '_prod_edit',
+      clientId: client.id,
+      author,
+      timestamp: nowStr,
+      type: 'product_added',
+      title: "Sotilgan mahsulotlar / to'lov turi o'zgartirildi",
+      details: `${author} tomonidan sotilgan mahsulotlar va to'lov turi tahrirlandi: ${prodSumStr}. Jami: ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(newTotalValue)} USD. ${payDesc}`,
+      amountChanged: newPaidAmt > 0 ? newPaidAmt : debtAdded,
+      amountUzs: newDeliveryPayment.paidAmountUzs,
+      exchangeRate: newDeliveryPayment.exchangeRate,
+      purpose: 'product',
+      paymentMethodLabel: newDeliveryPayment.paymentLabel,
+    });
+
+    const updatedClient = this.updateClient(client.id, {
+      currentDebt: newDebt,
+      currentAdvance: newAdvance,
+      products: updatedClientProducts,
+      logs: clientLogs,
+      updatedAt: nowStr,
+    });
+
+    return { success: true, plan, client: updatedClient || undefined };
   }
 
   // Rejadagi mijoz bo'yicha amallarni to'liq yakunlash (Oxirgi marta yopish: bajarib yoki bajarilmasdan yopish)
@@ -1740,6 +1960,26 @@ class StorageService {
 
     found.totalPieces = Math.max(0, found.totalPieces - piecesToDeduct);
     found.totalVolume = Math.max(0, found.totalVolume - volToDeduct);
+    this.saveWarehouseProducts(warehouse);
+  }
+
+  public restoreProductToWarehouseStockOnly(
+    warehouseId: string,
+    quantity: number,
+    unit: string
+  ): void {
+    const warehouse = this.getWarehouseProducts();
+    const found = warehouse.find((w) => w.id === warehouseId);
+    if (!found) return;
+
+    const isPkg = unit === found.packageUnitName;
+    const piecesToAdd = isPkg
+      ? quantity * (found.piecesPerPackage || 1)
+      : quantity;
+    const volToAdd = piecesToAdd * (found.volumePerPiece || 0);
+
+    found.totalPieces = Math.max(0, (found.totalPieces || 0) + piecesToAdd);
+    found.totalVolume = Math.max(0, (found.totalVolume || 0) + volToAdd);
     this.saveWarehouseProducts(warehouse);
   }
 

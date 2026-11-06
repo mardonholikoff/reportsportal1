@@ -11,7 +11,7 @@ import {
   DeliveryPaymentType,
 } from '../types';
 import { formatMoney } from '../utils/format';
-import { storageService } from '../services/storage';
+import { storageService, getPlanSoldProductsData } from '../services/storage';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import {
   X,
@@ -36,6 +36,7 @@ import {
   Calculator,
   BellRing,
   Calendar,
+  Edit3,
 } from 'lucide-react';
 
 interface Props {
@@ -77,6 +78,16 @@ interface Props {
     reminderDate: string;
     note: string;
   }) => void;
+  onUpdateSoldProducts?: (
+    planItemId: string,
+    data: {
+      productsDelivered: ProductItem[];
+      deliveryPayment: DeliveryPaymentInfo;
+      reportNote?: string;
+    },
+    closeAfterSave?: boolean
+  ) => void;
+  initialEditSoldProducts?: boolean;
   client?: Client | null;
   warehouseProducts?: WarehouseProduct[];
 }
@@ -382,6 +393,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
   onSaveReport,
   onCloseWithoutAction,
   onSaveReminder,
+  onUpdateSoldProducts,
+  initialEditSoldProducts = false,
   client,
   warehouseProducts,
 }) => {
@@ -424,6 +437,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
   // Section 3: Products delivered (with bidirectional discount % / USD + multi-method / partial credit + optional UZS -> USD conversion)
   const [hasProducts, setHasProducts] = useState(false);
+  const [isEditingSoldProducts, setIsEditingSoldProducts] = useState(false);
   const [products, setProducts] = useState<ProductItem[]>([createEmptyProductRow()]);
   const [revealedRowMinPrices, setRevealedRowMinPrices] = useState<Record<string, boolean>>({});
   const [orderDiscountPercent, setOrderDiscountPercent] = useState<number | ''>('');
@@ -443,6 +457,120 @@ export const ExecutePlanModal: React.FC<Props> = ({
     qr_otkazma: '',
   });
   const [isDeliveryUzsMode, setIsDeliveryUzsMode] = useState(false);
+
+  const existingSoldData = useMemo(
+    () => getPlanSoldProductsData(planItem),
+    [planItem, isOpen]
+  );
+  const hasExistingSoldProducts = existingSoldData.productsDelivered.length > 0;
+
+  const loadSoldProductsIntoForm = (soldData: ReturnType<typeof getPlanSoldProductsData>) => {
+    if (!soldData || soldData.productsDelivered.length === 0) return;
+    setIsEditingSoldProducts(true);
+    setHasProducts(true);
+    setProducts(
+      soldData.productsDelivered.map((p) => ({
+        ...p,
+        id: p.id || 'prod_' + Math.random().toString(36).substring(2, 6),
+        originalUnitPrice: p.originalUnitPrice ?? p.unitPrice ?? 0,
+        discountPercent: p.discountPercent || 0,
+        discountAmount: p.discountAmount || 0,
+        totalPrice:
+          p.totalPrice !== undefined
+            ? p.totalPrice
+            : Math.max(0, (p.quantity || 0) * (p.unitPrice || 0) - (p.discountAmount || 0)),
+      }))
+    );
+    setOrderDiscountPercent('');
+    setOrderDiscountAmount('');
+
+    const dp = soldData.deliveryPayment;
+    if (!dp || dp.paymentType === 'qarzga' || (dp.paidAmount || 0) <= 0) {
+      setDeliveryPayMode('qarzga');
+      setIsDeliveryUzsMode(false);
+      setSelectedDeliveryMethods(['naqd']);
+      setDeliveryAmountsUsd({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
+      setDeliveryAmountsUzs({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
+      return;
+    }
+
+    const isPartial =
+      Boolean(dp.isPartialCredit) ||
+      ((dp.debtAmount || 0) > 0 && (dp.paidAmount || 0) > 0) ||
+      Boolean(dp.splits && dp.splits.length > 1);
+
+    setDeliveryPayMode(isPartial ? 'partial' : 'full');
+
+    if (dp.exchangeRate && dp.exchangeRate > 0) {
+      setSplitExchangeRate(String(dp.exchangeRate));
+    }
+
+    const hasUzs =
+      Boolean(dp.paidAmountUzs && dp.paidAmountUzs > 0) ||
+      Boolean(dp.splits && dp.splits.some((s) => s.amountUzs && s.amountUzs > 0));
+    setIsDeliveryUzsMode(hasUzs);
+
+    if (dp.splits && dp.splits.length > 0) {
+      const methods: FinancialMethodType[] = [];
+      const nextUsd: Partial<Record<FinancialMethodType, number | ''>> = {
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      };
+      const nextUzs: Partial<Record<FinancialMethodType, number | ''>> = {
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      };
+      const rateToUse = dp.exchangeRate && dp.exchangeRate > 0 ? dp.exchangeRate : 12800;
+
+      dp.splits.forEach((sp) => {
+        const mId = sp.method || 'naqd';
+        if (!methods.includes(mId)) methods.push(mId);
+        nextUsd[mId] = sp.amount;
+        if (sp.amountUzs && sp.amountUzs > 0) {
+          nextUzs[mId] = sp.amountUzs;
+        } else if (hasUzs) {
+          nextUzs[mId] = Math.round(sp.amount * rateToUse);
+        }
+      });
+
+      setSelectedDeliveryMethods(methods.length > 0 ? methods : ['naqd']);
+      setDeliveryAmountsUsd(nextUsd);
+      setDeliveryAmountsUzs(nextUzs);
+    } else {
+      const mappedMethod: FinancialMethodType =
+        dp.paymentType === 'bank'
+          ? 'bank_otkazma'
+          : dp.paymentType === 'karta'
+          ? 'karta_otkazma'
+          : dp.paymentType === 'qr'
+          ? 'qr_otkazma'
+          : 'naqd';
+      setSelectedDeliveryMethods([mappedMethod]);
+      setDeliveryAmountsUsd({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+        [mappedMethod]: dp.paidAmount || '',
+      });
+      setDeliveryAmountsUzs({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+        [mappedMethod]:
+          dp.paidAmountUzs && dp.paidAmountUzs > 0
+            ? dp.paidAmountUzs
+            : hasUzs && dp.paidAmount
+            ? Math.round(dp.paidAmount * (dp.exchangeRate || 12800))
+            : '',
+      });
+    }
+  };
 
   // Section 4: Products returned state: { [productId]: returnedQuantity }
   const [returnsMap, setReturnsMap] = useState<Record<string, number | ''>>({});
@@ -496,6 +624,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       });
       setPaymentNote('');
       setHasProducts(false);
+      setIsEditingSoldProducts(false);
       setProducts([createEmptyProductRow()]);
       setOrderDiscountPercent('');
       setOrderDiscountAmount('');
@@ -523,8 +652,13 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setReminderNote('');
       setReminderError(null);
       setReminderSuccessMsg(null);
+
+      const soldSnapshot = getPlanSoldProductsData(planItem);
+      if (initialEditSoldProducts && soldSnapshot.productsDelivered.length > 0) {
+        loadSoldProductsIntoForm(soldSnapshot);
+      }
     }
-  }, [isOpen, planItem?.id]);
+  }, [isOpen, planItem?.id, initialEditSoldProducts]);
 
   const numExchangeRate = useMemo(() => {
     const r = parseFloat(splitExchangeRate);
@@ -1354,7 +1488,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const executeSaveReport = (closeAfterSave: boolean) => {
     if (!planItem) return;
     const isClosed = planItem.isClosed || planItem.status === 'yopildi';
-    if (isClosed) return;
+    if (isClosed && !isEditingSoldProducts) return;
 
     // 1. Financial data (Section 2 - supports single or multiple payment methods)
     const numPaymentAmount = totalPaymentUsd;
@@ -1363,7 +1497,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       .join(' | ');
 
     const financialData =
-      hasPayment && numPaymentAmount > 0
+      !isClosed && hasPayment && numPaymentAmount > 0
         ? {
             method: combinedPaymentSummary.primaryMethod,
             methodLabel: combinedPaymentSummary.methodLabel,
@@ -1422,25 +1556,26 @@ export const ExecutePlanModal: React.FC<Props> = ({
         : undefined;
 
     // 3. Products returned (Section 4.1 + 4.2)
-    const directReturned = showReturnSection
-      ? Object.entries(returnsMap)
-          .filter(([_, qty]) => (typeof qty === 'number' ? qty > 0 : Number(qty) > 0))
-          .map(([prodId, qty]) => {
-            const numQty = typeof qty === 'number' ? qty : Number(qty);
-            const original = clientProducts.find((p) => p.id === prodId);
-            return {
-              productId: prodId,
-              name: original?.name || 'Mahsulot',
-              unit: original?.unit || 'dona',
-              quantity: numQty,
-              unitPrice: original?.unitPrice || 0,
-              warehouseId: original?.warehouseId,
-            };
-          })
-      : [];
+    const directReturned =
+      !isClosed && showReturnSection
+        ? Object.entries(returnsMap)
+            .filter(([_, qty]) => (typeof qty === 'number' ? qty > 0 : Number(qty) > 0))
+            .map(([prodId, qty]) => {
+              const numQty = typeof qty === 'number' ? qty : Number(qty);
+              const original = clientProducts.find((p) => p.id === prodId);
+              return {
+                productId: prodId,
+                name: original?.name || 'Mahsulot',
+                unit: original?.unit || 'dona',
+                quantity: numQty,
+                unitPrice: original?.unitPrice || 0,
+                warehouseId: original?.warehouseId,
+              };
+            })
+        : [];
 
     const extraReturnedList =
-      showReturnSection && hasExtraReturns
+      !isClosed && showReturnSection && hasExtraReturns
         ? extraReturns
             .filter(
               (r) =>
@@ -1458,6 +1593,56 @@ export const ExecutePlanModal: React.FC<Props> = ({
         : [];
 
     const productsReturned = [...directReturned, ...extraReturnedList];
+
+    // Agar sotilgan mahsulotlarga o'zgartirish kiritish rejimi yoqilgan bo'lsa:
+    if (isEditingSoldProducts && onUpdateSoldProducts && validProducts.length > 0 && deliveryPayData) {
+      if (hasReminder && !isClosed) {
+        const effectiveRemNote = reminderNote.trim() || reportNote.trim();
+        if (!reminderDate) {
+          setReminderError('Eslatma uchun sanani tanlang!');
+          return;
+        }
+        if (!effectiveRemNote) {
+          setReminderError('Eslatma izohini kiriting!');
+          return;
+        }
+        setReminderError(null);
+        if (onSaveReminder) {
+          onSaveReminder({
+            clientId: planItem.clientId,
+            planId: planItem.id,
+            reminderDate,
+            note: effectiveRemNote,
+          });
+        }
+      }
+
+      // Agar ochiq rejada bir vaqtda 2-bo'lim (to'lov) yoki 4-bo'lim (qaytarish) ham kiritilgan bo'lsa, avval ularni saqlaymiz
+      if (!isClosed && (Boolean(financialData) || productsReturned.length > 0)) {
+        onSaveReport(
+          planItem.id,
+          {
+            actionDone,
+            financialAction: financialData,
+            productsReturned: productsReturned.length > 0 ? productsReturned : undefined,
+            reportNote: reportNote.trim(),
+          },
+          false
+        );
+      }
+
+      onUpdateSoldProducts(
+        planItem.id,
+        {
+          productsDelivered: validProducts,
+          deliveryPayment: deliveryPayData,
+          reportNote: reportNote.trim() || undefined,
+        },
+        closeAfterSave
+      );
+      onClose();
+      return;
+    }
 
     const hasAnyActionOrData =
       isPlannedActionConfirmed ||
@@ -1563,6 +1748,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   if (!isOpen || !planItem) return null;
 
   const isClosed = planItem.isClosed || planItem.status === 'yopildi';
+  const isProductSectionLocked = isClosed && !isEditingSoldProducts;
   const totalDiscountAll = Math.max(
     0,
     Math.round((rawBaseDeliveredSum - totalDeliveredSum) * 100) / 100
@@ -1610,16 +1796,30 @@ export const ExecutePlanModal: React.FC<Props> = ({
           {/* Modal Form */}
           <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 max-h-[82vh] overflow-y-auto">
             {isClosed && (
-              <div className="p-3.5 rounded-2xl bg-neutral-100 border border-neutral-300 flex items-center gap-2.5 text-neutral-800">
-                <Lock className="w-5 h-5 text-neutral-600 shrink-0" />
-                <div className="text-xs">
-                  <span className="font-bold block text-neutral-900">
-                    Ushbu mijoz bo'yicha reja yakunlangan va yopilgan!
-                  </span>
-                  <span className="text-neutral-500">
-                    Barcha amallar bajarib bo'lingan. Qaytib hech qanday amal bajarish mumkin emas.
-                  </span>
+              <div className="p-3.5 rounded-2xl bg-neutral-100 border border-neutral-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-neutral-800">
+                <div className="flex items-center gap-2.5">
+                  <Lock className="w-5 h-5 text-neutral-600 shrink-0" />
+                  <div className="text-xs">
+                    <span className="font-bold block text-neutral-900">
+                      Ushbu mijoz bo'yicha reja yakunlangan va yopilgan!
+                    </span>
+                    <span className="text-neutral-500">
+                      {hasExistingSoldProducts
+                        ? "Sotilgan mahsulotlar va to'lov turiga quyidagi tugma orqali o'zgartirish kiritishingiz mumkin."
+                        : "Barcha amallar bajarib bo'lingan."}
+                    </span>
+                  </div>
                 </div>
+                {hasExistingSoldProducts && !isEditingSoldProducts && (
+                  <button
+                    type="button"
+                    onClick={() => loadSoldProductsIntoForm(existingSoldData)}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shrink-0 shadow-xs"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Sotilgan mahsulotlarga o'zgartirish kiritish</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -2089,35 +2289,142 @@ export const ExecutePlanModal: React.FC<Props> = ({
             {/* SECTION 3: YANGI MAHSULOT TOPSHIRILDIMI? (CHEGIRMA + KONVERTATSIYA + NAKLADNOY) */}
             {/* ========================================================= */}
             <div className="space-y-3 pt-3 border-t border-rose-100">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <Package className="w-4 h-4 text-rose-700" />
                   <label
                     htmlFor="hasProductsCheck"
                     className="text-xs font-bold text-neutral-800 uppercase tracking-wide cursor-pointer"
                   >
-                    3. Yangi mahsulot topshirildimi?
+                    {isEditingSoldProducts
+                      ? "3. Sotilgan mahsulotlar va to'lov turini tahrirlash"
+                      : '3. Yangi mahsulot topshirildimi?'}
                   </label>
                 </div>
-                <input
-                  type="checkbox"
-                  id="hasProductsCheck"
-                  disabled={isClosed}
-                  checked={hasProducts}
-                  onChange={(e) => setHasProducts(e.target.checked)}
-                  className="w-4 h-4 text-rose-600 rounded cursor-pointer"
-                />
+                <div className="flex items-center gap-2">
+                  {hasExistingSoldProducts && !isEditingSoldProducts && (
+                    <button
+                      type="button"
+                      onClick={() => loadSoldProductsIntoForm(existingSoldData)}
+                      className="px-3 py-1 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-[11px] font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      <span>Sotilgan mahsulotlarga o'zgartirish kiritish</span>
+                    </button>
+                  )}
+                  <input
+                    type="checkbox"
+                    id="hasProductsCheck"
+                    disabled={isProductSectionLocked}
+                    checked={hasProducts}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setHasProducts(checked);
+                      if (!checked && isEditingSoldProducts) {
+                        setIsEditingSoldProducts(false);
+                      }
+                    }}
+                    className="w-4 h-4 text-rose-600 rounded cursor-pointer"
+                  />
+                </div>
               </div>
+
+              {/* Agar ushbu rejada mahsulot sotib bo'lingan bo'lsa, uni ko'rsatish va "O'zgartirish kiritish" paneli */}
+              {hasExistingSoldProducts && (
+                <div
+                  className={`p-3.5 rounded-2xl border space-y-2.5 transition-all ${
+                    isEditingSoldProducts
+                      ? 'bg-indigo-50/90 border-indigo-300 shadow-xs'
+                      : 'bg-indigo-50/50 border-indigo-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-700 text-white text-[10px] font-bold uppercase tracking-wide">
+                        {isEditingSoldProducts ? "O'zgartirish rejimi faol" : 'Sotilgan mahsulotlar'}
+                      </span>
+                      <span className="text-xs font-bold text-indigo-950">
+                        {existingSoldData.productsDelivered.length} xil mahsulot sotilgan
+                      </span>
+                    </div>
+
+                    {!isEditingSoldProducts ? (
+                      <button
+                        type="button"
+                        onClick={() => loadSoldProductsIntoForm(existingSoldData)}
+                        className="px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>O'zgartirish kiritish (Mahsulot / To'lov turi)</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsEditingSoldProducts(false);
+                          setHasProducts(false);
+                          setProducts([createEmptyProductRow()]);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-300 text-[11px] font-bold transition cursor-pointer"
+                      >
+                        Tahrirlashni bekor qilish ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {existingSoldData.productsDelivered.map((sp, spIdx) => (
+                      <span
+                        key={sp.id || spIdx}
+                        className="px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-[11px] text-neutral-800 font-medium shadow-2xs"
+                      >
+                        <strong>{sp.name}</strong>: {sp.quantity} {sp.unit} × {formatMoney(sp.unitPrice)} ={' '}
+                        <strong className="font-mono text-indigo-900">
+                          {formatMoney(sp.totalPrice ?? sp.quantity * sp.unitPrice)}
+                        </strong>
+                      </span>
+                    ))}
+                  </div>
+
+                  {existingSoldData.deliveryPayment && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-indigo-200/70 text-[11px]">
+                      <div className="text-indigo-950">
+                        <span className="font-semibold">Joriy to'lov turi: </span>
+                        <strong className="px-2 py-0.5 rounded bg-white border border-indigo-200 text-indigo-900">
+                          {existingSoldData.deliveryPayment.paymentLabel ||
+                            existingSoldData.deliveryPayment.paymentType}
+                        </strong>
+                      </div>
+                      <div className="flex items-center gap-2 font-mono font-bold">
+                        {existingSoldData.deliveryPayment.paidAmount > 0 && (
+                          <span className="text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            To'langan: {formatMoney(existingSoldData.deliveryPayment.paidAmount)}
+                          </span>
+                        )}
+                        {(existingSoldData.deliveryPayment.debtAmount || 0) > 0 && (
+                          <span className="text-rose-800 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                            Nasiya (Qarz): {formatMoney(existingSoldData.deliveryPayment.debtAmount || 0)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {hasProducts && (
                 <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3.5 animate-in fade-in duration-100">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div>
                       <span className="text-xs font-bold text-neutral-800 block">
-                        Topshiriladigan mahsulotlar (USD)
+                        {isEditingSoldProducts
+                          ? "Sotilgan mahsulotlarni va to'lov turini o'zgartirish (USD)"
+                          : 'Topshiriladigan mahsulotlar (USD)'}
                       </span>
                       <span className="text-[10px] text-neutral-500">
-                        Aktual narxga foiz (%) yoki summa (USD) chegirma qo'llash mumkin
+                        {isEditingSoldProducts
+                          ? "Mahsulot miqdori, narxi, chegirmasi yoki to'lov turini o'zgartirib saqlang — ombor va mijoz balansi avtomatik qayta hisoblanadi"
+                          : "Aktual narxga foiz (%) yoki summa (USD) chegirma qo'llash mumkin"}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
@@ -2131,7 +2438,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       </button>
                       <button
                         type="button"
-                        disabled={isClosed}
+                        disabled={isProductSectionLocked}
                         onClick={handleAddProductRow}
                         className="flex items-center gap-1 text-xs font-bold text-rose-700 bg-white px-3 py-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 cursor-pointer shadow-2xs"
                       >
@@ -2174,7 +2481,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                               {products.length > 1 && (
                                 <button
                                   type="button"
-                                  disabled={isClosed}
+                                  disabled={isProductSectionLocked}
                                   onClick={() => handleRemoveProductRow(idx)}
                                   className="p-1 text-neutral-400 hover:text-rose-600 cursor-pointer transition-colors"
                                   title="Qatorni o'chirish"
@@ -2192,7 +2499,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                               <WarehouseProductSearchSelect
                                 products={actualWarehouseProducts}
                                 selectedId={p.warehouseId || ''}
-                                disabled={isClosed}
+                                disabled={isProductSectionLocked}
                                 onSelect={(whId) => handleSelectWarehouseProduct(idx, whId)}
                               />
                               {selectedWh && (
@@ -2240,7 +2547,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 {selectedWh ? (
                                   <select
                                     value={p.unit}
-                                    disabled={isClosed}
+                                    disabled={isProductSectionLocked}
                                     onChange={(e) => handleUnitChange(idx, e.target.value)}
                                     className="w-full px-2.5 py-1.5 rounded-lg border border-neutral-200 bg-white text-xs font-medium text-neutral-900 outline-none h-[36px]"
                                   >
@@ -2277,7 +2584,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 </label>
                                 <input
                                   type="number"
-                                  disabled={isClosed}
+                                  disabled={isProductSectionLocked}
                                   min="1"
                                   step="any"
                                   placeholder="1"
@@ -2295,7 +2602,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 </label>
                                 <input
                                   type="number"
-                                  disabled={isClosed}
+                                  disabled={isProductSectionLocked}
                                   min="0"
                                   step="any"
                                   placeholder="0"
@@ -2326,7 +2633,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 </label>
                                 <input
                                   type="number"
-                                  disabled={isClosed}
+                                  disabled={isProductSectionLocked}
                                   min="0"
                                   max="100"
                                   step="any"
@@ -2344,7 +2651,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 </label>
                                 <input
                                   type="number"
-                                  disabled={isClosed}
+                                  disabled={isProductSectionLocked}
                                   min="0"
                                   step="any"
                                   placeholder="0 USD"
@@ -2392,7 +2699,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                             </label>
                             <input
                               type="number"
-                              disabled={isClosed}
+                              disabled={isProductSectionLocked}
                               min="0"
                               max="100"
                               step="any"
@@ -2410,7 +2717,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                             </label>
                             <input
                               type="number"
-                              disabled={isClosed}
+                              disabled={isProductSectionLocked}
                               min="0"
                               max={rowDiscountedDeliveredSum}
                               step="any"
@@ -2459,7 +2766,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                           <button
                             type="button"
-                            disabled={isClosed}
+                            disabled={isProductSectionLocked}
                             onClick={() => {
                               setDeliveryPayMode('full');
                               const firstMethod = selectedDeliveryMethods[0] || 'naqd';
@@ -2493,7 +2800,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
                           <button
                             type="button"
-                            disabled={isClosed}
+                            disabled={isProductSectionLocked}
                             onClick={() => {
                               setDeliveryPayMode('partial');
                             }}
@@ -2509,7 +2816,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
                           <button
                             type="button"
-                            disabled={isClosed}
+                            disabled={isProductSectionLocked}
                             onClick={() => {
                               setDeliveryPayMode('qarzga');
                               setIsDeliveryUzsMode(false);
@@ -2553,7 +2860,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                               <input
                                 id="isPartialDeliveryPayCheck"
                                 type="checkbox"
-                                disabled={isClosed}
+                                disabled={isProductSectionLocked}
                                 checked={deliveryPayMode === 'partial'}
                                 onChange={(e) => {
                                   if (e.target.checked) {
@@ -2609,7 +2916,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                   <button
                                     key={m.id}
                                     type="button"
-                                    disabled={isClosed}
+                                    disabled={isProductSectionLocked}
                                     onClick={() => handleToggleDeliveryMethod(m.id)}
                                     className={`px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
                                       isSelected
@@ -2649,7 +2956,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 <input
                                   id="isDeliveryUzsModeCheck"
                                   type="checkbox"
-                                  disabled={isClosed}
+                                  disabled={isProductSectionLocked}
                                   checked={isDeliveryUzsMode}
                                   onChange={(e) => {
                                     const checked = e.target.checked;
@@ -2694,7 +3001,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                   <span className="text-[11px] font-extrabold text-amber-900">1$ kursi (so'm):</span>
                                   <input
                                     type="number"
-                                    disabled={isClosed}
+                                    disabled={isProductSectionLocked}
                                     min="1"
                                     step="any"
                                     value={splitExchangeRate}
@@ -2734,7 +3041,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                     </span>
 
                                     <div className="flex items-center gap-2">
-                                      {remainingForThisMethodUsd > 0 && !isClosed && (
+                                      {remainingForThisMethodUsd > 0 && !isProductSectionLocked && (
                                         <button
                                           type="button"
                                           onClick={() => {
@@ -2756,7 +3063,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                             : `Qolganini yozish (${formatMoney(remainingForThisMethodUsd)})`}
                                         </button>
                                       )}
-                                      {selectedDeliveryMethods.length > 1 && !isClosed && (
+                                      {selectedDeliveryMethods.length > 1 && !isProductSectionLocked && (
                                         <button
                                           type="button"
                                           onClick={() => handleToggleDeliveryMethod(methodId)}
@@ -2777,7 +3084,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                         </label>
                                         <input
                                           type="number"
-                                          disabled={isClosed}
+                                          disabled={isProductSectionLocked}
                                           min="0"
                                           step="any"
                                           placeholder="Masalan: 300000"
@@ -2800,7 +3107,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                         </label>
                                         <input
                                           type="number"
-                                          disabled={isClosed}
+                                          disabled={isProductSectionLocked}
                                           min="0"
                                           step="any"
                                           placeholder="Avtomatik ($)"
@@ -2822,7 +3129,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                       </label>
                                       <input
                                         type="number"
-                                        disabled={isClosed}
+                                        disabled={isProductSectionLocked}
                                         min="0"
                                         step="any"
                                         placeholder="Masalan: 50"
@@ -3239,7 +3546,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
               </label>
               <textarea
                 rows={2}
-                disabled={isClosed}
+                disabled={isProductSectionLocked}
                 placeholder="Mijoz bilan suhbat natijasi, konvertatsiya kursi, qaytarilgan tovarlar yoki keyingi qadamlar..."
                 value={reportNote}
                 onChange={(e) => setReportNote(e.target.value)}
@@ -3414,6 +3721,16 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   Bekor qilish
                 </button>
 
+                {isClosed && isEditingSoldProducts && (
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-900 text-white text-xs font-bold shadow-xs transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    <span>Sotilgan mahsulot va to'lov o'zgarishlarini saqlash</span>
+                  </button>
+                )}
+
                 {!isClosed && (
                   <>
                     <button
@@ -3421,7 +3738,11 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white text-xs font-bold shadow-xs transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
                     >
                       <CheckCircle className="w-4 h-4" />
-                      <span>Hisobotni saqlash</span>
+                      <span>
+                        {isEditingSoldProducts
+                          ? "O'zgarishlarni va hisobotni saqlash"
+                          : 'Hisobotni saqlash'}
+                      </span>
                     </button>
 
                     <button
@@ -3431,7 +3752,11 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       title="Hisobotni saqlash va ushbu mijoz rejasini bir vaqtda yakunlab yopish (agar amal bajarildi belgilanmagan bo'lsa, bajarilmasdan yopiladi)"
                     >
                       <Lock className="w-4 h-4" />
-                      <span>Hisobotni saqlash va yopish</span>
+                      <span>
+                        {isEditingSoldProducts
+                          ? "O'zgarishlarni saqlash va yopish"
+                          : 'Hisobotni saqlash va yopish'}
+                      </span>
                     </button>
                   </>
                 )}

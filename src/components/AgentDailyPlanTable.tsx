@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Client, DailyPlanItem } from '../types';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
-import { storageService, isClosedPlanExpired7Days } from '../services/storage';
+import { storageService, isClosedPlanExpired7Days, getPlanSoldProductsData } from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import {
   CalendarCheck,
@@ -35,7 +35,7 @@ interface Props {
   clients?: Client[];
   onOpenCreatePlan: () => void;
   onOpenMonthlyPlan?: () => void;
-  onOpenExecuteModal: (item: DailyPlanItem) => void;
+  onOpenExecuteModal: (item: DailyPlanItem, editSoldProducts?: boolean) => void;
   onMarkPlannedActionDone?: (item: DailyPlanItem) => void;
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
   onClosePlanItem?: (
@@ -1195,17 +1195,35 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                 </div>
 
                                 {/* Delivered Products info */}
-                                {item.productsDelivered && item.productsDelivered.length > 0 && (
-                                  <div
-                                    className="text-[11px] text-neutral-800 font-medium truncate flex items-center gap-1"
-                                    title={item.productsDelivered.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
-                                  >
-                                    <Package className="w-3 h-3 text-rose-700 shrink-0" />
-                                    <span className="truncate">
-                                      {item.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
-                                    </span>
-                                  </div>
-                                )}
+                                {(() => {
+                                  const soldData = getPlanSoldProductsData(item);
+                                  if (soldData.productsDelivered.length === 0) return null;
+                                  return (
+                                    <div className="space-y-1">
+                                      <div
+                                        className="text-[11px] text-neutral-800 font-medium truncate flex items-center gap-1"
+                                        title={soldData.productsDelivered.map((p) => `${p.name}: ${p.quantity} ${p.unit}`).join(', ')}
+                                      >
+                                        <Package className="w-3 h-3 text-rose-700 shrink-0" />
+                                        <span className="truncate">
+                                          {soldData.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                                        </span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onOpenExecuteModal(item, true);
+                                        }}
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                        title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
+                                      >
+                                        <Edit3 className="w-2.5 h-2.5" />
+                                        <span>Mahsulotga o'zgartirish kiritish</span>
+                                      </button>
+                                    </div>
+                                  );
+                                })()}
 
                                 {/* Returned Products info */}
                                 {item.productsReturned && item.productsReturned.length > 0 && (
@@ -1301,16 +1319,32 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           onClick={(e) => e.stopPropagation()}
                         >
                           {(() => {
+                            const soldData = getPlanSoldProductsData(item);
+                            const hasSoldProducts = soldData.productsDelivered.length > 0;
                             const has234 =
                               paidAmount > 0 ||
                               debtAmount > 0 ||
-                              (item.productsDelivered && item.productsDelivered.length > 0) ||
+                              hasSoldProducts ||
                               (item.productsReturned && item.productsReturned.length > 0);
 
                             if (isClosed) {
                               return (
                                 <div className="flex flex-col items-center justify-center gap-1">
                                   <div className="flex items-center justify-center gap-1 flex-wrap">
+                                    {hasSoldProducts && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onOpenExecuteModal(item, true);
+                                        }}
+                                        className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                                        title="Yopilgan holatda ham sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
+                                      >
+                                        <Edit3 className="w-3 h-3" />
+                                        <span>Mahsulotga o'zgartirish kiritish</span>
+                                      </button>
+                                    )}
                                     {has234 && (
                                       <button
                                         type="button"
@@ -1370,6 +1404,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                   <Edit3 className="w-3 h-3" />
                                   <span>{isDone ? "+ Amal" : "Amal / Hisobot"}</span>
                                 </button>
+                                {hasSoldProducts && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onOpenExecuteModal(item, true);
+                                    }}
+                                    className="px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                                    title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                    <span>Mahsulotga o'zgartirish kiritish</span>
+                                  </button>
+                                )}
                                 {has234 && (
                                   <button
                                     type="button"
@@ -1665,9 +1713,22 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       </div>
 
                       <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                        {getPlanSoldProductsData(item).productsDelivered.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenExecuteModal(item, true);
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer flex items-center gap-1 shadow-xs"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                            <span>Mahsulotga o'zgartirish kiritish</span>
+                          </button>
+                        )}
                         {(paidAmount > 0 ||
                           debtAmount > 0 ||
-                          (item.productsDelivered && item.productsDelivered.length > 0) ||
+                          getPlanSoldProductsData(item).productsDelivered.length > 0 ||
                           (item.productsReturned && item.productsReturned.length > 0)) && (
                           <button
                             type="button"
