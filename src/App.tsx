@@ -96,6 +96,7 @@ import {
   FileSpreadsheet,
   BellRing,
   Target,
+  Calendar,
 } from 'lucide-react';
 
 export default function App() {
@@ -121,11 +122,12 @@ export default function App() {
   );
 
   // Expandable sections state
+  const [isAdminMonthlyPlansOpen, setIsAdminMonthlyPlansOpen] = useState(false);
   const [isTableOpen, setIsTableOpen] = useState(false);
   const [isAgentWarehouseOpen, setIsAgentWarehouseOpen] = useState(false);
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
-  const [isAdminPlansOpen, setIsAdminPlansOpen] = useState(true);
-  const [isAdminLogsOpen, setIsAdminLogsOpen] = useState(true);
+  const [isAdminPlansOpen, setIsAdminPlansOpen] = useState(false);
+  const [isAdminLogsOpen, setIsAdminLogsOpen] = useState(false);
 
   // Modals state
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
@@ -1672,28 +1674,77 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* ADMIN VIEW: BIRINCHI BO'LIB 1 OYLIK QARZ UNDIRISH VA MAHSULOT BERISH FOIZI */}
+        {/* ADMIN VIEW: 1 OYLIK QARZ UNDIRISH VA MAHSULOT BERISH REJALARI (BOSGANDA KO'RINADI) */}
         {/* ========================================================= */}
         {isAdmin && (
-          <div className="space-y-4">
-            <MonthlyPlanProgressCard
-              plan={activeMonthlyPlan}
-              userRole={user.role}
-              currentUsername={user.username}
-              onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
-            />
+          <section className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden transition-all duration-200">
+            <div
+              onClick={() => setIsAdminMonthlyPlansOpen(!isAdminMonthlyPlansOpen)}
+              className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-rose-50/30 transition select-none"
+            >
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-700 text-white font-bold font-display flex items-center justify-center text-base shadow-xs shrink-0">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
+                    1 oylik qarz undirish va 1 oylik mahsulot berish rejalari
+                  </h2>
+                </div>
+              </div>
 
-            <MonthlyProductPlanProgressCard
-              plan={activeMonthlyProductPlan}
-              userRole={user.role}
-              currentUsername={user.username}
-              onOpenCreatePlan={() => setIsCreateMonthlyProductPlanOpen(true)}
-            />
-          </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsAdminMonthlyPlansOpen(!isAdminMonthlyPlansOpen);
+                  }}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition min-h-[40px] cursor-pointer ${
+                    isAdminMonthlyPlansOpen
+                      ? 'bg-neutral-100 text-neutral-800 hover:bg-neutral-200'
+                      : 'bg-indigo-700 text-white hover:bg-indigo-800 shadow-xs'
+                  }`}
+                >
+                  {isAdminMonthlyPlansOpen ? (
+                    <>
+                      <ChevronUp className="w-4 h-4" />
+                      <span>Yopish</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="w-4 h-4" />
+                      <span>Ochish</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {isAdminMonthlyPlansOpen && (
+              <div className="p-5 sm:p-6 pt-0 border-t border-rose-100/70 space-y-4 animate-in fade-in duration-150">
+                <div className="pt-4 space-y-4">
+                  <MonthlyPlanProgressCard
+                    plan={activeMonthlyPlan}
+                    userRole={user.role}
+                    currentUsername={user.username}
+                    onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
+                  />
+
+                  <MonthlyProductPlanProgressCard
+                    plan={activeMonthlyProductPlan}
+                    userRole={user.role}
+                    currentUsername={user.username}
+                    onOpenCreatePlan={() => setIsCreateMonthlyProductPlanOpen(true)}
+                  />
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {/* ========================================================= */}
-        {/* ADMIN VIEW: ACCORDION SECTIONS (1. JADVAL, 2. TAHLIL, 3. REJALAR) */}
+        {/* ADMIN VIEW: ACCORDION SECTIONS (1. MIJOZLAR RO'YXATI, 2. TAHLILIY JADVALLAR, 3. REJALAR) */}
         {/* ========================================================= */}
         {isAdmin && (
           <section className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden transition-all duration-200">
@@ -1709,11 +1760,8 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-2">
                     <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
-                      1. Tahliliy jadval
+                      1. Mijozlar ro'yxati
                     </h2>
-                    <span className="text-[11px] font-semibold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
-                      {clients.length} ta mijoz
-                    </span>
                   </div>
                 </div>
               </div>
@@ -1752,70 +1800,6 @@ export default function App() {
                 <div className="pt-4">
                   <StatsCards stats={stats} userRole={user.role} />
 
-                  {/* Section Header */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                    <div>
-                      <h3 className="text-lg font-bold font-display text-neutral-900">
-                        Mijozlar va Hisob-kitoblar Jadvali
-                      </h3>
-                    </div>
-
-                    <div className="flex items-center gap-2.5 flex-wrap">
-                      {(user.username === 'adminc' || user.username === 'adminc1') && (
-                        <button
-                          onClick={() => {
-                            setWarehouseDebtClient(null);
-                            setIsAddWarehouseDebtOpen(true);
-                          }}
-                          className="self-start sm:self-auto flex items-center gap-2 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
-                          title="Ombordagi mahsulotlar valyutasida mijozga qarzdorlik qo'shish"
-                        >
-                          <Warehouse className="w-4 h-4 stroke-[2.2]" />
-                          <span>Ombordagi qarzdorlikni qo'shish</span>
-                        </button>
-                      )}
-
-                      <button
-                        onClick={() => {
-                          setEditingWarehouseProduct(null);
-                          setIsWarehouseModalOpen(true);
-                        }}
-                        className="self-start sm:self-auto flex items-center gap-2 bg-neutral-900 hover:bg-neutral-800 active:bg-black text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
-                        title="Omborga mahsulotlar kiritish"
-                      >
-                        <PackagePlus className="w-4 h-4 stroke-[2.2] text-rose-400" />
-                        <span>Omborga mahsulotlar kiritish</span>
-                      </button>
-
-                      {(user.username === 'adminc' || user.username === 'adminc1') && (
-                        <button
-                          onClick={() => {
-                            setEditingClient(null);
-                            setClientFormInitialMode('excel');
-                            setIsFormModalOpen(true);
-                          }}
-                          className="self-start sm:self-auto flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
-                          title="Excel (.xlsx) fayldan qator va ustunlarni tanlab mijozlarni ommaviy yuklash"
-                        >
-                          <FileSpreadsheet className="w-4 h-4 stroke-[2.2]" />
-                          <span>Excel (.xlsx) dan yuklash</span>
-                        </button>
-                      )}
-
-                      <button
-                        onClick={() => {
-                          setEditingClient(null);
-                          setClientFormInitialMode('single');
-                          setIsFormModalOpen(true);
-                        }}
-                        className="self-start sm:self-auto flex items-center gap-2 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[44px] cursor-pointer"
-                      >
-                        <Plus className="w-4 h-4 stroke-[2.5]" />
-                        <span>Yangi mijoz qo'shish</span>
-                      </button>
-                    </div>
-                  </div>
-
                   {/* Interactive Client Table */}
                   <ClientTable
                     clients={clients}
@@ -1850,7 +1834,7 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* 2. TAHLILIY AMALLAR (Faqat Admin uchun, agentp1 da yo'q) */}
+        {/* 2. TAHLILIY JADVALLAR (Faqat Admin uchun, agentp1 da yo'q) */}
         {/* ========================================================= */}
         {isAdmin && (
           <section className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden transition-all duration-200">
@@ -1866,11 +1850,8 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-2">
                     <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
-                      2. Tahliliy amallar
+                      2. Tahliliy jadvallar
                     </h2>
-                    <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200">
-                      4 ta tahlil bloki
-                    </span>
                   </div>
                 </div>
               </div>

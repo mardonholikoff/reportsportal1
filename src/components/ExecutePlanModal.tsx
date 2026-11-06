@@ -144,6 +144,12 @@ export const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelect
 }) => {
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
+  const [isSelectedPriceRevealed, setIsSelectedPriceRevealed] = useState(false);
+  const [revealedDropdownPrices, setRevealedDropdownPrices] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setIsSelectedPriceRevealed(false);
+  }, [selectedId]);
 
   const selectedProduct = useMemo(
     () => products.find((p) => p.id === selectedId),
@@ -200,7 +206,20 @@ export const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelect
             </span>
             <span>•</span>
             <span>
-              Eng kam narx: <strong className="text-emerald-800">{minSellPrice} USD</strong> / 1 {minUnitLabel}
+              Eng kam narx:{' '}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsSelectedPriceRevealed((prev) => !prev);
+                }}
+                title="Ko'rish uchun ustiga bosing"
+                className={`inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-100/70 font-bold text-emerald-800 transition cursor-pointer ${
+                  isSelectedPriceRevealed ? 'blur-none' : 'blur-xs select-none'
+                }`}
+              >
+                {minSellPrice} USD / 1 {minUnitLabel}
+              </button>
             </span>
           </div>
         </div>
@@ -328,11 +347,23 @@ export const WarehouseProductSearchSelect: React.FC<WarehouseProductSearchSelect
                         : ''}
                     </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <span className="font-mono font-bold text-neutral-900 text-[11px] block">
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRevealedDropdownPrices((prev) => ({
+                        ...prev,
+                        [wh.id]: !prev[wh.id],
+                      }));
+                    }}
+                    title="Eng kam sotilish narxini ko'rish uchun ustiga bosing"
+                    className={`text-right shrink-0 px-2 py-1 rounded-lg bg-indigo-50/70 border border-indigo-100 transition cursor-pointer ${
+                      revealedDropdownPrices[wh.id] ? 'blur-none' : 'blur-xs select-none'
+                    }`}
+                  >
+                    <span className="font-mono font-bold text-indigo-950 text-[11px] block">
                       {minSellPrice} USD
                     </span>
-                    <span className="text-[9px] text-neutral-400 block">1 {minUnitLabel}</span>
+                    <span className="text-[9px] text-neutral-500 block">1 {minUnitLabel}</span>
                   </div>
                 </button>
               );
@@ -394,6 +425,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   // Section 3: Products delivered (with bidirectional discount % / USD + multi-method / partial credit + optional UZS -> USD conversion)
   const [hasProducts, setHasProducts] = useState(false);
   const [products, setProducts] = useState<ProductItem[]>([createEmptyProductRow()]);
+  const [revealedRowMinPrices, setRevealedRowMinPrices] = useState<Record<string, boolean>>({});
   const [orderDiscountPercent, setOrderDiscountPercent] = useState<number | ''>('');
   const [orderDiscountAmount, setOrderDiscountAmount] = useState<number | ''>('');
   const [deliveryPayMode, setDeliveryPayMode] = useState<'full' | 'partial' | 'qarzga'>('full');
@@ -2174,8 +2206,26 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                       ? ` (${Math.floor(selectedWh.totalPieces / (selectedWh.piecesPerPackage || 1))} ${selectedWh.packageUnitName})`
                                       : ''}
                                   </span>
-                                  <span className="text-indigo-900 font-bold font-mono">
-                                    Eng kam sotilish narxi: {getWarehouseSellingPriceForUnit(selectedWh, p.unit)} USD (1 {p.unit})
+                                  <span className="text-indigo-900 font-bold font-mono flex items-center gap-1.5">
+                                    <span>Eng kam sotilish narxi:</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const rKey = p.id || String(idx);
+                                        setRevealedRowMinPrices((prev) => ({
+                                          ...prev,
+                                          [rKey]: !prev[rKey],
+                                        }));
+                                      }}
+                                      title="Ko'rish uchun ustiga bosing"
+                                      className={`px-2 py-0.5 rounded-md bg-white border border-indigo-200 text-indigo-950 font-extrabold transition cursor-pointer ${
+                                        revealedRowMinPrices[p.id || String(idx)]
+                                          ? 'blur-none'
+                                          : 'blur-xs select-none'
+                                      }`}
+                                    >
+                                      {getWarehouseSellingPriceForUnit(selectedWh, p.unit)} USD (1 {p.unit})
+                                    </button>
                                   </span>
                                 </div>
                               )}

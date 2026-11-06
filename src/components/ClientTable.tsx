@@ -22,6 +22,8 @@ import {
   Warehouse,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Check,
 } from 'lucide-react';
 
 interface Props {
@@ -59,6 +61,8 @@ export const ClientTable: React.FC<Props> = ({
   const [selectedCreator, setSelectedCreator] = useState<string>('all');
   // Mahsulotlar asosida filtr va tanlangan mahsulotlarni ko'p yoki kam asosida filtr/saralash
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
+  const [isProductPickerOpen, setIsProductPickerOpen] = useState(false);
+  const [productFilterSearch, setProductFilterSearch] = useState('');
   const [productPresenceFilter, setProductPresenceFilter] = useState<'all' | 'has_products' | 'no_products'>('all');
   const [productOrderMode, setProductOrderMode] = useState<'none' | 'qty_desc' | 'qty_asc' | 'sum_desc' | 'sum_asc'>('none');
   const [minProductQty, setMinProductQty] = useState<string>('');
@@ -473,35 +477,37 @@ export const ClientTable: React.FC<Props> = ({
   return (
     <div className="space-y-4">
       {/* Search, Filter, Sort and Action Strip */}
-      <div className="bg-white rounded-2xl p-4 border border-rose-100 shadow-xs space-y-3">
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-          {/* Search input */}
-          <div className="relative flex-1">
-            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-neutral-400">
-              <Search className="w-4 h-4" />
-            </div>
-            <input
-              type="text"
-              placeholder="Mijoz ismi, telefon, manzil yoki tovar nomi bo'yicha qidirish..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-neutral-50 focus:bg-white rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-1 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center text-xs text-neutral-400 hover:text-neutral-700"
-              >
-                Tozalash
-              </button>
-            )}
+      <div className="bg-white rounded-2xl p-4 sm:p-5 border border-rose-100 shadow-xs space-y-3.5">
+        {/* Large, wide, optimal search field */}
+        <div className="relative w-full">
+          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-rose-600">
+            <Search className="w-5 h-5" />
           </div>
+          <input
+            type="text"
+            placeholder="Mijoz ismi, kodi, telefon raqami, manzil yoki mahsulot nomi bo'yicha tezkor qidirish..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-12 pr-24 py-3.5 bg-neutral-50/90 focus:bg-white rounded-2xl border-2 border-neutral-200 focus:border-rose-600 focus:ring-2 focus:ring-rose-100 text-sm sm:text-base font-medium text-neutral-900 placeholder:text-neutral-400 outline-none transition shadow-2xs"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute inset-y-0 right-2 my-auto h-8 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-xs font-bold text-rose-700 flex items-center gap-1 transition cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Tozalash</span>
+            </button>
+          )}
+        </div>
 
-          {/* Quick action buttons */}
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+        {/* Filters & Export Row */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             {/* 1. Viloyat yoki shahar bo'yicha filtr */}
             <div className="relative flex items-center">
-              <div className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
+              <div className="flex items-center gap-1.5 px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
                 <MapPin className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                 <select
                   value={selectedRegion}
@@ -509,7 +515,7 @@ export const ClientTable: React.FC<Props> = ({
                     setSelectedRegion(e.target.value);
                     setSelectedDistrict('all');
                   }}
-                  className="bg-transparent outline-none cursor-pointer text-neutral-900 font-semibold max-w-[125px] truncate"
+                  className="bg-transparent outline-none cursor-pointer text-neutral-900 font-semibold max-w-[150px] truncate"
                   title="Viloyat yoki shahar bo'yicha filtr"
                 >
                   <option value="all">Barcha viloyatlar</option>
@@ -524,12 +530,12 @@ export const ClientTable: React.FC<Props> = ({
 
             {/* 2. Tuman bo'yicha filtr */}
             <div className="relative flex items-center">
-              <div className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
+              <div className="flex items-center gap-1.5 px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
                 <MapPin className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
                 <select
                   value={selectedDistrict}
                   onChange={(e) => setSelectedDistrict(e.target.value)}
-                  className="bg-transparent outline-none cursor-pointer text-neutral-900 font-semibold max-w-[115px] truncate"
+                  className="bg-transparent outline-none cursor-pointer text-neutral-900 font-semibold max-w-[140px] truncate"
                   title="Tuman bo'yicha filtr"
                 >
                   <option value="all">Barcha tumanlar</option>
@@ -545,11 +551,11 @@ export const ClientTable: React.FC<Props> = ({
             {/* 3. Kiritgan xodim/agent bo'yicha filtr */}
             {uniqueCreators.length > 1 && (
               <div className="relative flex items-center">
-                <div className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
+                <div className="flex items-center gap-1.5 px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-medium text-neutral-700">
                   <select
                     value={selectedCreator}
                     onChange={(e) => setSelectedCreator(e.target.value)}
-                    className="bg-transparent outline-none cursor-pointer text-neutral-900 font-semibold max-w-[120px] truncate"
+                    className="bg-transparent outline-none cursor-pointer text-neutral-900 font-semibold max-w-[150px] truncate"
                     title="Kiritgan xodim bo'yicha filtr"
                   >
                     <option value="all">Barcha kirituvchilar</option>
@@ -579,42 +585,18 @@ export const ClientTable: React.FC<Props> = ({
                 </select>
               </div>
             </div>
-
-            {/* Export XLSX */}
-            <button
-              onClick={handleExportExcel}
-              disabled={isExporting}
-              className="flex items-center gap-1.5 px-3 py-2 bg-neutral-50 hover:bg-neutral-100 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-800 hover:text-black transition min-h-[38px] disabled:opacity-50 cursor-pointer"
-              title="Excel (.xlsx) formatida yuklab olish"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
-              <span className="hidden sm:inline">
-                {isExporting ? 'Yuklanmoqda...' : 'Excel (.xlsx)'}
-              </span>
-            </button>
-
-            {/* Ombordagi qarzdorlik qo'shish: Faqat adminc va adminc1 */}
-            {canAddWarehouseDebt && onOpenWarehouseDebtModal && (
-              <button
-                type="button"
-                onClick={() => onOpenWarehouseDebtModal()}
-                className="flex items-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition min-h-[38px] cursor-pointer"
-                title="Ombordagi narxlar valyutasida mijozga qarzdorlik qo'shish"
-              >
-                <Warehouse className="w-3.5 h-3.5 text-amber-700" />
-                <span className="hidden sm:inline">Ombor qarzdorligi</span>
-              </button>
-            )}
-
-            {/* Add client direct button */}
-            <button
-              onClick={onOpenAddModal}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-xl text-xs font-bold shadow-xs transition min-h-[38px]"
-            >
-              <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span className="whitespace-nowrap">Qo'shish</span>
-            </button>
           </div>
+
+          {/* Export XLSX */}
+          <button
+            onClick={handleExportExcel}
+            disabled={isExporting}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 rounded-xl border border-emerald-200 text-xs font-bold text-emerald-900 transition min-h-[38px] disabled:opacity-50 cursor-pointer"
+            title="Excel (.xlsx) formatida yuklab olish"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
+            <span>{isExporting ? 'Yuklanmoqda...' : 'Excel (.xlsx)'}</span>
+          </button>
         </div>
 
         {/* Filter Tabs (Segmented controls) */}
@@ -712,7 +694,7 @@ export const ClientTable: React.FC<Props> = ({
             <div className="flex items-center gap-2 flex-wrap">
               <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-indigo-900 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 uppercase">
                 <Package className="w-3.5 h-3.5 text-indigo-700" />
-                <span>Mahsulotlar asosida filtr (Kimda qanday mahsulot bor va Ko'p / Kam):</span>
+                <span>Mahsulotlar asosida filtr:</span>
               </span>
 
               {/* Mahsulot bor/yo'q tezkor tugmalar */}
@@ -752,42 +734,128 @@ export const ClientTable: React.FC<Props> = ({
                 </button>
               </div>
 
-              {/* Dropdown orqali mahsulot qo'shish/tanlash */}
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50/70 hover:bg-indigo-100/70 rounded-xl border border-indigo-200 text-xs">
-                <Package className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
-                <select
-                  value=""
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (!val) return;
-                    if (val === '__CLEAR__') {
-                      setSelectedProducts([]);
-                    } else {
-                      toggleProductSelection(val);
-                    }
-                  }}
-                  className="bg-transparent outline-none cursor-pointer text-indigo-950 font-bold max-w-[220px] truncate"
+              {/* Qidirish orqali bir nechta mahsulotlarni tanlash dropdown */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsProductPickerOpen((prev) => !prev)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition cursor-pointer ${
+                    selectedProducts.length > 0
+                      ? 'bg-indigo-700 text-white border-indigo-700 shadow-2xs'
+                      : 'bg-indigo-50/70 hover:bg-indigo-100/70 text-indigo-950 border-indigo-200'
+                  }`}
                 >
-                  <option value="">
+                  <Package className="w-3.5 h-3.5 shrink-0" />
+                  <span>
                     {selectedProducts.length > 0
-                      ? `+ Yana mahsulot tanlash (${selectedProducts.length} ta tanlangan)`
-                      : 'Mahsulotni tanlang...'}
-                  </option>
-                  {selectedProducts.length > 0 && (
-                    <option value="__CLEAR__">✕ Tanlangan mahsulotlarni tozalash</option>
-                  )}
-                  {uniqueProductCatalog.map((prod) => {
-                    const isSel = selectedProducts.some(
-                      (s) => s.toLowerCase() === prod.key
-                    );
-                    return (
-                      <option key={prod.key} value={prod.name}>
-                        {isSel ? '✓ ' : ''}
-                        {prod.name} ({prod.clientsCount} mijozda, jami {formatNumber(prod.totalQty)} {prod.unit})
-                      </option>
-                    );
-                  })}
-                </select>
+                      ? `Tanlangan mahsulotlar (${selectedProducts.length} ta)`
+                      : 'Mahsulotlarni qidirish va tanlash...'}
+                  </span>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 transition-transform ${
+                      isProductPickerOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {isProductPickerOpen && (
+                  <div className="absolute left-0 top-full mt-1.5 z-40 w-80 sm:w-96 bg-white rounded-2xl border border-indigo-200 shadow-2xl p-3 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-neutral-100">
+                      <span className="text-xs font-extrabold text-neutral-900">
+                        Mahsulotlarni qidiring va belgilang
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {selectedProducts.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedProducts([])}
+                            className="text-[11px] font-bold text-rose-700 hover:text-rose-900 bg-rose-50 px-2 py-0.5 rounded-lg cursor-pointer"
+                          >
+                            Tozalash ({selectedProducts.length})
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setIsProductPickerOpen(false)}
+                          className="text-xs font-bold text-neutral-500 hover:text-neutral-800 px-1.5 py-0.5 rounded-lg bg-neutral-100 cursor-pointer"
+                        >
+                          Yopish ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder="Mahsulot nomini yozib qidiring..."
+                        value={productFilterSearch}
+                        onChange={(e) => setProductFilterSearch(e.target.value)}
+                        className="w-full pl-8.5 pr-8 py-2 rounded-xl border border-neutral-300 focus:border-indigo-600 text-xs font-medium text-neutral-900 outline-none bg-neutral-50 focus:bg-white"
+                      />
+                      {productFilterSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setProductFilterSearch('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-700 text-xs cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="max-h-60 overflow-y-auto divide-y divide-neutral-100 border border-neutral-100 rounded-xl">
+                      {(() => {
+                        const q = productFilterSearch.toLowerCase().trim();
+                        const matchingCatalog = q
+                          ? uniqueProductCatalog.filter((p) => p.name.toLowerCase().includes(q))
+                          : uniqueProductCatalog;
+
+                        if (matchingCatalog.length === 0) {
+                          return (
+                            <div className="p-4 text-center text-xs text-neutral-400">
+                              Mahsulot topilmadi
+                            </div>
+                          );
+                        }
+
+                        return matchingCatalog.map((prod) => {
+                          const isSel = selectedProducts.some(
+                            (s) => s.toLowerCase() === prod.key
+                          );
+                          return (
+                            <button
+                              key={prod.key}
+                              type="button"
+                              onClick={() => toggleProductSelection(prod.name)}
+                              className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 text-xs transition cursor-pointer ${
+                                isSel
+                                  ? 'bg-indigo-50/90 text-indigo-950 font-bold'
+                                  : 'hover:bg-neutral-50 text-neutral-800'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                                    isSel
+                                      ? 'bg-indigo-700 border-indigo-700 text-white'
+                                      : 'border-neutral-300 bg-white'
+                                  }`}
+                                >
+                                  {isSel && <Check className="w-3 h-3 stroke-[3]" />}
+                                </span>
+                                <span className="truncate">{prod.name}</span>
+                              </div>
+                              <span className="text-[10px] font-mono text-neutral-500 shrink-0">
+                                {prod.clientsCount} mijoz • {formatNumber(prod.totalQty)} {prod.unit}
+                              </span>
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -839,49 +907,35 @@ export const ClientTable: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Tezkor mahsulot tugmalari (bir bosishda mahsulotni tanlash) */}
-          {uniqueProductCatalog.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] font-bold text-neutral-400 uppercase mr-1">
-                Mavjud mahsulotlar:
+          {/* Faqat tanlangan mahsulotlar chiplari (agar tanlangan bo'lsa) */}
+          {selectedProducts.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+              <span className="text-[10px] font-bold text-indigo-700 uppercase mr-1">
+                Tanlangan mahsulotlar ({selectedProducts.length}):
               </span>
-              {uniqueProductCatalog.slice(0, 14).map((prod) => {
-                const isSelected = selectedProducts.some(
-                  (s) => s.toLowerCase() === prod.key
-                );
-                return (
-                  <button
-                    key={prod.key}
-                    type="button"
-                    onClick={() => toggleProductSelection(prod.name)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer flex items-center gap-1.5 border ${
-                      isSelected
-                        ? 'bg-indigo-700 text-white border-indigo-800 shadow-2xs'
-                        : 'bg-neutral-50 hover:bg-indigo-50 text-neutral-700 border-neutral-200'
-                    }`}
-                  >
-                    <span>{prod.name}</span>
-                    <span
-                      className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
-                        isSelected
-                          ? 'bg-white/20 text-white'
-                          : 'bg-neutral-200/80 text-neutral-700'
-                      }`}
-                    >
-                      {prod.clientsCount} mijoz • {formatNumber(prod.totalQty)} {prod.unit}
-                    </span>
-                  </button>
-                );
-              })}
-              {selectedProducts.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedProducts([])}
-                  className="px-2 py-1 rounded-lg text-[11px] font-bold bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100 cursor-pointer"
+              {selectedProducts.map((prodName) => (
+                <span
+                  key={prodName}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-700 text-white shadow-2xs"
                 >
-                  ✕ Mahsulot tanlovini tozalash
-                </button>
-              )}
+                  <span>{prodName}</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleProductSelection(prodName)}
+                    className="hover:bg-white/20 rounded p-0.5 cursor-pointer"
+                    title="Tanlovdan olib tashlash"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+              <button
+                type="button"
+                onClick={() => setSelectedProducts([])}
+                className="px-2 py-1 rounded-lg text-[11px] font-bold bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100 cursor-pointer"
+              >
+                ✕ Barchasini tozalash
+              </button>
             </div>
           )}
         </div>

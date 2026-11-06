@@ -12,6 +12,7 @@ export interface UzsConversionAnalyticsItem {
   purposeLabel: string;
   paymentMethod: string;
   paymentMethodLabel: string;
+  isConverted: boolean;
   amountUzs: number;
   exchangeRate: number;
   amountUsd: number;
@@ -29,7 +30,7 @@ export const exportUzsConversionsToExcel = async (
   workbook.creator = 'Savdo Boshqaruv Tizimi';
   workbook.created = new Date();
 
-  const sheet = workbook.addWorksheet("5-Blok So'mda To'lovlar", {
+  const sheet = workbook.addWorksheet("5-Blok To'lovlar Tahlili", {
     views: [{ state: 'frozen', ySplit: 4 }],
   });
 
@@ -41,10 +42,10 @@ export const exportUzsConversionsToExcel = async (
   };
 
   // Title Row
-  sheet.mergeCells('A1:J1');
+  sheet.mergeCells('A1:K1');
   const titleCell = sheet.getCell('A1');
   titleCell.value =
-    "5-BLOK: SO'MDA (KURS BILAN) QABUL QILINGAN TO'LOVLAR VA MAHSULOT TO'LOVLARI TAHLILI";
+    "5-BLOK: TO'LOVLAR VA KONVERTATSIYA TAHLILI HISOBOTI";
   titleCell.font = { name: 'Calibri', size: 13, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.fill = {
     type: 'pattern',
@@ -55,11 +56,19 @@ export const exportUzsConversionsToExcel = async (
   sheet.getRow(1).height = 28;
 
   // Subtitle Row
-  sheet.mergeCells('A2:J2');
+  sheet.mergeCells('A2:K2');
   const subCell = sheet.getCell('A2');
-  const totalUzs = items.reduce((s, i) => s + i.amountUzs, 0);
+  const totalUzs = items.reduce((s, i) => s + (i.isConverted ? i.amountUzs : 0), 0);
   const totalUsd = Math.round(items.reduce((s, i) => s + i.amountUsd, 0) * 100) / 100;
-  subCell.value = `Davr: ${dateRangeLabel} | Yo'nalish: ${purposeFilterLabel} | Jami amaliyotlar: ${items.length} ta | Jami So'm: ${new Intl.NumberFormat('uz-UZ').format(totalUzs)} so'm | Jami Dollar: ${totalUsd.toLocaleString('uz-UZ')} USD`;
+  const convertedUsd =
+    Math.round(
+      items.reduce((s, i) => s + (i.isConverted ? i.amountUsd : 0), 0) * 100
+    ) / 100;
+  const nonConvertedUsd =
+    Math.round(
+      items.reduce((s, i) => s + (!i.isConverted ? i.amountUsd : 0), 0) * 100
+    ) / 100;
+  subCell.value = `Davr: ${dateRangeLabel} | Yo'nalish: ${purposeFilterLabel} | So'm: ${new Intl.NumberFormat('uz-UZ').format(totalUzs)} so'm | Dollar: ${totalUsd.toLocaleString('uz-UZ')} USD (Konvertatsiya bilan: ${convertedUsd.toLocaleString('uz-UZ')} USD | Konvertatsiyasiz: ${nonConvertedUsd.toLocaleString('uz-UZ')} USD)`;
   subCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1F2937' } };
   subCell.fill = {
     type: 'pattern',
@@ -67,7 +76,7 @@ export const exportUzsConversionsToExcel = async (
     fgColor: { argb: 'FFFEF3C7' }, // Amber-100
   };
   subCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-  sheet.getRow(2).height = 22;
+  sheet.getRow(2).height = 24;
 
   sheet.getRow(3).height = 8;
 
@@ -77,11 +86,12 @@ export const exportUzsConversionsToExcel = async (
     'Sana va vaqt',
     'Mijoz F.I.Sh.',
     'Telefon',
-    "To'lov maqsadi (To'lov / Mahsulot)",
+    "Shunchaki to'lov yoki Mahsulot uchun",
     "To'lov usuli",
-    "So'm (UZS)",
-    'Kurs (1$ = so\'m)',
-    'Dollar (USD)',
+    "Konvertatsiya bo'lgan yoki yo'q",
+    "Qabul qilingan so'm miqdori",
+    'Kurs',
+    'Dollar qiymati',
     "Kim qo'shgan va Izoh",
   ];
 
@@ -98,7 +108,7 @@ export const exportUzsConversionsToExcel = async (
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
     cell.border = thinBorder;
   });
-  headerRow.height = 26;
+  headerRow.height = 28;
 
   // Column widths
   sheet.columns = [
@@ -108,9 +118,10 @@ export const exportUzsConversionsToExcel = async (
     { key: 'clientPhone', width: 16 },
     { key: 'purpose', width: 22 },
     { key: 'method', width: 18 },
-    { key: 'uzs', width: 18 },
+    { key: 'isConverted', width: 20 },
+    { key: 'uzs', width: 22 },
     { key: 'rate', width: 15 },
-    { key: 'usd', width: 16 },
+    { key: 'usd', width: 18 },
     { key: 'authorNote', width: 38 },
   ];
 
@@ -122,8 +133,9 @@ export const exportUzsConversionsToExcel = async (
       item.clientPhone || '-',
       item.purpose === 'product' ? 'Mahsulot uchun' : "Shunchaki to'lov",
       item.paymentMethodLabel,
-      item.amountUzs,
-      item.exchangeRate,
+      item.isConverted ? '+' : '-',
+      item.isConverted ? item.amountUzs : '-',
+      item.isConverted ? item.exchangeRate : '-',
       item.amountUsd,
       `@${item.author}${item.productsSummary ? ` | Mahsulot: ${item.productsSummary}` : ''}${item.note ? ` | Izoh: ${item.note}` : ''}`,
     ]);
@@ -132,13 +144,33 @@ export const exportUzsConversionsToExcel = async (
     row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       cell.border = thinBorder;
       cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF111827' } };
-      if (colNumber === 1 || colNumber === 2 || colNumber === 4 || colNumber === 5 || colNumber === 6) {
+      if (
+        colNumber === 1 ||
+        colNumber === 2 ||
+        colNumber === 4 ||
+        colNumber === 5 ||
+        colNumber === 6 ||
+        colNumber === 7
+      ) {
         cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-      } else if (colNumber === 7 || colNumber === 8) {
-        cell.alignment = { vertical: 'middle', horizontal: 'right' };
-        cell.numFmt = '#,##0';
-        cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF92400E' } };
-      } else if (colNumber === 9) {
+        if (colNumber === 7) {
+          cell.font = {
+            name: 'Calibri',
+            size: 11,
+            bold: true,
+            color: { argb: item.isConverted ? 'FF065F46' : 'FF6B7280' },
+          };
+        }
+      } else if (colNumber === 8 || colNumber === 9) {
+        if (item.isConverted) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+          cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF92400E' } };
+        } else {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF6B7280' } };
+        }
+      } else if (colNumber === 10) {
         cell.alignment = { vertical: 'middle', horizontal: 'right' };
         cell.numFmt = '#,##0.00';
         cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF065F46' } };
@@ -152,14 +184,15 @@ export const exportUzsConversionsToExcel = async (
   const totalRow = sheet.addRow([
     '',
     'JAMI:',
-    `${items.length} ta amaliyot`,
+    '',
+    '',
     '',
     '',
     '',
     totalUzs,
-    items.length > 0 ? Math.round(totalUzs / (totalUsd || 1)) : 0,
+    '-',
     totalUsd,
-    '',
+    `Konvertatsiya bilan: ${convertedUsd} USD | Konvertatsiyasiz: ${nonConvertedUsd} USD`,
   ]);
   totalRow.height = 25;
   totalRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
@@ -170,10 +203,10 @@ export const exportUzsConversionsToExcel = async (
       fgColor: { argb: 'FFFEF3C7' },
     };
     cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF111827' } };
-    if (colNumber === 7 || colNumber === 8) {
+    if (colNumber === 8) {
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
       cell.numFmt = '#,##0';
-    } else if (colNumber === 9) {
+    } else if (colNumber === 10) {
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
       cell.numFmt = '#,##0.00';
     } else {
@@ -189,7 +222,7 @@ export const exportUzsConversionsToExcel = async (
   const link = document.createElement('a');
   const todayStr = new Date().toISOString().slice(0, 10);
   link.href = url;
-  link.download = `5-Blok_Somda_Tolovlar_${todayStr}.xlsx`;
+  link.download = `5-Blok_Tolovlar_${todayStr}.xlsx`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

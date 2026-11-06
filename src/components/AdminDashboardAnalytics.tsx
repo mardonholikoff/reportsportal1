@@ -65,6 +65,8 @@ import {
   TrendingUp,
   Calculator,
   Coins,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface Props {
@@ -114,10 +116,10 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   onEditWarehouseProduct,
   onDeleteWarehouseProduct,
 }) => {
-  // Navigation between blocks: 'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
+  // Navigation between blocks: 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
   const [activeBlockView, setActiveBlockView] = useState<
-    'all' | 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
-  >('all');
+    'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
+  >('block1');
 
   // =========================================================================
   // 1-BLOK DATA & STATES (Ombordagi mahsulotlar soni tahliliy jadvali)
@@ -141,6 +143,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [stockSortMode, setStockSortMode] = useState<StockSortMode>('desc');
   const [stockStatusFilter, setStockStatusFilter] = useState<StockStatusFilter>('all');
   const [isExportingStock, setIsExportingStock] = useState(false);
+  const [showBlock1Prices, setShowBlock1Prices] = useState(false);
   const [block1Page, setBlock1Page] = useState<number>(1);
   const [block1PageSize, setBlock1PageSize] = useState<number | 'all'>(50);
   const [confirmDeleteWarehouseProduct, setConfirmDeleteWarehouseProduct] = useState<WarehouseProduct | null>(null);
@@ -255,7 +258,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         .filter(Boolean)
         .join(', ') || "Barcha mahsulotlar";
 
-      await exportWarehouseToExcel(filteredProducts, filterLabel);
+      await exportWarehouseToExcel(filteredProducts, filterLabel, showBlock1Prices);
     } catch (err) {
       console.error("Stock Excel export error:", err);
     } finally {
@@ -1506,7 +1509,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     }
   };
 
-  // Extract all UZS-to-USD converted transactions (both plain payments & product delivery payments)
+  // Extract all payment transactions (both UZS-to-USD converted & direct USD payments, for plain payments & product deliveries)
   const allUzsConversionItems = useMemo<UzsConversionAnalyticsItem[]>(() => {
     const items: UzsConversionAnalyticsItem[] = [];
 
@@ -1546,10 +1549,13 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
           if (splits && splits.length > 0) {
             splits.forEach((sp, spIdx) => {
-              if (sp && sp.amountUzs && sp.amountUzs > 0 && sp.amount > 0) {
-                const rate = sp.exchangeRate && sp.exchangeRate > 0
-                  ? sp.exchangeRate
-                  : Math.round(sp.amountUzs / sp.amount);
+              if (sp && sp.amount > 0) {
+                const isConverted = Boolean(sp.amountUzs && sp.amountUzs > 0);
+                const rate = isConverted
+                  ? sp.exchangeRate && sp.exchangeRate > 0
+                    ? sp.exchangeRate
+                    : Math.round((sp.amountUzs || 0) / sp.amount)
+                  : 0;
                 items.push({
                   id: `plan_fin_sp_${plan.id}_${actIdx}_${spIdx}`,
                   timestamp: ts,
@@ -1561,7 +1567,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   purposeLabel: "Shunchaki to'lov",
                   paymentMethod: sp.method || 'naqd',
                   paymentMethodLabel: sp.methodLabel || "To'lov",
-                  amountUzs: Math.round(sp.amountUzs),
+                  isConverted,
+                  amountUzs: isConverted ? Math.round(sp.amountUzs || 0) : 0,
                   exchangeRate: rate,
                   amountUsd: Math.round(sp.amount * 100) / 100,
                   author,
@@ -1569,10 +1576,13 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 });
               }
             });
-          } else if (fin.amountUzs && fin.amountUzs > 0) {
-            const rate = fin.exchangeRate && fin.exchangeRate > 0
-              ? fin.exchangeRate
-              : Math.round(fin.amountUzs / fin.amount);
+          } else {
+            const isConverted = Boolean(fin.amountUzs && fin.amountUzs > 0);
+            const rate = isConverted
+              ? fin.exchangeRate && fin.exchangeRate > 0
+                ? fin.exchangeRate
+                : Math.round((fin.amountUzs || 0) / fin.amount)
+              : 0;
             items.push({
               id: `plan_fin_${plan.id}_${actIdx}`,
               timestamp: ts,
@@ -1584,7 +1594,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               purposeLabel: "Shunchaki to'lov",
               paymentMethod: fin.method || 'naqd',
               paymentMethodLabel: fin.methodLabel || "To'lov",
-              amountUzs: Math.round(fin.amountUzs),
+              isConverted,
+              amountUzs: isConverted ? Math.round(fin.amountUzs || 0) : 0,
               exchangeRate: rate,
               amountUsd: Math.round(fin.amount * 100) / 100,
               author,
@@ -1602,11 +1613,13 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
           if (dp.splits && dp.splits.length > 0) {
             dp.splits.forEach((sp, spIdx) => {
-              if (sp.amountUzs && sp.amountUzs > 0) {
-                const rate =
-                  sp.exchangeRate && sp.exchangeRate > 0
+              if (sp && (sp.amount || 0) > 0) {
+                const isConverted = Boolean(sp.amountUzs && sp.amountUzs > 0);
+                const rate = isConverted
+                  ? sp.exchangeRate && sp.exchangeRate > 0
                     ? sp.exchangeRate
-                    : Math.round(sp.amountUzs / (sp.amount || 1));
+                    : Math.round((sp.amountUzs || 0) / (sp.amount || 1))
+                  : 0;
                 items.push({
                   id: `plan_deliv_${plan.id}_${actIdx}_${spIdx}`,
                   timestamp: ts,
@@ -1618,7 +1631,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   purposeLabel: 'Mahsulot uchun',
                   paymentMethod: sp.method || 'naqd',
                   paymentMethodLabel: sp.methodLabel || dp.paymentLabel || "Mahsulot to'lovi",
-                  amountUzs: Math.round(sp.amountUzs),
+                  isConverted,
+                  amountUzs: isConverted ? Math.round(sp.amountUzs || 0) : 0,
                   exchangeRate: rate,
                   amountUsd: Math.round((sp.amount || 0) * 100) / 100,
                   author,
@@ -1627,11 +1641,13 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 });
               }
             });
-          } else if (dp.paidAmountUzs && dp.paidAmountUzs > 0) {
-            const rate =
-              dp.exchangeRate && dp.exchangeRate > 0
+          } else {
+            const isConverted = Boolean(dp.paidAmountUzs && dp.paidAmountUzs > 0);
+            const rate = isConverted
+              ? dp.exchangeRate && dp.exchangeRate > 0
                 ? dp.exchangeRate
-                : Math.round(dp.paidAmountUzs / dp.paidAmount);
+                : Math.round((dp.paidAmountUzs || 0) / dp.paidAmount)
+              : 0;
             items.push({
               id: `plan_deliv_${plan.id}_${actIdx}`,
               timestamp: ts,
@@ -1643,7 +1659,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               purposeLabel: 'Mahsulot uchun',
               paymentMethod: dp.paymentType || 'naqd',
               paymentMethodLabel: dp.paymentLabel || "Mahsulot to'lovi",
-              amountUzs: Math.round(dp.paidAmountUzs),
+              isConverted,
+              amountUzs: isConverted ? Math.round(dp.paidAmountUzs || 0) : 0,
               exchangeRate: rate,
               amountUsd: Math.round(dp.paidAmount * 100) / 100,
               author,
@@ -1655,47 +1672,62 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       });
     });
 
-    // 2. From Client Audit Logs (standalone QuickPaymentModal or direct debt/advance updates with UZS conversion)
+    // 2. From Client Audit Logs (standalone QuickPaymentModal or direct debt/advance updates)
     internalClients.forEach((client) => {
       if (!client.logs || client.logs.length === 0) return;
       client.logs.forEach((log) => {
-        // Avoid duplicating logs that came from executeDailyPlanItem
         if (log.type === 'visit_action' || log.type === 'product_added') return;
-        if (log.amountUzs && log.amountUzs > 0) {
-          const rate = log.exchangeRate && log.exchangeRate > 0 ? log.exchangeRate : 12800;
-          const calcUsd =
-            log.amountChanged && log.amountChanged > 0
-              ? Math.round(log.amountChanged * 100) / 100
-              : Math.round((log.amountUzs / rate) * 100) / 100;
-          const purpose = log.purpose === 'product' ? 'product' : 'payment';
-          const mLabel = log.paymentMethodLabel || "To'lov";
-          const mLower = mLabel.toLowerCase();
-          const mKey = mLower.includes('karta')
-            ? 'karta'
-            : mLower.includes('bank')
-            ? 'bank'
-            : mLower.includes('qr')
-            ? 'qr'
-            : 'naqd';
+        const isConverted = Boolean(log.amountUzs && log.amountUzs > 0);
+        const isPaymentLog =
+          isConverted ||
+          Boolean(log.paymentMethodLabel) ||
+          log.type === 'payment';
 
-          items.push({
-            id: `client_log_${client.id}_${log.id}`,
-            timestamp: log.timestamp,
-            dateStr: (log.timestamp || '').slice(0, 10),
-            clientId: client.id,
-            clientName: client.name,
-            clientPhone: client.phone,
-            purpose,
-            purposeLabel: purpose === 'product' ? 'Mahsulot uchun' : "Shunchaki to'lov",
-            paymentMethod: mKey,
-            paymentMethodLabel: mLabel,
-            amountUzs: Math.round(log.amountUzs),
-            exchangeRate: rate,
-            amountUsd: calcUsd,
-            author: log.author || 'adminc',
-            note: log.details || log.title || '',
-          });
-        }
+        if (!isPaymentLog) return;
+
+        const rate = isConverted
+          ? log.exchangeRate && log.exchangeRate > 0
+            ? log.exchangeRate
+            : 12800
+          : 0;
+        const calcUsd =
+          log.amountChanged && log.amountChanged > 0
+            ? Math.round(log.amountChanged * 100) / 100
+            : isConverted && rate > 0
+            ? Math.round(((log.amountUzs || 0) / rate) * 100) / 100
+            : 0;
+
+        if (calcUsd <= 0) return;
+
+        const purpose = log.purpose === 'product' ? 'product' : 'payment';
+        const mLabel = log.paymentMethodLabel || "To'lov";
+        const mLower = mLabel.toLowerCase();
+        const mKey = mLower.includes('karta')
+          ? 'karta'
+          : mLower.includes('bank')
+          ? 'bank'
+          : mLower.includes('qr')
+          ? 'qr'
+          : 'naqd';
+
+        items.push({
+          id: `client_log_${client.id}_${log.id}`,
+          timestamp: log.timestamp,
+          dateStr: (log.timestamp || '').slice(0, 10),
+          clientId: client.id,
+          clientName: client.name,
+          clientPhone: client.phone,
+          purpose,
+          purposeLabel: purpose === 'product' ? 'Mahsulot uchun' : "Shunchaki to'lov",
+          paymentMethod: mKey,
+          paymentMethodLabel: mLabel,
+          isConverted,
+          amountUzs: isConverted ? Math.round(log.amountUzs || 0) : 0,
+          exchangeRate: rate,
+          amountUsd: calcUsd,
+          author: log.author || 'adminc',
+          note: log.details || log.title || '',
+        });
       });
     });
 
@@ -1756,40 +1788,28 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const b5Stats = useMemo(() => {
     let totalUzs = 0;
     let totalUsd = 0;
-    let paymentCount = 0;
-    let paymentUsd = 0;
-    let paymentUzs = 0;
-    let productCount = 0;
-    let productUsd = 0;
-    let productUzs = 0;
+    let convertedUsd = 0;
+    let nonConvertedUsd = 0;
 
     filteredB5Items.forEach((i) => {
-      totalUzs += i.amountUzs;
-      totalUsd += i.amountUsd;
-      if (i.purpose === 'product') {
-        productCount++;
-        productUsd += i.amountUsd;
-        productUzs += i.amountUzs;
+      if (i.isConverted) {
+        totalUzs += i.amountUzs;
+        convertedUsd += i.amountUsd;
       } else {
-        paymentCount++;
-        paymentUsd += i.amountUsd;
-        paymentUzs += i.amountUzs;
+        nonConvertedUsd += i.amountUsd;
       }
+      totalUsd += i.amountUsd;
     });
 
-    const avgRate = totalUsd > 0 ? Math.round(totalUzs / totalUsd) : 0;
+    const avgRate = convertedUsd > 0 ? Math.round(totalUzs / convertedUsd) : 0;
 
     return {
       totalCount: filteredB5Items.length,
       totalUzs,
       totalUsd: Math.round(totalUsd * 100) / 100,
+      convertedUsd: Math.round(convertedUsd * 100) / 100,
+      nonConvertedUsd: Math.round(nonConvertedUsd * 100) / 100,
       avgRate,
-      paymentCount,
-      paymentUsd: Math.round(paymentUsd * 100) / 100,
-      paymentUzs,
-      productCount,
-      productUsd: Math.round(productUsd * 100) / 100,
-      productUzs,
     };
   }, [filteredB5Items]);
 
@@ -2200,19 +2220,6 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       <div className="bg-white rounded-2xl p-1.5 border border-rose-100 shadow-2xs flex items-center gap-1.5 flex-wrap">
         <button
           type="button"
-          onClick={() => setActiveBlockView('all')}
-          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeBlockView === 'all'
-              ? 'bg-neutral-900 text-white shadow-xs'
-              : 'text-neutral-700 hover:bg-neutral-100'
-          }`}
-        >
-          <Layers className="w-4 h-4" />
-          <span>Barcha bloklar (1-6)</span>
-        </button>
-
-        <button
-          type="button"
           onClick={() => setActiveBlockView('block1')}
           className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
             activeBlockView === 'block1'
@@ -2273,7 +2280,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           }`}
         >
           <Calculator className="w-4 h-4" />
-          <span>5-Blok: So'mda (kurs bilan) to'lovlar ({allUzsConversionItems.length})</span>
+          <span>5-Blok: To'lovlar va konvertatsiya ({allUzsConversionItems.length})</span>
         </button>
 
         <button
@@ -2293,7 +2300,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 1-BLOK: OMBORDAGI MAHSULOTLAR SONI                       */}
       {/* ========================================================= */}
-      {(activeBlockView === 'all' || activeBlockView === 'block1') && (
+      {activeBlockView === 'block1' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           <div className="p-4 sm:p-6 bg-gradient-to-r from-neutral-900 via-neutral-850 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
@@ -2324,6 +2331,20 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   {formatNumber(stockStats.totalPieces)} dona
                 </div>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setShowBlock1Prices((prev) => !prev)}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[40px] cursor-pointer shrink-0 border ${
+                  showBlock1Prices
+                    ? 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500'
+                    : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
+                }`}
+                title="Sotib olish (kirim) va minimal sotish narxlarini ko'rish / yashirish"
+              >
+                {showBlock1Prices ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                <span>{showBlock1Prices ? 'Narxlarni yashirish' : "Narxlarni ko'rish"}</span>
+              </button>
 
               <button
                 type="button"
@@ -2396,7 +2417,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           {filteredProducts.length > 0 && (
             <div>
               <StickyTableWrapper>
-                <table className="w-full min-w-[1040px] text-left text-xs">
+                <table className="w-full min-w-[900px] text-left text-xs">
                   <thead className="bg-rose-50 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20">
                     <tr>
                     <th className="py-3 px-3 w-10 text-center">#</th>
@@ -2406,10 +2427,12 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     <th className="py-3 px-3.5 text-right font-bold text-emerald-950">
                       Ombordagi qoldiq (Barcha o'lchamlar)
                     </th>
-                    <th className="py-3 px-3 text-right">Sotib olish (kirim)</th>
-                    <th className="py-3 px-3 text-right">Minimal sotish</th>
-                    <th className="py-3 px-3 text-center">Foyda marjasi</th>
-                    <th className="py-3 px-3 text-center">Zaxira holati</th>
+                    {showBlock1Prices && (
+                      <>
+                        <th className="py-3 px-3 text-right">Sotib olish (kirim)</th>
+                        <th className="py-3 px-3 text-right">Minimal sotish</th>
+                      </>
+                    )}
                     <th className="py-3 px-3 text-right">Kiritilgan sana</th>
                     {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
                       <th className="py-3 px-3 text-center w-20">Amal</th>
@@ -2420,11 +2443,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   {visibleBlock1Products.map((p, index) => {
                     const globalIndex =
                       block1PageSize === 'all' ? index : (safeBlock1Page - 1) * block1PageSize + index;
-                    const pieces = p.totalPieces || 0;
                     const stockInfo = formatWarehouseStock(p);
-                    const marginInfo = calculateProfitMargin(p);
-                    const isOut = pieces <= 0;
-                    const isLow = pieces > 0 && pieces <= 10;
 
                     return (
                       <tr key={p.id} className={index % 2 === 1 ? 'bg-neutral-50/50 hover:bg-rose-50/20' : 'bg-white hover:bg-rose-50/20'}>
@@ -2458,73 +2477,38 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                           </span>
                         </td>
 
-                        {/* Sotib olish (kirim) narxi */}
-                        <td className="py-3 px-3 text-right font-mono text-xs">
-                          {p.price > 0 ? (
-                            <div>
-                              <span className="font-bold text-neutral-900">
-                                {formatMoney(p.price)}
+                        {showBlock1Prices && (
+                          <>
+                            {/* Sotib olish (kirim) narxi */}
+                            <td className="py-3 px-3 text-right font-mono text-xs">
+                              {p.price > 0 ? (
+                                <div>
+                                  <span className="font-bold text-neutral-900">
+                                    {formatMoney(p.price)}
+                                  </span>
+                                  <div className="text-[10px] font-sans text-neutral-500">
+                                    1 {p.pricingUnitType === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block font-sans">
+                                  Narxsiz
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Minimal sotish narxi */}
+                            <td className="py-3 px-3 text-right font-mono text-xs">
+                              <span className="font-bold text-indigo-950">
+                                {formatMoney(p.minSellingPrice !== undefined && p.minSellingPrice > 0 ? p.minSellingPrice : p.price || 0)}
                               </span>
                               <div className="text-[10px] font-sans text-neutral-500">
-                                1 {p.pricingUnitType === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
+                                1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
                               </div>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block font-sans">
-                              Narxsiz
-                            </span>
-                          )}
-                        </td>
+                            </td>
+                          </>
+                        )}
 
-                        {/* Minimal sotish narxi */}
-                        <td className="py-3 px-3 text-right font-mono text-xs">
-                          <span className="font-bold text-indigo-950">
-                            {formatMoney(p.minSellingPrice !== undefined && p.minSellingPrice > 0 ? p.minSellingPrice : p.price || 0)}
-                          </span>
-                          <div className="text-[10px] font-sans text-neutral-500">
-                            1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
-                          </div>
-                        </td>
-
-                        {/* Foyda marjasi */}
-                        <td className="py-3 px-3 text-center">
-                          {marginInfo.hasCost ? (
-                            <div className="inline-flex flex-col items-center">
-                              <span
-                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10.5px] font-bold font-mono border ${
-                                  marginInfo.marginPercent >= 0
-                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                    : 'bg-rose-100 text-rose-800 border-rose-300'
-                                }`}
-                              >
-                                <TrendingUp className="w-2.5 h-2.5" />
-                                <span>
-                                  {marginInfo.marginPercent >= 0 ? '+' : ''}
-                                  {marginInfo.marginPercent.toFixed(1)}%
-                                </span>
-                              </span>
-                              <span className="text-[9.5px] font-mono text-emerald-800 mt-0.5">
-                                {marginInfo.profitPerPiece >= 0 ? '+' : ''}
-                                {marginInfo.profitPerPiece.toFixed(2)} USD/dona
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] text-neutral-400 italic">
-                              Tannarxsiz
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Zaxira holati */}
-                        <td className="py-3 px-3 text-center">
-                          {isOut ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800">Tugagan</span>
-                          ) : isLow ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900">Kam qolgan</span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">Yetarli</span>
-                          )}
-                        </td>
                         <td className="py-3 px-3 text-right font-mono text-neutral-500 text-[11px]">{p.intakeDate || '-'}</td>
                         {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
                           <td className="py-3 px-3 text-center">
@@ -2606,7 +2590,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 2-BLOK: 1 YILLIK QARZDORLIK VA HAQDORLIK                  */}
       {/* ========================================================= */}
-      {(activeBlockView === 'all' || activeBlockView === 'block2') && (
+      {activeBlockView === 'block2' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           <div className="p-4 sm:p-6 bg-gradient-to-r from-rose-950 via-rose-900 to-rose-950 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
@@ -3162,7 +3146,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 3-BLOK: BERILGAN MAHSULOTLAR (QARZGA VA QARZSIZ)          */}
       {/* ========================================================= */}
-      {(activeBlockView === 'all' || activeBlockView === 'block3') && (
+      {activeBlockView === 'block3' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           <div className="p-4 sm:p-6 bg-gradient-to-r from-neutral-900 via-rose-950 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
@@ -3332,7 +3316,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 4-BLOK: AGENTLAR AMALLARI, TUSHUMLAR VA MAHSULOT HARAKATI */}
       {/* ========================================================= */}
-      {(activeBlockView === 'all' || activeBlockView === 'block4') && (
+      {activeBlockView === 'block4' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           {/* Banner */}
           <div className="p-4 sm:p-6 bg-gradient-to-r from-neutral-950 via-rose-950 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -4393,9 +4377,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       )}
 
       {/* ========================================================= */}
-      {/* 5-BLOK: SO'MDA (KURS BILAN) QABUL QILINGAN TO'LOVLAR VA MAHSULOT TO'LOVLARI TAHLILI */}
+      {/* 5-BLOK: TO'LOVLAR VA KONVERTATSIYA TAHLILI                */}
       {/* ========================================================= */}
-      {(activeBlockView === 'all' || activeBlockView === 'block5') && (
+      {activeBlockView === 'block5' && (
         <div className="bg-white rounded-3xl border border-amber-200 shadow-xs overflow-hidden">
           {/* Header */}
           <div className="p-4 sm:p-6 bg-gradient-to-r from-amber-900 via-amber-800 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -4405,29 +4389,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   <Calculator className="w-4 h-4" />
                 </div>
                 <h2 className="text-base sm:text-xl font-bold font-display tracking-tight text-white">
-                  5-Blok: So'mda (kurs bilan) qabul qilingan to'lovlar va mahsulot to'lovlari tahlili
+                  5-Blok: To'lovlar va konvertatsiya tahlili
                 </h2>
               </div>
               <p className="text-xs text-amber-100/90">
-                Kurs kiritib so'mda (UZS) qabul qilinib dollarga ($) o'tkazilgan barcha to'lovlar va mahsulot to'lovlari jadvali
+                Qabul qilingan barcha to'lovlar va mahsulot to'lovlari (konvertatsiya bilan + va konvertatsiyasiz -) jadvali
               </p>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/15">
-                <div className="text-[10px] text-amber-200 uppercase font-semibold">Jami So'mda</div>
-                <div className="text-xs sm:text-sm font-bold font-mono text-amber-300">
-                  {new Intl.NumberFormat('uz-UZ').format(b5Stats.totalUzs)} so'm
-                </div>
-              </div>
-
-              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/15">
-                <div className="text-[10px] text-emerald-200 uppercase font-semibold">Jami Dollarda</div>
-                <div className="text-xs sm:text-sm font-bold font-mono text-emerald-300">
-                  {formatMoney(b5Stats.totalUsd)}
-                </div>
-              </div>
-
               <button
                 type="button"
                 onClick={handleExportB5Excel}
@@ -4440,49 +4410,44 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* KPI Summary Cards */}
-          <div className="p-4 bg-amber-50/40 border-b border-amber-100 grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="p-3 rounded-2xl bg-white border border-amber-200/80 shadow-2xs">
-              <div className="text-[11px] font-bold text-neutral-500 uppercase">Jami amaliyotlar</div>
-              <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5">
-                {b5Stats.totalCount} ta
+          {/* KPI Summary Cards: 1. So'm | 2. Dollar (Konvertatsiya bilan va Konvertatsiyasiz) */}
+          <div className="p-4 bg-amber-50/40 border-b border-amber-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="p-3.5 rounded-2xl bg-white border border-amber-200/80 shadow-2xs flex flex-col justify-between">
+              <div>
+                <div className="text-xs font-extrabold text-amber-900 uppercase">So'm</div>
+                <div className="text-lg sm:text-xl font-extrabold font-mono text-amber-800 mt-1">
+                  {new Intl.NumberFormat('uz-UZ').format(b5Stats.totalUzs)} so'm
+                </div>
               </div>
-              <div className="text-[11px] text-amber-800 font-mono mt-0.5">
-                O'rtacha kurs: 1$ = {b5Stats.avgRate > 0 ? new Intl.NumberFormat('uz-UZ').format(b5Stats.avgRate) : '-'} so'm
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-white border border-amber-200/80 shadow-2xs">
-              <div className="text-[11px] font-bold text-amber-900 uppercase">Jami So'm → Dollar</div>
-              <div className="text-sm sm:text-base font-extrabold font-mono text-amber-800 mt-0.5">
-                {new Intl.NumberFormat('uz-UZ').format(b5Stats.totalUzs)} so'm
-              </div>
-              <div className="text-xs font-extrabold font-mono text-emerald-700 mt-0.5">
-                = {formatMoney(b5Stats.totalUsd)}
+              <div className="text-[11px] text-neutral-500 mt-1">
+                Tanlangan vaqt / jadval bo'yicha qabul qilingan so'm ustuni jami summasi
               </div>
             </div>
 
-            <div className="p-3 rounded-2xl bg-white border border-blue-200/80 shadow-2xs">
-              <div className="text-[11px] font-bold text-blue-900 uppercase">
-                Shunchaki to'lov ({b5Stats.paymentCount} ta)
+            <div className="p-3.5 rounded-2xl bg-white border border-emerald-200/80 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-extrabold text-emerald-900 uppercase">Dollar</div>
+                <div className="text-lg sm:text-xl font-extrabold font-mono text-emerald-800">
+                  {formatMoney(b5Stats.totalUsd)}
+                </div>
               </div>
-              <div className="text-sm font-extrabold font-mono text-blue-800 mt-0.5">
-                {new Intl.NumberFormat('uz-UZ').format(b5Stats.paymentUzs)} so'm
-              </div>
-              <div className="text-xs font-bold font-mono text-emerald-700 mt-0.5">
-                = {formatMoney(b5Stats.paymentUsd)}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-white border border-purple-200/80 shadow-2xs">
-              <div className="text-[11px] font-bold text-purple-900 uppercase">
-                Mahsulot uchun ({b5Stats.productCount} ta)
-              </div>
-              <div className="text-sm font-extrabold font-mono text-purple-800 mt-0.5">
-                {new Intl.NumberFormat('uz-UZ').format(b5Stats.productUzs)} so'm
-              </div>
-              <div className="text-xs font-bold font-mono text-emerald-700 mt-0.5">
-                = {formatMoney(b5Stats.productUsd)}
+              <div className="grid grid-cols-2 gap-2 pt-1.5 border-t border-emerald-100 text-xs">
+                <div className="px-2.5 py-1.5 rounded-xl bg-amber-50/80 border border-amber-200/80">
+                  <span className="text-[10px] font-bold text-amber-900 block">
+                    Konvertatsiya bilan (+):
+                  </span>
+                  <span className="font-mono font-extrabold text-amber-950 text-xs sm:text-sm">
+                    {formatMoney(b5Stats.convertedUsd)}
+                  </span>
+                </div>
+                <div className="px-2.5 py-1.5 rounded-xl bg-neutral-50 border border-neutral-200">
+                  <span className="text-[10px] font-bold text-neutral-600 block">
+                    Konvertatsiyasiz (-):
+                  </span>
+                  <span className="font-mono font-extrabold text-neutral-900 text-xs sm:text-sm">
+                    {formatMoney(b5Stats.nonConvertedUsd)}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -4635,7 +4600,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 <option value="date_desc">Sana: Yangidan eskiga</option>
                 <option value="date_asc">Sana: Eskidan yangiga</option>
                 <option value="uzs_desc">So'm miqdori: Ko'pdan kamga</option>
-                <option value="usd_desc">Dollar miqdori: Ko'pdan kamga</option>
+                <option value="usd_desc">Dollar qiymati: Ko'pdan kamga</option>
                 <option value="rate_desc">Kurs: Yuqoridan pastga</option>
               </select>
             </div>
@@ -4648,24 +4613,22 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 <Calculator className="w-6 h-6" />
               </div>
               <div className="text-sm font-bold text-neutral-800">
-                So'mda (kurs kiritib) dollarga o'tkazilgan to'lovlar topilmadi
+                Tanlangan filtrlar bo'yicha to'lovlar topilmadi
               </div>
-              <p className="text-xs text-neutral-500 max-w-md mx-auto">
-                Mijozdan to'lov qabul qilishda yoki mahsulot berishda «To'lov so'mda (UZS) bo'lsa, kursni kiritib dollarga ($) o'tkazish» belgisini yoqib kiritilgan barcha amaliyotlar shu yerda avtomatik aks etadi.
-              </p>
             </div>
           ) : (
             <StickyTableWrapper>
-              <table className="w-full min-w-[1050px] text-left text-xs">
+              <table className="w-full min-w-[1150px] text-left text-xs">
                 <thead className="bg-amber-50 border-b border-amber-200 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20">
                   <tr>
                     <th className="py-3 px-3 w-12 text-center">#</th>
                     <th className="py-3 px-3">Sana va Mijoz</th>
                     <th className="py-3 px-3 text-center">Shunchaki to'lov yoki Mahsulot uchun</th>
                     <th className="py-3 px-3 text-center">To'lov usuli</th>
-                    <th className="py-3 px-3.5 text-right text-amber-950">So'm (UZS)</th>
-                    <th className="py-3 px-3 text-right text-neutral-800">Kurs (1$)</th>
-                    <th className="py-3 px-3.5 text-right text-emerald-950">Dollar (USD)</th>
+                    <th className="py-3 px-3 text-center">Konvertatsiya bo'lgan yoki yo'q</th>
+                    <th className="py-3 px-3.5 text-right text-amber-950">Qabul qilingan so'm miqdori</th>
+                    <th className="py-3 px-3 text-right text-neutral-800">Kurs</th>
+                    <th className="py-3 px-3.5 text-right text-emerald-950">Dollar qiymati</th>
                     <th className="py-3 px-3 text-center">Kim qo'shgani</th>
                     <th className="py-3 px-3">Izoh / Mahsulotlar</th>
                   </tr>
@@ -4708,11 +4671,26 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                           {item.paymentMethodLabel}
                         </span>
                       </td>
+                      <td className="py-3 px-3 text-center">
+                        {item.isConverted ? (
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-mono font-black text-sm">
+                            +
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-neutral-100 text-neutral-600 border border-neutral-300 font-mono font-black text-sm">
+                            -
+                          </span>
+                        )}
+                      </td>
                       <td className="py-3 px-3.5 text-right font-mono font-extrabold text-amber-900 text-xs sm:text-sm">
-                        {new Intl.NumberFormat('uz-UZ').format(item.amountUzs)} so'm
+                        {item.isConverted
+                          ? `${new Intl.NumberFormat('uz-UZ').format(item.amountUzs)} so'm`
+                          : '-'}
                       </td>
                       <td className="py-3 px-3 text-right font-mono font-bold text-neutral-700">
-                        1$ = {new Intl.NumberFormat('uz-UZ').format(item.exchangeRate)} so'm
+                        {item.isConverted
+                          ? `${new Intl.NumberFormat('uz-UZ').format(item.exchangeRate)} so'm`
+                          : '-'}
                       </td>
                       <td className="py-3 px-3.5 text-right font-mono font-extrabold text-emerald-800 bg-emerald-50/40 text-xs sm:text-sm">
                         {formatMoney(item.amountUsd)}
@@ -4737,14 +4715,14 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 </tbody>
                 <tfoot className="bg-amber-50/90 border-t-2 border-amber-200 font-bold sticky bottom-0 z-10">
                   <tr>
-                    <td colSpan={4} className="py-3 px-3.5 text-right text-neutral-900 uppercase tracking-wider text-[11px]">
-                      JAMI ({filteredB5Items.length} ta amaliyot):
+                    <td colSpan={5} className="py-3 px-3.5 text-right text-neutral-900 uppercase tracking-wider text-[11px]">
+                      JAMI:
                     </td>
                     <td className="py-3 px-3.5 text-right font-mono text-xs sm:text-sm text-amber-950 font-extrabold">
                       {new Intl.NumberFormat('uz-UZ').format(b5Stats.totalUzs)} so'm
                     </td>
                     <td className="py-3 px-3 text-right font-mono text-[11px] text-neutral-700">
-                      O'rtacha: {b5Stats.avgRate > 0 ? new Intl.NumberFormat('uz-UZ').format(b5Stats.avgRate) : '-'} so'm
+                      -
                     </td>
                     <td className="py-3 px-3.5 text-right font-mono text-xs sm:text-sm text-emerald-950 font-extrabold bg-emerald-100/90">
                       {formatMoney(b5Stats.totalUsd)}
@@ -4761,7 +4739,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 6-BLOK: MIJOZLAR BO'YICHA KUNLIK BAJARILIB YOPILGAN AMALLAR MATRITSASI (MAKS. 31 KUN) */}
       {/* ========================================================= */}
-      {(activeBlockView === 'all' || activeBlockView === 'block6') && (
+      {activeBlockView === 'block6' && (
         <div className="bg-white rounded-3xl border border-teal-200 shadow-xs overflow-hidden">
           {/* Header */}
           <div className="p-4 sm:p-6 bg-gradient-to-r from-teal-900 via-teal-800 to-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">

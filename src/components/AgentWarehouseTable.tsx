@@ -12,6 +12,8 @@ import {
   SlidersHorizontal,
   CheckCircle2,
   AlertTriangle,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface Props {
@@ -24,6 +26,12 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
   const [selectedUnit, setSelectedUnit] = useState('all');
   const [stockFilter, setStockFilter] = useState<'all' | 'in_stock' | 'low_stock'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'pieces_desc' | 'pieces_asc' | 'date'>('pieces_desc');
+  const [showAllMinPrices, setShowAllMinPrices] = useState(false);
+  const [revealedMinPriceIds, setRevealedMinPriceIds] = useState<Record<string, boolean>>({});
+
+  const toggleMinPriceVisibility = (id: string) => {
+    setRevealedMinPriceIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   // Unique Brands
   const uniqueBrands = useMemo(() => {
@@ -138,8 +146,21 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
             />
           </div>
 
-          {/* Quick Summary Badges (Quantities only) */}
-          <div className="flex items-center gap-2 text-xs font-semibold shrink-0">
+          {/* Quick Summary Badges (Quantities only + Eye toggle for min selling price) */}
+          <div className="flex items-center gap-2 text-xs font-semibold shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowAllMinPrices((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold transition cursor-pointer shadow-2xs ${
+                showAllMinPrices
+                  ? 'bg-indigo-700 text-white border-indigo-700'
+                  : 'bg-white hover:bg-indigo-50 text-indigo-900 border-indigo-200'
+              }`}
+              title="Eng kam sotilish narxlarini ko'rish / yashirish"
+            >
+              {showAllMinPrices ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              <span>{showAllMinPrices ? 'Narxlarni yashirish' : "Eng kam narxni ko'rish"}</span>
+            </button>
             <div className="px-3 py-1.5 rounded-xl bg-white border border-neutral-200 text-neutral-800 shadow-2xs">
               <span className="text-neutral-500 mr-1.5">Turlar:</span>
               <span className="font-bold">{filteredProducts.length} xil</span>
@@ -268,7 +289,21 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                     <th className="py-3 px-3.5 text-center">Katta o'lcham (Qadoq)</th>
                     <th className="py-3 px-3.5 text-center">Dona soni</th>
                     <th className="py-3 px-3.5 text-center">Umumiy hajm</th>
-                    <th className="py-3 px-3.5 text-center">Eng kam sotilish narxi</th>
+                    <th className="py-3 px-3.5 text-center">
+                      <button
+                        type="button"
+                        onClick={() => setShowAllMinPrices((prev) => !prev)}
+                        className="inline-flex items-center justify-center gap-1.5 hover:text-indigo-800 transition cursor-pointer uppercase"
+                        title="Eng kam sotilish narxini ko'rish / yashirish"
+                      >
+                        <span>Eng kam sotilish narxi</span>
+                        {showAllMinPrices ? (
+                          <EyeOff className="w-3.5 h-3.5 text-indigo-700" />
+                        ) : (
+                          <Eye className="w-3.5 h-3.5 text-indigo-700" />
+                        )}
+                      </button>
+                    </th>
                     <th className="py-3 px-3.5 text-center">Kirim sanasi</th>
                     <th className="py-3 px-3.5 text-center">Holati</th>
                   </tr>
@@ -365,14 +400,38 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                           </span>
                         </td>
 
-                        {/* Eng kam sotilish narxi (5-blok) */}
+                        {/* Eng kam sotilish narxi (Faqat ko'z bosilganda ko'rinadi) */}
                         <td className="py-3 px-3.5 text-center">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-indigo-50 border border-indigo-200 font-bold font-mono text-indigo-900 text-xs">
-                            {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
-                          </span>
-                          <div className="text-[10px] text-neutral-500 mt-0.5">
-                            1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
-                          </div>
+                          {showAllMinPrices || revealedMinPriceIds[p.id] ? (
+                            <div className="inline-flex flex-col items-center">
+                              <div className="inline-flex items-center gap-1.5">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-lg bg-indigo-50 border border-indigo-200 font-bold font-mono text-indigo-900 text-xs">
+                                  {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleMinPriceVisibility(p.id)}
+                                  className="p-1 rounded-lg text-neutral-400 hover:text-indigo-800 hover:bg-indigo-50 transition cursor-pointer"
+                                  title="Narxni yashirish"
+                                >
+                                  <EyeOff className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                              <div className="text-[10px] text-neutral-500 mt-0.5">
+                                1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => toggleMinPriceVisibility(p.id)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-bold text-xs transition cursor-pointer"
+                              title="Eng kam sotilish narxini ko'rish"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-indigo-700" />
+                              <span>Ko'rish</span>
+                            </button>
+                          )}
                         </td>
 
                         {/* Kirim sanasi */}
@@ -531,12 +590,33 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                         <span className="text-[10px] text-indigo-700 font-semibold block">
                           Eng kam sotilish narxi
                         </span>
-                        <span className="font-mono font-bold text-indigo-900 text-xs">
-                          {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
-                        </span>
-                        <span className="text-[9px] text-neutral-500 block">
-                          1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
-                        </span>
+                        {showAllMinPrices || revealedMinPriceIds[p.id] ? (
+                          <div className="flex flex-col items-center">
+                            <button
+                              type="button"
+                              onClick={() => toggleMinPriceVisibility(p.id)}
+                              className="inline-flex items-center gap-1 font-mono font-bold text-indigo-900 text-xs cursor-pointer"
+                              title="Yashirish"
+                            >
+                              <span>
+                                {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
+                              </span>
+                              <EyeOff className="w-3 h-3 text-indigo-600" />
+                            </button>
+                            <span className="text-[9px] text-neutral-500 block">
+                              1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'}
+                            </span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => toggleMinPriceVisibility(p.id)}
+                            className="mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-bold text-[11px] cursor-pointer"
+                          >
+                            <Eye className="w-3 h-3 text-indigo-700" />
+                            <span>Ko'rish</span>
+                          </button>
+                        )}
                       </div>
                     </div>
 

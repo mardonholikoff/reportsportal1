@@ -3,7 +3,8 @@ import { WarehouseProduct } from '../types';
 
 export async function exportWarehouseToExcel(
   products: WarehouseProduct[],
-  filterTitle = "Barcha mahsulotlar"
+  filterTitle = "Barcha mahsulotlar",
+  includePrices = false
 ): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Savdo Boshqaruv Tizimi';
@@ -21,22 +22,41 @@ export async function exportWarehouseToExcel(
     right: { style: 'thin', color: { argb: 'FF000000' } },
   };
 
+  const headers = [
+    { header: '№', width: 6 },
+    { header: 'Mahsulot nomi', width: 30 },
+    { header: 'Brendi', width: 20 },
+    { header: "O'lchov birligi / Qadoq", width: 22 },
+    { header: 'Qadoqdagi dona', width: 16 },
+    { header: "Ombor qoldig'i (Dona)", width: 22 },
+    { header: 'Qadoqlar soni', width: 16 },
+    ...(includePrices
+      ? [
+          { header: 'Sotib olish (kirim) narxi (USD)', width: 24 },
+          { header: 'Minimal sotish narxi (USD)', width: 24 },
+        ]
+      : []),
+    { header: 'Kiritilgan sana', width: 16 },
+  ];
+
+  const lastColLetter = includePrices ? 'J' : 'H';
+
   // 1. Header Title Row (Row 1)
-  sheet.mergeCells('A1:I1');
+  sheet.mergeCells(`A1:${lastColLetter}1`);
   const titleCell = sheet.getCell('A1');
   titleCell.value = `OMBOR MAHSULOTLARI SONI BO'YICHA TAHLILIY HISOBOT (${new Date().toLocaleDateString('uz-UZ')})`;
   titleCell.font = { name: 'Arial', size: 13, bold: true, color: { argb: 'FFFFFFFF' } };
   titleCell.fill = {
     type: 'pattern',
     pattern: 'solid',
-    fgColor: { argb: 'FF1E293B' }, // Dark slate
+    fgColor: { argb: 'FF1E293B' },
   };
   titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
   titleCell.border = blackBorder;
   sheet.getRow(1).height = 30;
 
   // 2. Subtitle / Filter Row (Row 2)
-  sheet.mergeCells('A2:I2');
+  sheet.mergeCells(`A2:${lastColLetter}2`);
   const subCell = sheet.getCell('A2');
   subCell.value = `Filtr: ${filterTitle} | Jami turlar: ${products.length} ta mahsulot`;
   subCell.font = { name: 'Arial', size: 10, italic: true, color: { argb: 'FF334155' } };
@@ -50,18 +70,6 @@ export async function exportWarehouseToExcel(
   sheet.getRow(2).height = 20;
 
   // 3. Table Headers (Row 3)
-  const headers = [
-    { header: '№', width: 6 },
-    { header: 'Mahsulot nomi', width: 30 },
-    { header: 'Brendi', width: 20 },
-    { header: "O'lchov birligi / Qadoq", width: 22 },
-    { header: 'Qadoqdagi dona', width: 16 },
-    { header: "Ombor qoldig'i (Dona)", width: 22 },
-    { header: 'Qadoqlar soni', width: 16 },
-    { header: 'Zaxira holati', width: 16 },
-    { header: 'Kiritilgan sana', width: 16 },
-  ];
-
   sheet.getRow(3).values = headers.map((h) => h.header);
   sheet.getRow(3).height = 26;
 
@@ -71,7 +79,7 @@ export async function exportWarehouseToExcel(
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FF9F1239' }, // Rose-800
+      fgColor: { argb: 'FF9F1239' },
     };
     cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     cell.border = blackBorder;
@@ -91,22 +99,15 @@ export async function exportWarehouseToExcel(
     const packages = Math.floor(pieces / piecesPerPkg);
     grandTotalPackages += packages;
 
-    let statusText = 'Yetarli zaxira';
-    let statusColor = 'FF16A34A'; // green
-    if (pieces <= 0) {
-      statusText = 'Tugagan';
-      statusColor = 'FFDC2626'; // red
-    } else if (pieces <= 10) {
-      statusText = 'Kam qolgan';
-      statusColor = 'FFD97706'; // amber
-    }
-
     const typeDesc = [
       p.baseUnit,
       p.packageUnitName ? `(${p.packageUnitName})` : '',
     ]
       .filter(Boolean)
       .join(' ');
+
+    const minPrice =
+      p.minSellingPrice !== undefined && p.minSellingPrice > 0 ? p.minSellingPrice : p.price || 0;
 
     const row = sheet.getRow(rowNumber);
     row.values = [
@@ -117,19 +118,17 @@ export async function exportWarehouseToExcel(
       piecesPerPkg,
       pieces,
       packages,
-      statusText,
+      ...(includePrices ? [p.price || 0, minPrice] : []),
       p.intakeDate || p.createdAt?.slice(0, 10) || '-',
     ];
 
     row.height = 22;
 
-    // Apply black borders and alignment to each cell
-    for (let col = 1; col <= 9; col++) {
+    for (let col = 1; col <= headers.length; col++) {
       const cell = row.getCell(col);
       cell.border = blackBorder;
       cell.font = { name: 'Arial', size: 10 };
 
-      // Alternating background for ease of reading
       if (index % 2 === 1) {
         cell.fill = {
           type: 'pattern',
@@ -138,19 +137,16 @@ export async function exportWarehouseToExcel(
         };
       }
 
-      // Column-specific alignment
-      if (col === 1 || col === 8 || col === 9) {
+      if (col === 1 || col === headers.length) {
         cell.alignment = { horizontal: 'center', vertical: 'middle' };
       } else if (col === 5 || col === 6 || col === 7) {
         cell.alignment = { horizontal: 'right', vertical: 'middle' };
         cell.numFmt = '#,##0';
+      } else if (includePrices && (col === 8 || col === 9)) {
+        cell.alignment = { horizontal: 'right', vertical: 'middle' };
+        cell.numFmt = '#,##0.00';
       } else {
         cell.alignment = { horizontal: 'left', vertical: 'middle' };
-      }
-
-      // Status text styling
-      if (col === 8) {
-        cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: statusColor } };
       }
     }
   });
@@ -166,25 +162,23 @@ export async function exportWarehouseToExcel(
     '',
     grandTotalPieces,
     grandTotalPackages,
-    '',
+    ...(includePrices ? ['', ''] : []),
     '',
   ];
   totalRow.height = 26;
 
   sheet.mergeCells(`A${totalRowNumber}:E${totalRowNumber}`);
 
-  for (let col = 1; col <= 9; col++) {
+  for (let col = 1; col <= headers.length; col++) {
     const cell = totalRow.getCell(col);
     cell.border = blackBorder;
     cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FF000000' } };
     cell.fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FFFEE2E2' }, // Rose-100
+      fgColor: { argb: 'FFFEE2E2' },
     };
-    if (col === 1) {
-      cell.alignment = { horizontal: 'center', vertical: 'middle' };
-    } else if (col === 6 || col === 7) {
+    if (col === 6 || col === 7) {
       cell.alignment = { horizontal: 'right', vertical: 'middle' };
       cell.numFmt = '#,##0';
     } else {

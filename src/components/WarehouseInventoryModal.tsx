@@ -13,6 +13,8 @@ import {
   Edit3,
   TrendingUp,
   AlertTriangle,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
 import { formatWarehouseStock, calculateProfitMargin, formatNumber, formatMoney } from '../utils/format';
@@ -37,6 +39,12 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('all');
   const [confirmDeleteProduct, setConfirmDeleteProduct] = useState<WarehouseProduct | null>(null);
+  const [showAllPrices, setShowAllPrices] = useState(false);
+  const [revealedPriceIds, setRevealedPriceIds] = useState<Record<string, boolean>>({});
+
+  const toggleProductPriceVisibility = (id: string) => {
+    setRevealedPriceIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   const uniqueBrands = useMemo(() => {
     const set = new Set<string>();
@@ -147,15 +155,35 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
             )}
           </div>
 
-          <div className="flex items-center gap-3 shrink-0 text-xs font-semibold">
+          <div className="flex items-center gap-2.5 flex-wrap shrink-0 text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => setShowAllPrices((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold transition cursor-pointer shadow-2xs ${
+                showAllPrices
+                  ? 'bg-indigo-700 text-white border-indigo-700'
+                  : 'bg-white hover:bg-indigo-50 text-indigo-900 border-indigo-200'
+              }`}
+              title={
+                showAllPrices
+                  ? 'Kirim va minimal sotilish narxlarini yashirish'
+                  : "Kirim va minimal sotilish narxlarini ko'rsatish"
+              }
+            >
+              {showAllPrices ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              <span>{showAllPrices ? 'Narxlarni yashirish' : "Narxlarni ko'rish"}</span>
+            </button>
+
             <div className="px-3 py-1.5 rounded-xl bg-white border border-neutral-200 shadow-2xs">
               <span className="text-neutral-500 mr-1.5">Jami dona:</span>
               <span className="text-neutral-900 font-bold">{totalInventoryPieces.toLocaleString()}</span>
             </div>
-            <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 shadow-2xs">
-              <span className="text-emerald-700 mr-1.5">Jami qiymat:</span>
-              <span className="font-bold font-mono">{totalInventorySum.toLocaleString()} USD</span>
-            </div>
+            {showAllPrices && (
+              <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 shadow-2xs">
+                <span className="text-emerald-700 mr-1.5">Jami qiymat:</span>
+                <span className="font-bold font-mono">{totalInventorySum.toLocaleString()} USD</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -208,20 +236,46 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                     </div>
 
                     <div className="flex items-center gap-2 self-end sm:self-auto">
-                      <div className="text-right mr-1">
-                        {p.price > 0 ? (
-                          <div className="text-sm font-bold font-mono text-neutral-900">
-                            {p.totalSum.toLocaleString()} USD
-                          </div>
-                        ) : (
-                          <div className="text-xs font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                            Narx belgilanmagan
-                          </div>
-                        )}
-                        <div className="text-[11px] text-neutral-500 mt-0.5">
-                          {p.intakeQuantity} {p.intakeUnitType === 'package' ? p.packageUnitName : p.pieceUnitName}
-                        </div>
-                      </div>
+                      {(() => {
+                        const isPriceVisible = showAllPrices || Boolean(revealedPriceIds[p.id]);
+                        return (
+                          <>
+                            <div className="text-right mr-1">
+                              {isPriceVisible ? (
+                                p.price > 0 ? (
+                                  <div className="text-sm font-bold font-mono text-neutral-900">
+                                    {p.totalSum.toLocaleString()} USD
+                                  </div>
+                                ) : (
+                                  <div className="text-xs font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                                    Narx belgilanmagan
+                                  </div>
+                                )
+                              ) : null}
+                              <div className="text-[11px] text-neutral-500 mt-0.5">
+                                {p.intakeQuantity}{' '}
+                                {p.intakeUnitType === 'package' ? p.packageUnitName : p.pieceUnitName}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => toggleProductPriceVisibility(p.id)}
+                              className={`flex items-center gap-1 px-2.5 py-2 text-xs font-bold rounded-xl border transition cursor-pointer ${
+                                isPriceVisible
+                                  ? 'bg-neutral-800 text-white border-neutral-800'
+                                  : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200'
+                              }`}
+                              title="Kirim va eng kam sotilish narxini ko'rish / yashirish"
+                            >
+                              {isPriceVisible ? (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              ) : (
+                                <Eye className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </>
+                        );
+                      })()}
                       <button
                         type="button"
                         onClick={() => onEditProduct(p)}
@@ -246,6 +300,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                   {(() => {
                     const stockInfo = formatWarehouseStock(p);
                     const marginInfo = calculateProfitMargin(p);
+                    const isPriceVisible = showAllPrices || Boolean(revealedPriceIds[p.id]);
 
                     return (
                       <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 pt-3 text-xs">
@@ -282,65 +337,134 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
 
                         {/* 4. Sotib olish (kirim) narxi */}
                         <div>
-                          <span className="text-neutral-500 block text-[11px]">
-                            Sotib olish (kirim):
-                          </span>
-                          {p.price > 0 ? (
-                            <div>
-                              <span className="font-bold font-mono text-neutral-900">
-                                {p.price.toLocaleString()} USD
-                              </span>
-                              <span className="text-[10px] text-neutral-500 block">
-                                (1 {p.pricingUnitType === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'})
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] font-medium text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block">
-                              Narxsiz (o'tkazilgan)
+                          <div className="flex items-center gap-1">
+                            <span className="text-neutral-500 block text-[11px]">
+                              Sotib olish (kirim):
                             </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleProductPriceVisibility(p.id)}
+                              className="text-neutral-400 hover:text-neutral-800 p-0.5 rounded cursor-pointer"
+                              title="Ko'rish / Yashirish"
+                            >
+                              {isPriceVisible ? (
+                                <EyeOff className="w-3 h-3" />
+                              ) : (
+                                <Eye className="w-3 h-3" />
+                              )}
+                            </button>
+                          </div>
+                          {isPriceVisible ? (
+                            p.price > 0 ? (
+                              <div>
+                                <span className="font-bold font-mono text-neutral-900">
+                                  {p.price.toLocaleString()} USD
+                                </span>
+                                <span className="text-[10px] text-neutral-500 block">
+                                  (1{' '}
+                                  {p.pricingUnitType === 'package' && p.packageUnitName
+                                    ? p.packageUnitName
+                                    : p.pieceUnitName || 'dona'}
+                                  )
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] font-medium text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block">
+                                Narxsiz (o'tkazilgan)
+                              </span>
+                            )
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => toggleProductPriceVisibility(p.id)}
+                              className="mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-semibold text-[11px] border border-neutral-200 cursor-pointer"
+                            >
+                              <Eye className="w-3 h-3 text-neutral-600" />
+                              <span>Ko'rish</span>
+                            </button>
                           )}
                         </div>
 
                         {/* 5. Eng kam sotilish narxi */}
                         <div>
-                          <span className="text-indigo-700 font-semibold block text-[11px]">
-                            Eng kam sotilish:
-                          </span>
-                          <span className="font-bold font-mono text-indigo-900">
-                            {(p.minSellingPrice !== undefined ? p.minSellingPrice : p.price || 0).toLocaleString()} USD
-                          </span>
-                          <span className="text-[10px] text-neutral-500 block">
-                            (1 {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' && p.packageUnitName ? p.packageUnitName : p.pieceUnitName || 'dona'})
-                          </span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-indigo-700 font-semibold block text-[11px]">
+                              Eng kam sotilish:
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleProductPriceVisibility(p.id)}
+                              className="text-indigo-400 hover:text-indigo-800 p-0.5 rounded cursor-pointer"
+                              title="Ko'rish / Yashirish"
+                            >
+                              {isPriceVisible ? (
+                                <EyeOff className="w-3 h-3" />
+                              ) : (
+                                <Eye className="w-3 h-3" />
+                              )}
+                            </button>
+                          </div>
+                          {isPriceVisible ? (
+                            <>
+                              <span className="font-bold font-mono text-indigo-900">
+                                {(p.minSellingPrice !== undefined
+                                  ? p.minSellingPrice
+                                  : p.price || 0
+                                ).toLocaleString()}{' '}
+                                USD
+                              </span>
+                              <span className="text-[10px] text-neutral-500 block">
+                                (1{' '}
+                                {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' &&
+                                p.packageUnitName
+                                  ? p.packageUnitName
+                                  : p.pieceUnitName || 'dona'}
+                                )
+                              </span>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => toggleProductPriceVisibility(p.id)}
+                              className="mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 font-semibold text-[11px] border border-indigo-200 cursor-pointer"
+                            >
+                              <Eye className="w-3 h-3 text-indigo-700" />
+                              <span>Ko'rish</span>
+                            </button>
+                          )}
                         </div>
 
                         {/* 6. Foyda marjasi */}
                         <div>
                           <span className="text-neutral-500 block text-[11px]">Foyda marjasi:</span>
-                          {marginInfo.hasCost ? (
-                            <div className="mt-0.5">
-                              <span
-                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10.5px] border ${
-                                  marginInfo.marginPercent >= 0
-                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                    : 'bg-rose-100 text-rose-800 border-rose-300'
-                                }`}
-                              >
-                                <TrendingUp className="w-3 h-3" />
-                                <span>
-                                  {marginInfo.marginPercent >= 0 ? `+` : ``}
-                                  {marginInfo.marginPercent.toFixed(1)}%
+                          {isPriceVisible ? (
+                            marginInfo.hasCost ? (
+                              <div className="mt-0.5">
+                                <span
+                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10.5px] border ${
+                                    marginInfo.marginPercent >= 0
+                                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                      : 'bg-rose-100 text-rose-800 border-rose-300'
+                                  }`}
+                                >
+                                  <TrendingUp className="w-3 h-3" />
+                                  <span>
+                                    {marginInfo.marginPercent >= 0 ? `+` : ``}
+                                    {marginInfo.marginPercent.toFixed(1)}%
+                                  </span>
                                 </span>
+                                <span className="text-[10px] font-mono text-emerald-800 block mt-0.5">
+                                  {marginInfo.profitPerPiece >= 0 ? `+` : ``}
+                                  {marginInfo.profitPerPiece.toFixed(2)} USD/dona
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-[10.5px] text-neutral-400 italic">
+                                Tannarxsiz
                               </span>
-                              <span className="text-[10px] font-mono text-emerald-800 block mt-0.5">
-                                {marginInfo.profitPerPiece >= 0 ? `+` : ``}
-                                {marginInfo.profitPerPiece.toFixed(2)} USD/dona
-                              </span>
-                            </div>
+                            )
                           ) : (
-                            <span className="text-[10.5px] text-neutral-400 italic">
-                              Tannarxsiz
-                            </span>
+                            <span className="text-[11px] text-neutral-400 font-mono">•••</span>
                           )}
                         </div>
                       </div>
