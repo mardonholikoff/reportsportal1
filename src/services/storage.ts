@@ -1080,9 +1080,18 @@ class StorageService {
     const nowStr = new Date().toISOString();
 
     // 1. Update plan item (record which agent executed the action)
-    plan.status = 'bajarildi';
+    const hasFinancialOrProductOps = Boolean(
+      (report.financialAction && report.financialAction.amount > 0) ||
+      (report.productsDelivered && report.productsDelivered.length > 0) ||
+      (report.productsReturned && report.productsReturned.length > 0)
+    );
+
+    // Faqat moliyaviy yoki mahsulotga oid amaliyot bajarilsagina bajarildi bo'ladi, aks holda rejalashtirilgan holda qoladi
+    plan.status = hasFinancialOrProductOps ? 'bajarildi' : (plan.status || 'rejalashtirilgan');
     plan.closedWithoutAction = false;
-    plan.completedAt = nowStr;
+    if (hasFinancialOrProductOps) {
+      plan.completedAt = nowStr;
+    }
     plan.lastExecutedBy = author;
     plan.lastExecutedAt = nowStr;
     plan.actionDone = report.actionDone;
@@ -1494,19 +1503,36 @@ class StorageService {
     return { success: true, plan, client: updatedClient || undefined };
   }
 
-  // Rejadagi mijoz bo'yicha amallarni to'liq yakunlash (Oxirgi marta yopish: bajarib yoki bajarilmasdan yopish)
+  // Rejadagi mijoz bo'yicha amallarni to'liq yakunlash (Oxirgi marta yopish: bajarib yoki bajarilmasdan yopish, ixtiyoriy sana bilan)
   public closeDailyPlanItem(
     planItemId: string,
     author: string,
     closeReason?: string,
-    closedWithoutActionOverride?: boolean
+    closedWithoutActionOverride?: boolean,
+    customCloseDate?: string
   ): boolean {
     const plans = this.getDailyPlans();
     const planIndex = plans.findIndex((p) => p.id === planItemId);
     if (planIndex === -1) return false;
 
     const plan = plans[planIndex];
-    const nowStr = new Date().toISOString();
+    const now = new Date();
+    let effectiveClosedAt = now.toISOString();
+
+    if (customCloseDate && customCloseDate.trim()) {
+      const cDateTrimmed = customCloseDate.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(cDateTrimmed)) {
+        const [y, m, d] = cDateTrimmed.split('-').map(Number);
+        if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+          const dt = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds());
+          effectiveClosedAt = dt.toISOString();
+        }
+      } else if (cDateTrimmed.includes('T')) {
+        effectiveClosedAt = cDateTrimmed;
+      }
+    }
+    const nowStr = effectiveClosedAt;
+
     const hasCompletedAction = Boolean(
       plan.actionDone ||
         plan.status === 'bajarildi' ||
@@ -1525,7 +1551,7 @@ class StorageService {
     plan.isClosed = true;
     plan.closedWithoutAction = isUnperformedClose;
     plan.status = 'yopildi';
-    plan.closedAt = nowStr;
+    plan.closedAt = effectiveClosedAt;
     plan.closedBy = author;
     plan.closeReason = finalReason;
     plans[planIndex] = plan;

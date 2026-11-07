@@ -1187,7 +1187,8 @@ export default function App() {
       }>;
       reportNote?: string;
     },
-    closeAfterSave?: boolean
+    closeAfterSave?: boolean,
+    closeDate?: string
   ) => {
     const currentUsername = user?.username || 'agentp1';
     const targetPlan = dailyPlans.find((p) => p.id === planItemId);
@@ -1196,7 +1197,7 @@ export default function App() {
       if (closeAfterSave) {
         const autoCloseReason =
           report.reportNote?.trim() || "Hisobot topshirildi va amallar to'liq yakunlandi";
-        storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false);
+        storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false, closeDate);
       }
 
       const updatedPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
@@ -1254,7 +1255,8 @@ export default function App() {
       deliveryPayment?: DeliveryPaymentInfo;
       reportNote?: string;
     },
-    closeAfterSave?: boolean
+    closeAfterSave?: boolean,
+    closeDate?: string
   ) => {
     const currentUsername = user?.username || 'agentp1';
     const totalSalesUsd = data.productsDelivered.reduce(
@@ -1277,7 +1279,7 @@ export default function App() {
       if (closeAfterSave && result.plan && !result.plan.isClosed) {
         const autoCloseReason =
           data.reportNote?.trim() || "Sotilgan mahsulotlar yangilandi va hisobot yopildi";
-        storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false);
+        storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false, closeDate);
       }
 
       const finalPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
@@ -1329,7 +1331,8 @@ export default function App() {
   const handleClosePlanItem = (
     planItemId: string,
     closeReason?: string,
-    closedWithoutActionOverride?: boolean
+    closedWithoutActionOverride?: boolean,
+    closeDate?: string
   ) => {
     const currentUsername = user?.username || 'agentp1';
     const reason =
@@ -1339,7 +1342,8 @@ export default function App() {
       planItemId,
       currentUsername,
       reason,
-      closedWithoutActionOverride
+      closedWithoutActionOverride,
+      closeDate
     );
     if (success) {
       const updatedPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
@@ -1503,21 +1507,22 @@ export default function App() {
         {/* ========================================================= */}
         {isAgent && (
           <div className="space-y-4">
-            {/* Top Segmented Navigation Tabs */}
-            <div className="bg-white rounded-2xl p-1.5 border border-rose-100 shadow-xs flex items-center gap-1">
+            {/* Top Segmented Navigation Tabs (Mobile-optimized, 100% responsive, fits without hidden tabs) */}
+            <div className="bg-white rounded-2xl p-1 sm:p-1.5 border border-rose-100 shadow-xs grid grid-cols-5 gap-1 w-full">
               <button
                 type="button"
                 onClick={() => setAgentActiveTab('reja')}
-                className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-pointer min-w-0 ${
                   agentActiveTab === 'reja'
                     ? 'bg-rose-700 text-white shadow-xs'
                     : 'text-neutral-700 hover:bg-rose-50/50'
                 }`}
+                title="Kunlik reja"
               >
-                <CalendarCheck className="w-4 h-4 shrink-0" />
-                <span>Reja</span>
+                <CalendarCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[10px] sm:text-xs md:text-sm truncate">Reja</span>
                 <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  className={`px-1 sm:px-1.5 py-0.2 rounded-full text-[9px] sm:text-[10px] font-bold ${
                     agentActiveTab === 'reja' ? 'bg-white text-rose-800' : 'bg-rose-100 text-rose-800'
                   }`}
                 >
@@ -1528,16 +1533,17 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setAgentActiveTab('eslatmalar')}
-                className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-pointer min-w-0 ${
                   agentActiveTab === 'eslatmalar'
                     ? 'bg-amber-600 text-white shadow-xs'
                     : 'text-neutral-700 hover:bg-amber-50/70'
                 }`}
+                title="Eslatmalar"
               >
-                <BellRing className="w-4 h-4 shrink-0" />
-                <span>Eslatmalar</span>
+                <BellRing className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[10px] sm:text-xs md:text-sm truncate">Eslatma</span>
                 <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  className={`px-1 sm:px-1.5 py-0.2 rounded-full text-[9px] sm:text-[10px] font-bold ${
                     agentActiveTab === 'eslatmalar'
                       ? 'bg-white text-amber-800'
                       : pendingRemindersCount > 0
@@ -1552,16 +1558,17 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setAgentActiveTab('mijozlar')}
-                className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-pointer min-w-0 ${
                   agentActiveTab === 'mijozlar'
                     ? 'bg-rose-700 text-white shadow-xs'
                     : 'text-neutral-700 hover:bg-rose-50/50'
                 }`}
+                title="Mijozlar"
               >
-                <Users className="w-4 h-4 shrink-0" />
-                <span>Mijozlar</span>
+                <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[10px] sm:text-xs md:text-sm truncate">Mijozlar</span>
                 <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  className={`px-1 sm:px-1.5 py-0.2 rounded-full text-[9px] sm:text-[10px] font-bold ${
                     agentActiveTab === 'mijozlar' ? 'bg-white text-rose-800' : 'bg-neutral-100 text-neutral-700'
                   }`}
                 >
@@ -1572,16 +1579,17 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setAgentActiveTab('ombor')}
-                className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-pointer min-w-0 ${
                   agentActiveTab === 'ombor'
                     ? 'bg-rose-700 text-white shadow-xs'
                     : 'text-neutral-700 hover:bg-rose-50/50'
                 }`}
+                title="Ombor jadvali"
               >
-                <Warehouse className="w-4 h-4 shrink-0" />
-                <span>Ombor</span>
+                <Warehouse className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[10px] sm:text-xs md:text-sm truncate">Ombor</span>
                 <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  className={`px-1 sm:px-1.5 py-0.2 rounded-full text-[9px] sm:text-[10px] font-bold ${
                     agentActiveTab === 'ombor' ? 'bg-white text-rose-800' : 'bg-neutral-100 text-neutral-700'
                   }`}
                 >
@@ -1592,16 +1600,17 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setAgentActiveTab('oylik_reja')}
-                className={`flex-1 py-2.5 px-2 sm:px-3 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                className={`py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-pointer min-w-0 ${
                   agentActiveTab === 'oylik_reja'
                     ? 'bg-rose-700 text-white shadow-xs'
                     : 'text-neutral-700 hover:bg-rose-50/50'
                 }`}
+                title="1 oylik reja"
               >
-                <Target className="w-4 h-4 shrink-0" />
-                <span>1 oylik reja</span>
+                <Target className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[10px] sm:text-xs md:text-sm truncate">Oylik</span>
                 <span
-                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  className={`px-1 sm:px-1.5 py-0.2 rounded-full text-[9px] sm:text-[10px] font-bold ${
                     agentActiveTab === 'oylik_reja' ? 'bg-white text-rose-800' : 'bg-neutral-100 text-neutral-700'
                   }`}
                 >
@@ -2259,8 +2268,7 @@ export default function App() {
         }}
         onSaveReport={handleSavePlanReport}
         onUpdateSoldProducts={handleUpdateSoldProducts}
-        initialEditSoldProducts={executingPlanEditSoldMode}
-        onCloseWithoutAction={(planId, reason) => handleClosePlanItem(planId, reason, true)}
+        onCloseWithoutAction={(planId, reason, closeDate) => handleClosePlanItem(planId, reason, true, closeDate)}
         onSaveReminder={handleSaveReminder}
         client={executingPlanItem ? clients.find((c) => c.id === executingPlanItem.clientId) : null}
         warehouseProducts={warehouseProducts}

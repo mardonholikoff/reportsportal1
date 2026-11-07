@@ -10,7 +10,7 @@ import {
   DeliveryPaymentInfo,
   DeliveryPaymentType,
 } from '../types';
-import { formatMoney } from '../utils/format';
+import { formatMoney, formatDateDMY } from '../utils/format';
 import { storageService, getPlanSoldProductsData } from '../services/storage';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import {
@@ -69,9 +69,10 @@ interface Props {
       }>;
       reportNote?: string;
     },
-    closeAfterSave?: boolean
+    closeAfterSave?: boolean,
+    closeDate?: string
   ) => void;
-  onCloseWithoutAction?: (planItemId: string, reason: string) => void;
+  onCloseWithoutAction?: (planItemId: string, reason: string, closeDate?: string) => void;
   onSaveReminder?: (data: {
     clientId: string;
     planId?: string;
@@ -85,7 +86,8 @@ interface Props {
       deliveryPayment: DeliveryPaymentInfo;
       reportNote?: string;
     },
-    closeAfterSave?: boolean
+    closeAfterSave?: boolean,
+    closeDate?: string
   ) => void;
   initialEditSoldProducts?: boolean;
   client?: Client | null;
@@ -597,16 +599,28 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const [reminderError, setReminderError] = useState<string | null>(null);
   const [reminderSuccessMsg, setReminderSuccessMsg] = useState<string | null>(null);
 
+  // Close Date State (Default: Bugun / Today, with quick buttons Kecha, Kechadan oldin, custom date input)
+  const getTodayDateStr = (): string => new Date().toISOString().slice(0, 10);
+  const getYesterdayDateStr = (): string => new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const getDayBeforeYesterdayDateStr = (): string => new Date(Date.now() - 172800000).toISOString().slice(0, 10);
+  const [closeDate, setCloseDate] = useState<string>(() => getTodayDateStr());
+
   // Nakladnoy modal state
   const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
 
   // Reset form when modal opens for a planItem
   useEffect(() => {
     if (isOpen && planItem) {
-      const alreadyDone = Boolean(planItem.status === 'bajarildi' || planItem.actionDone);
+      // Reja faqat moliyaviy yoki mahsulot amali bo'lsagina avval bajarilgan deb hisoblanadi
+      const hasActualOps = Boolean(
+        (planItem.financialAction && planItem.financialAction.amount > 0) ||
+        (planItem.productsDelivered && planItem.productsDelivered.length > 0) ||
+        (planItem.productsReturned && planItem.productsReturned.length > 0)
+      );
       setActionDone(planItem.actionDone || planItem.plannedAction || 'joyiga borildi');
-      setIsPlannedActionConfirmed(alreadyDone);
+      setIsPlannedActionConfirmed(hasActualOps);
       setShowExtraActionSelector(!planItem.plannedAction);
+      setCloseDate(getTodayDateStr());
       setHasPayment(false);
       setIsPaymentUzsMode(false);
       setSelectedPaymentMethods(['naqd']);
@@ -1638,14 +1652,23 @@ export const ExecutePlanModal: React.FC<Props> = ({
           deliveryPayment: deliveryPayData,
           reportNote: reportNote.trim() || undefined,
         },
-        closeAfterSave
+        closeAfterSave,
+        closeDate
       );
       onClose();
       return;
     }
 
+    const hasFinancialOrProducts =
+      Boolean(financialData) ||
+      validProducts.length > 0 ||
+      productsReturned.length > 0;
+
+    // Faqat moliyaviy amaliyot yoki yuk berish yoki qaytarish bo'lsagina avtomatik bajarildi deb belgilanadi
+    const effectiveActionConfirmed = hasFinancialOrProducts ? true : isPlannedActionConfirmed;
+
     const hasAnyActionOrData =
-      isPlannedActionConfirmed ||
+      effectiveActionConfirmed ||
       Boolean(financialData) ||
       validProducts.length > 0 ||
       productsReturned.length > 0;
@@ -1687,13 +1710,13 @@ export const ExecutePlanModal: React.FC<Props> = ({
           (hasReminder && reminderNote.trim()
             ? `Eslatma (${reminderDate}): ${reminderNote.trim()}`
             : 'Bajarilmasdan yopildi');
-        onCloseWithoutAction(planItem.id, reason);
+        onCloseWithoutAction(planItem.id, reason, closeDate);
         onClose();
         return;
       }
       if (!closeAfterSave && onCloseWithoutAction) {
         const reason = reportNote.trim() || 'Bajarilmasdan yopildi';
-        onCloseWithoutAction(planItem.id, reason);
+        onCloseWithoutAction(planItem.id, reason, closeDate);
         onClose();
         return;
       }
@@ -1709,7 +1732,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
         productsReturned: productsReturned.length > 0 ? productsReturned : undefined,
         reportNote: reportNote.trim(),
       },
-      closeAfterSave
+      closeAfterSave,
+      closeDate
     );
 
     onClose();
@@ -1795,31 +1819,105 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
           {/* Modal Form */}
           <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 max-h-[82vh] overflow-y-auto">
-            {isClosed && (
-              <div className="p-3.5 rounded-2xl bg-neutral-100 border border-neutral-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-neutral-800">
-                <div className="flex items-center gap-2.5">
-                  <Lock className="w-5 h-5 text-neutral-600 shrink-0" />
-                  <div className="text-xs">
-                    <span className="font-bold block text-neutral-900">
-                      Ushbu mijoz bo'yicha reja yakunlangan va yopilgan!
+            {/* Reja tuzilgan sana & Rejani yopish sanasi (Yopilmagan mijoz uchun tanlash imkoni) */}
+            <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200/80 space-y-2.5">
+              <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-rose-100">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-white border border-rose-200 flex items-center justify-center text-rose-700 shadow-2xs shrink-0">
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider font-extrabold text-neutral-500 block leading-tight">
+                      Amaliyot uchun reja tuzilgan sana:
                     </span>
-                    <span className="text-neutral-500">
-                      {hasExistingSoldProducts
-                        ? "Sotilgan mahsulotlar va to'lov turiga quyidagi tugma orqali o'zgartirish kiritishingiz mumkin."
-                        : "Barcha amallar bajarib bo'lingan."}
+                    <span className="text-sm font-extrabold font-mono text-neutral-900">
+                      {formatDateDMY(planItem.planDate || planItem.createdAt)}
                     </span>
                   </div>
                 </div>
-                {hasExistingSoldProducts && !isEditingSoldProducts && (
-                  <button
-                    type="button"
-                    onClick={() => loadSoldProductsIntoForm(existingSoldData)}
-                    className="px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shrink-0 shadow-xs"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>Sotilgan mahsulotlarga o'zgartirish kiritish</span>
-                  </button>
+                {planItem.agentUsername && (
+                  <span className="text-[11px] font-bold text-neutral-700 bg-white px-2.5 py-1 rounded-lg border border-neutral-200 shadow-2xs">
+                    Tuzuvchi: <strong className="text-rose-800">@{planItem.agentUsername}</strong>
+                  </span>
                 )}
+              </div>
+
+              {!isClosed && (
+                <div className="pt-0.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <label className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-rose-700" />
+                      <span>Rejani yopish sanasi:</span>
+                    </label>
+                    <span className="text-[11px] text-neutral-500 font-medium">
+                      Tanlangan sana bilan bazada yopiladi
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setCloseDate(getTodayDateStr())}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        closeDate === getTodayDateStr()
+                          ? 'bg-rose-700 text-white shadow-xs'
+                          : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+                      }`}
+                    >
+                      Bugun
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCloseDate(getYesterdayDateStr())}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        closeDate === getYesterdayDateStr()
+                          ? 'bg-rose-700 text-white shadow-xs'
+                          : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+                      }`}
+                    >
+                      Kecha
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCloseDate(getDayBeforeYesterdayDateStr())}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        closeDate === getDayBeforeYesterdayDateStr()
+                          ? 'bg-rose-700 text-white shadow-xs'
+                          : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+                      }`}
+                    >
+                      Kechadan oldin
+                    </button>
+
+                    <div className="flex items-center gap-1 bg-white px-2 py-1 rounded-xl border border-neutral-200 shadow-2xs">
+                      <span className="text-[11px] font-semibold text-neutral-500">Sana tanlash:</span>
+                      <input
+                        type="date"
+                        value={closeDate}
+                        onChange={(e) => {
+                          if (e.target.value) setCloseDate(e.target.value);
+                        }}
+                        className="text-xs font-bold font-mono text-neutral-900 bg-transparent focus:outline-none cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {isClosed && (
+              <div className="p-3.5 rounded-2xl bg-neutral-100 border border-neutral-300 flex items-center gap-2.5 text-neutral-800">
+                <Lock className="w-5 h-5 text-neutral-600 shrink-0" />
+                <div className="text-xs">
+                  <span className="font-bold block text-neutral-900">
+                    Ushbu mijoz bo'yicha reja yakunlangan va yopilgan!
+                  </span>
+                  <span className="text-neutral-500">
+                    {hasExistingSoldProducts
+                      ? "Mahsulotlarga yoki to'lov turiga o'zgartirish kiritish uchun avval rejani 'Qayta ochish' tugmasi orqali oching."
+                      : "Barcha amallar bajarib bo'lingan."}
+                  </span>
+                </div>
               </div>
             )}
 
@@ -1904,12 +2002,12 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       </span>
                       <span
                         className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          isPlannedActionConfirmed && actionDone === planItem.plannedAction
+                          (isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
                             ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                             : 'bg-amber-100 text-amber-800 border border-amber-200'
                         }`}
                       >
-                        {isPlannedActionConfirmed && actionDone === planItem.plannedAction
+                        {(isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
                           ? 'Holati: Bajarildi'
                           : 'Holati: Jarayonda'}
                       </span>
@@ -1924,17 +2022,22 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     disabled={isClosed}
                     onClick={() => {
                       setActionDone(planItem.plannedAction!);
-                      setIsPlannedActionConfirmed((prev) => !prev);
+                      // Agar to'lov, mahsulot topshirish yoki qaytarish amali faol bo'lsa, bajarildi holatidan qaytmaydi
+                      if (hasPayment || hasProducts || showReturnSection) {
+                        setIsPlannedActionConfirmed(true);
+                      } else {
+                        setIsPlannedActionConfirmed((prev) => !prev);
+                      }
                     }}
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
-                      isPlannedActionConfirmed && actionDone === planItem.plannedAction
+                      (isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
                         ? 'bg-emerald-600 text-white shadow-xs'
                         : 'bg-amber-500 hover:bg-emerald-600 text-white shadow-xs'
                     }`}
                   >
                     <Check className="w-3.5 h-3.5 stroke-[2.5]" />
                     <span>
-                      {isPlannedActionConfirmed && actionDone === planItem.plannedAction
+                      {(isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
                         ? 'Bajarildi (Belgilandi)'
                         : 'Bajarildi deb belgilash'}
                     </span>
@@ -2302,7 +2405,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   </label>
                 </div>
                 <div className="flex items-center gap-2">
-                  {hasExistingSoldProducts && !isEditingSoldProducts && (
+                  {!isClosed && hasExistingSoldProducts && !isEditingSoldProducts && (
                     <button
                       type="button"
                       onClick={() => loadSoldProductsIntoForm(existingSoldData)}
@@ -2312,10 +2415,23 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       <span>Sotilgan mahsulotlarga o'zgartirish kiritish</span>
                     </button>
                   )}
+                  {isEditingSoldProducts && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingSoldProducts(false);
+                        setHasProducts(false);
+                        setProducts([createEmptyProductRow()]);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-300 text-[11px] font-bold transition cursor-pointer"
+                    >
+                      Tahrirlashni bekor qilish ✕
+                    </button>
+                  )}
                   <input
                     type="checkbox"
                     id="hasProductsCheck"
-                    disabled={isProductSectionLocked}
+                    disabled={isClosed}
                     checked={hasProducts}
                     onChange={(e) => {
                       const checked = e.target.checked;
@@ -2328,89 +2444,6 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   />
                 </div>
               </div>
-
-              {/* Agar ushbu rejada mahsulot sotib bo'lingan bo'lsa, uni ko'rsatish va "O'zgartirish kiritish" paneli */}
-              {hasExistingSoldProducts && (
-                <div
-                  className={`p-3.5 rounded-2xl border space-y-2.5 transition-all ${
-                    isEditingSoldProducts
-                      ? 'bg-indigo-50/90 border-indigo-300 shadow-xs'
-                      : 'bg-indigo-50/50 border-indigo-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded-md bg-indigo-700 text-white text-[10px] font-bold uppercase tracking-wide">
-                        {isEditingSoldProducts ? "O'zgartirish rejimi faol" : 'Sotilgan mahsulotlar'}
-                      </span>
-                      <span className="text-xs font-bold text-indigo-950">
-                        {existingSoldData.productsDelivered.length} xil mahsulot sotilgan
-                      </span>
-                    </div>
-
-                    {!isEditingSoldProducts ? (
-                      <button
-                        type="button"
-                        onClick={() => loadSoldProductsIntoForm(existingSoldData)}
-                        className="px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        <span>O'zgartirish kiritish (Mahsulot / To'lov turi)</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsEditingSoldProducts(false);
-                          setHasProducts(false);
-                          setProducts([createEmptyProductRow()]);
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-300 text-[11px] font-bold transition cursor-pointer"
-                      >
-                        Tahrirlashni bekor qilish ✕
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap gap-1.5">
-                    {existingSoldData.productsDelivered.map((sp, spIdx) => (
-                      <span
-                        key={sp.id || spIdx}
-                        className="px-2.5 py-1 rounded-lg bg-white border border-indigo-200 text-[11px] text-neutral-800 font-medium shadow-2xs"
-                      >
-                        <strong>{sp.name}</strong>: {sp.quantity} {sp.unit} × {formatMoney(sp.unitPrice)} ={' '}
-                        <strong className="font-mono text-indigo-900">
-                          {formatMoney(sp.totalPrice ?? sp.quantity * sp.unitPrice)}
-                        </strong>
-                      </span>
-                    ))}
-                  </div>
-
-                  {existingSoldData.deliveryPayment && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-indigo-200/70 text-[11px]">
-                      <div className="text-indigo-950">
-                        <span className="font-semibold">Joriy to'lov turi: </span>
-                        <strong className="px-2 py-0.5 rounded bg-white border border-indigo-200 text-indigo-900">
-                          {existingSoldData.deliveryPayment.paymentLabel ||
-                            existingSoldData.deliveryPayment.paymentType}
-                        </strong>
-                      </div>
-                      <div className="flex items-center gap-2 font-mono font-bold">
-                        {existingSoldData.deliveryPayment.paidAmount > 0 && (
-                          <span className="text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                            To'langan: {formatMoney(existingSoldData.deliveryPayment.paidAmount)}
-                          </span>
-                        )}
-                        {(existingSoldData.deliveryPayment.debtAmount || 0) > 0 && (
-                          <span className="text-rose-800 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
-                            Nasiya (Qarz): {formatMoney(existingSoldData.deliveryPayment.debtAmount || 0)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
 
               {hasProducts && (
                 <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3.5 animate-in fade-in duration-100">

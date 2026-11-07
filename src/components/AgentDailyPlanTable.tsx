@@ -41,7 +41,8 @@ interface Props {
   onClosePlanItem?: (
     planItemId: string,
     closeReason?: string,
-    closedWithoutActionOverride?: boolean
+    closedWithoutActionOverride?: boolean,
+    closeDate?: string
   ) => void;
   onReopenPlanItems?: (planItemIds: string[], reopenReason: string) => void;
   onRemovePlanItems?: (planItemIds: string[], reason: string) => void;
@@ -147,6 +148,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   const [closeReason, setCloseReason] = useState<string>('');
   const [selectedPresetReason, setSelectedPresetReason] = useState<string>('');
   const [closeWithoutActionFlag, setCloseWithoutActionFlag] = useState<boolean>(false);
+
+  const getTodayDateStr = (): string => new Date().toISOString().slice(0, 10);
+  const getYesterdayDateStr = (): string => new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const getDayBeforeYesterdayDateStr = (): string => new Date(Date.now() - 172800000).toISOString().slice(0, 10);
+  const [confirmCloseDate, setConfirmCloseDate] = useState<string>(() => getTodayDateStr());
 
   // General selection of plan items (can be active or closed)
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
@@ -414,6 +420,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
   const handleOpenConfirmClose = (item: DailyPlanItem) => {
     setConfirmCloseItem(item);
+    setConfirmCloseDate(getTodayDateStr());
     const hasActions =
       Boolean(item.actionDone) || Boolean(item.actionsHistory && item.actionsHistory.length > 0);
     setCloseWithoutActionFlag(!hasActions);
@@ -430,7 +437,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         closeReason.trim() ||
         selectedPresetReason ||
         (closeWithoutActionFlag ? 'Bajarilmasdan yopildi' : 'Amallar yakunlandi');
-      onClosePlanItem(confirmCloseItem.id, finalReason, closeWithoutActionFlag);
+      onClosePlanItem(confirmCloseItem.id, finalReason, closeWithoutActionFlag, confirmCloseDate);
       setConfirmCloseItem(null);
       setCloseReason('');
       setSelectedPresetReason('');
@@ -1209,18 +1216,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                           {soldData.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
                                         </span>
                                       </div>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onOpenExecuteModal(item, true);
-                                        }}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
-                                        title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
-                                      >
-                                        <Edit3 className="w-2.5 h-2.5" />
-                                        <span>Mahsulotga o'zgartirish kiritish</span>
-                                      </button>
+                                      {!isClosed && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            onOpenExecuteModal(item, true);
+                                          }}
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                          title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
+                                        >
+                                          <Edit3 className="w-2.5 h-2.5" />
+                                          <span>Mahsulotga o'zgartirish kiritish</span>
+                                        </button>
+                                      )}
                                     </div>
                                   );
                                 })()}
@@ -1331,20 +1340,6 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                               return (
                                 <div className="flex flex-col items-center justify-center gap-1">
                                   <div className="flex items-center justify-center gap-1 flex-wrap">
-                                    {hasSoldProducts && (
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onOpenExecuteModal(item, true);
-                                        }}
-                                        className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
-                                        title="Yopilgan holatda ham sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
-                                      >
-                                        <Edit3 className="w-3 h-3" />
-                                        <span>Mahsulotga o'zgartirish kiritish</span>
-                                      </button>
-                                    )}
                                     {has234 && (
                                       <button
                                         type="button"
@@ -1713,7 +1708,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       </div>
 
                       <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                        {getPlanSoldProductsData(item).productsDelivered.length > 0 && (
+                        {!isClosed && getPlanSoldProductsData(item).productsDelivered.length > 0 && (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -1741,19 +1736,6 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         )}
                         {!isClosed ? (
                           <>
-                            {!isDone && onMarkPlannedActionDone && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onMarkPlannedActionDone(item);
-                                }}
-                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1"
-                              >
-                                <Check className="w-3 h-3 stroke-[2.5]" />
-                                <span>Bajarildi</span>
-                              </button>
-                            )}
                             <button
                               type="button"
                               onClick={() => onOpenExecuteModal(item)}
@@ -2033,15 +2015,84 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
             </div>
 
             <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-2">
-              <p className="font-semibold">
-                Mijoz: <span className="font-bold underline">{confirmCloseItem.clientName}</span>
-              </p>
+              <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-rose-200/80">
+                <p className="font-semibold">
+                  Mijoz: <span className="font-bold underline">{confirmCloseItem.clientName}</span>
+                </p>
+                <div className="flex items-center gap-1.5 text-neutral-700 bg-white px-2.5 py-1 rounded-lg border border-neutral-200 shadow-2xs">
+                  <Calendar className="w-3.5 h-3.5 text-rose-700" />
+                  <span className="text-[11px] font-bold">
+                    Reja tuzilgan sana: <strong className="font-mono text-neutral-900">{formatDateDMY(confirmCloseItem.planDate || confirmCloseItem.createdAt)}</strong>
+                  </span>
+                </div>
+              </div>
               <p className="text-neutral-600 leading-relaxed">
                 Yopilgandan so'ng bu mijoz <strong>faol rejalar ro'yxatidan chiqariladi</strong> ("Yopilganlar" bo'limida saqlanadi) va kiritilgan yopilish sababi butun tizimda (admin boshqaruvi, mijoz audit logi) aks etadi.
               </p>
               <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>Yopilgandan so'ng kerak bo'lsa "Yopilganlar" bo'limidan izoh kiritib qayta ochishingiz mumkin.</span>
+              </div>
+            </div>
+
+            {/* Rejani yopish sanasi tanlash */}
+            <div className="p-3 rounded-xl border bg-white border-neutral-200 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="font-bold text-neutral-800 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-rose-700" />
+                  <span>Rejani yopish sanasi:</span>
+                </span>
+                <span className="text-[11px] text-neutral-500 font-mono font-medium">
+                  Tanlangan sana: {formatDateDMY(confirmCloseDate)}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setConfirmCloseDate(getTodayDateStr())}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                    confirmCloseDate === getTodayDateStr()
+                      ? 'bg-rose-700 text-white shadow-xs'
+                      : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  Bugun
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmCloseDate(getYesterdayDateStr())}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                    confirmCloseDate === getYesterdayDateStr()
+                      ? 'bg-rose-700 text-white shadow-xs'
+                      : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  Kecha
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmCloseDate(getDayBeforeYesterdayDateStr())}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                    confirmCloseDate === getDayBeforeYesterdayDateStr()
+                      ? 'bg-rose-700 text-white shadow-xs'
+                      : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  Kechadan oldin
+                </button>
+
+                <div className="flex items-center gap-1 bg-neutral-50 px-2.5 py-1 rounded-xl border border-neutral-200">
+                  <span className="text-[11px] font-semibold text-neutral-500">Sana:</span>
+                  <input
+                    type="date"
+                    value={confirmCloseDate}
+                    onChange={(e) => {
+                      if (e.target.value) setConfirmCloseDate(e.target.value);
+                    }}
+                    className="text-xs font-bold font-mono text-neutral-900 bg-transparent focus:outline-none cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
 

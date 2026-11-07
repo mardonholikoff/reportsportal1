@@ -1419,6 +1419,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {onOpenExecuteModal &&
+                        !isClosed &&
                         getPlanSoldProductsData(item).productsDelivered.length > 0 && (
                           <button
                             type="button"
@@ -1930,6 +1931,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     <td className="py-3 px-3.5 text-center whitespace-nowrap">
                       <div className="flex items-center justify-center gap-1.5">
                         {onOpenExecuteModal &&
+                          !isClosed &&
                           getPlanSoldProductsData(item).productsDelivered.length > 0 && (
                             <button
                               type="button"
@@ -2211,6 +2213,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             <div className="p-4 bg-neutral-50 border-t border-neutral-200 flex items-center justify-between gap-2 flex-wrap">
               <div>
                 {onOpenExecuteModal &&
+                  !inspectedPlan.isClosed &&
+                  inspectedPlan.status !== 'yopildi' &&
                   getPlanSoldProductsData(inspectedPlan).productsDelivered.length > 0 && (
                     <button
                       type="button"
