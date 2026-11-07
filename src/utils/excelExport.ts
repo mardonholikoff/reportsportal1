@@ -1,17 +1,26 @@
 import ExcelJS from 'exceljs';
 import { Client } from '../types';
-import { formatNumber, formatDate } from './format';
+import { formatNumber, formatDate, getAgentDisplayName } from './format';
+
+export interface ClientBlock2ExportRow {
+  client: Client;
+  productsSummaryLines: string[]; // e.g., ["Litiy 0.4kg — 2 marta (15 dona, $150)"]
+  totalDeliveryEventsCount: number;
+  totalQuantity: number;
+  paidSumUsd: number;
+  creditSumUsd: number;
+  totalSumUsd: number;
+}
 
 export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'SavdoNazorat';
   workbook.created = new Date();
 
-  const worksheet = workbook.addWorksheet('Mijozlar hisobi', {
+  const worksheet = workbook.addWorksheet('1-Blok Mijozlar ro\'yxati', {
     views: [{ showGridLines: true }],
   });
 
-  // Black border definition for all cells
   const blackThinBorder: Partial<ExcelJS.Borders> = {
     top: { style: 'thin', color: { argb: 'FF000000' } },
     left: { style: 'thin', color: { argb: 'FF000000' } },
@@ -33,22 +42,18 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
     right: { style: 'thin', color: { argb: 'FF000000' } },
   };
 
-  // Define column dimensions & keys
   worksheet.columns = [
     { key: 'index', width: 6 },
-    { key: 'name', width: 26 },
+    { key: 'name', width: 28 },
     { key: 'phone', width: 18 },
-    { key: 'address', width: 28 },
-    { key: 'products', width: 42 },
-    { key: 'productsTotal', width: 20 },
-    { key: 'currentDebt', width: 20 },
-    { key: 'currentAdvance', width: 20 },
-    { key: 'author', width: 22 },
+    { key: 'address', width: 32 },
+    { key: 'currentDebt', width: 22 },
+    { key: 'currentAdvance', width: 22 },
+    { key: 'author', width: 24 },
   ];
 
-  // 1. Title Row (Row 1)
-  const titleRow = worksheet.addRow(['MIJOZLAR, TOVARLAR VA QARZDORLIK HISOB-KITOB JADVALI']);
-  worksheet.mergeCells('A1:I1');
+  const titleRow = worksheet.addRow(['MIJOZLAR VA QARZDORLIK / HAQDORLIK RO\'YXATI (1-BLOK)']);
+  worksheet.mergeCells('A1:G1');
   titleRow.height = 30;
   const titleCell = worksheet.getCell('A1');
   titleCell.font = { name: 'Arial', size: 14, bold: true, color: { argb: 'FF000000' } };
@@ -60,7 +65,6 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
   };
   titleCell.border = blackThinBorder;
 
-  // 2. Subtitle / Export Date (Row 2)
   const todayStr = new Intl.DateTimeFormat('uz-UZ', {
     day: '2-digit',
     month: '2-digit',
@@ -70,28 +74,24 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
   }).format(new Date());
 
   const subRow = worksheet.addRow([`Hujjat yaratilgan sana: ${todayStr} | Jami mijozlar: ${clients.length} ta`]);
-  worksheet.mergeCells('A2:I2');
+  worksheet.mergeCells('A2:G2');
   subRow.height = 20;
   const subCell = worksheet.getCell('A2');
   subCell.font = { name: 'Arial', size: 9, italic: true, color: { argb: 'FF333333' } };
   subCell.alignment = { vertical: 'middle', horizontal: 'center' };
   subCell.border = blackThinBorder;
 
-  // Row 3: Blank separator
   worksheet.addRow([]);
   worksheet.getRow(3).height = 8;
 
-  // 4. Header Row (Row 4)
   const headers = [
     '№',
     'Mijoz F.I.Sh.',
     'Telefon raqami',
     'Manzili',
-    'Topshirilgan mahsulotlar',
-    'Mahsulotlar summasi (so\'m)',
-    'Joriy qarzdorlik (so\'m)',
-    'Joriy haqdorlik / Avans (so\'m)',
-    'Qo\'shgan login va sana',
+    'Joriy qarzdorlik (USD)',
+    'Joriy haqdorlik / Avans (USD)',
+    'Qo\'shgan va sana',
   ];
 
   const headerRow = worksheet.addRow(headers);
@@ -107,43 +107,28 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
     cell.border = headerBorder;
   });
 
-  // 5. Data Rows
-  let grandProductsSum = 0;
   let grandDebtSum = 0;
   let grandAdvanceSum = 0;
 
   clients.forEach((client, idx) => {
-    const totalProdVal = client.products.reduce(
-      (sum, p) => sum + (p.totalPrice || p.quantity * p.unitPrice),
-      0
-    );
-
-    grandProductsSum += totalProdVal;
     grandDebtSum += client.currentDebt || 0;
     grandAdvanceSum += client.currentAdvance || 0;
 
-    // Formatted list of products
-    const prodLines = client.products.map(
-      (p, pIdx) =>
-        `${pIdx + 1}. ${p.name} — ${formatNumber(p.quantity)} ${p.unit} × ${formatNumber(p.unitPrice)} = ${formatNumber(p.totalPrice || p.quantity * p.unitPrice)} so'm`
-    );
-    const prodText = prodLines.length > 0 ? prodLines.join('\n') : "Mahsulot berilmagan";
-
-    const authorText = `${client.createdBy || 'adminc'}\n${formatDate(client.createdAt)}`;
+    const fullAddress =
+      [client.region, client.district].filter(Boolean).join(', ') || client.address || '-';
+    const authorText = `${getAgentDisplayName(client.createdBy || 'adminc')}\n${formatDate(client.createdAt)}`;
 
     const row = worksheet.addRow([
       idx + 1,
       client.name,
       client.phone || '-',
-      client.address || '-',
-      prodText,
-      totalProdVal,
+      fullAddress,
       client.currentDebt || 0,
       client.currentAdvance || 0,
       authorText,
     ]);
 
-    row.height = Math.max(26, Math.max(prodLines.length, 2) * 17);
+    row.height = 28;
 
     row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       cell.font = { name: 'Arial', size: 9.5, color: { argb: 'FF000000' } };
@@ -159,13 +144,8 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
       } else if (colNumber === 4) {
         cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
       } else if (colNumber === 5) {
-        cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
-      } else if (colNumber === 6) {
         cell.alignment = { vertical: 'middle', horizontal: 'right' };
-        cell.numFmt = '#,##0';
-      } else if (colNumber === 7) {
-        cell.alignment = { vertical: 'middle', horizontal: 'right' };
-        cell.numFmt = '#,##0';
+        cell.numFmt = '#,##0.00';
         if (client.currentDebt > 0) {
           cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF991B1B' } };
           cell.fill = {
@@ -174,9 +154,9 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
             fgColor: { argb: 'FFFFF1F2' },
           };
         }
-      } else if (colNumber === 8) {
+      } else if (colNumber === 6) {
         cell.alignment = { vertical: 'middle', horizontal: 'right' };
-        cell.numFmt = '#,##0';
+        cell.numFmt = '#,##0.00';
         if (client.currentAdvance > 0) {
           cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF065F46' } };
           cell.fill = {
@@ -185,20 +165,17 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
             fgColor: { argb: 'FFECFDF5' },
           };
         }
-      } else if (colNumber === 9) {
+      } else if (colNumber === 7) {
         cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
       }
     });
   });
 
-  // 6. Summary / Total Row
   const totalRow = worksheet.addRow([
     '',
     'JAMI:',
     '',
-    '',
     `${clients.length} ta mijoz bo'yicha jami`,
-    grandProductsSum,
     grandDebtSum,
     grandAdvanceSum,
     '',
@@ -216,15 +193,14 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
 
     if (colNumber === 2) {
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
-    } else if (colNumber >= 6 && colNumber <= 8) {
+    } else if (colNumber === 5 || colNumber === 6) {
       cell.alignment = { vertical: 'middle', horizontal: 'right' };
-      cell.numFmt = '#,##0';
+      cell.numFmt = '#,##0.00';
     } else {
       cell.alignment = { vertical: 'middle', horizontal: 'left' };
     }
   });
 
-  // Write to buffer and trigger browser download
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -234,7 +210,201 @@ export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
   const a = document.createElement('a');
   a.href = url;
   const dateSuffix = new Date().toISOString().slice(0, 10);
-  a.download = `mijozlar_hisobi_${dateSuffix}.xlsx`;
+  a.download = `mijozlar_1_blok_${dateSuffix}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export async function exportClientProductAnalyticsToXLSX(
+  rows: ClientBlock2ExportRow[],
+  periodLabel: string
+): Promise<void> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'SavdoNazorat';
+  workbook.created = new Date();
+
+  const worksheet = workbook.addWorksheet('2-Blok Mahsulotlar tahlili', {
+    views: [{ showGridLines: true }],
+  });
+
+  const blackThinBorder: Partial<ExcelJS.Borders> = {
+    top: { style: 'thin', color: { argb: 'FF000000' } },
+    left: { style: 'thin', color: { argb: 'FF000000' } },
+    bottom: { style: 'thin', color: { argb: 'FF000000' } },
+    right: { style: 'thin', color: { argb: 'FF000000' } },
+  };
+
+  const headerBorder: Partial<ExcelJS.Borders> = {
+    top: { style: 'medium', color: { argb: 'FF000000' } },
+    left: { style: 'thin', color: { argb: 'FF000000' } },
+    bottom: { style: 'medium', color: { argb: 'FF000000' } },
+    right: { style: 'thin', color: { argb: 'FF000000' } },
+  };
+
+  const totalBorder: Partial<ExcelJS.Borders> = {
+    top: { style: 'medium', color: { argb: 'FF000000' } },
+    left: { style: 'thin', color: { argb: 'FF000000' } },
+    bottom: { style: 'double', color: { argb: 'FF000000' } },
+    right: { style: 'thin', color: { argb: 'FF000000' } },
+  };
+
+  worksheet.columns = [
+    { key: 'index', width: 6 },
+    { key: 'name', width: 26 },
+    { key: 'phone', width: 16 },
+    { key: 'address', width: 26 },
+    { key: 'productsFreq', width: 46 },
+    { key: 'totalQty', width: 16 },
+    { key: 'paidUsd', width: 20 },
+    { key: 'creditUsd', width: 20 },
+    { key: 'totalUsd', width: 20 },
+  ];
+
+  const titleRow = worksheet.addRow(['MAHSULOTLAR ASOSIDA MIJOZLAR TAHLILI (2-BLOK)']);
+  worksheet.mergeCells('A1:I1');
+  titleRow.height = 30;
+  const titleCell = worksheet.getCell('A1');
+  titleCell.font = { name: 'Arial', size: 14, bold: true, color: { argb: 'FF000000' } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  titleCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE0E7FF' },
+  };
+  titleCell.border = blackThinBorder;
+
+  const subRow = worksheet.addRow([`Davr: ${periodLabel} | Mijozlar soni: ${rows.length} ta`]);
+  worksheet.mergeCells('A2:I2');
+  subRow.height = 20;
+  const subCell = worksheet.getCell('A2');
+  subCell.font = { name: 'Arial', size: 9.5, italic: true, color: { argb: 'FF333333' } };
+  subCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  subCell.border = blackThinBorder;
+
+  worksheet.addRow([]);
+  worksheet.getRow(3).height = 8;
+
+  const headers = [
+    '№',
+    'Mijoz F.I.Sh.',
+    'Telefon raqami',
+    'Manzili',
+    'Mahsulotlar va necha marta berilgani',
+    'Jami miqdori',
+    'Nasiyasiz sotilgan (USD)',
+    'Nasiyaga sotilgan (USD)',
+    'Jami mahsulot qiymati (USD)',
+  ];
+
+  const headerRow = worksheet.addRow(headers);
+  headerRow.height = 28;
+  headerRow.eachCell((cell) => {
+    cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF000000' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFEEF2FF' },
+    };
+    cell.border = headerBorder;
+  });
+
+  let sumQty = 0;
+  let sumPaid = 0;
+  let sumCredit = 0;
+  let sumTotal = 0;
+
+  rows.forEach((r, idx) => {
+    sumQty += r.totalQuantity;
+    sumPaid += r.paidSumUsd;
+    sumCredit += r.creditSumUsd;
+    sumTotal += r.totalSumUsd;
+
+    const fullAddress =
+      [r.client.region, r.client.district].filter(Boolean).join(', ') || r.client.address || '-';
+    const prodText = r.productsSummaryLines.join('\n') || '-';
+
+    const row = worksheet.addRow([
+      idx + 1,
+      r.client.name,
+      r.client.phone || '-',
+      fullAddress,
+      prodText,
+      r.totalQuantity,
+      r.paidSumUsd,
+      r.creditSumUsd,
+      r.totalSumUsd,
+    ]);
+
+    row.height = Math.max(26, Math.max(r.productsSummaryLines.length, 2) * 17);
+
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cell.font = { name: 'Arial', size: 9.5, color: { argb: 'FF000000' } };
+      cell.border = blackThinBorder;
+
+      if (colNumber === 1) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (colNumber === 2) {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF000000' } };
+      } else if (colNumber === 3) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (colNumber === 4 || colNumber === 5) {
+        cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+      } else if (colNumber === 6) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0.##';
+      } else if (colNumber >= 7 && colNumber <= 9) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0.00';
+      }
+    });
+  });
+
+  const totalRow = worksheet.addRow([
+    '',
+    'JAMI:',
+    '',
+    '',
+    `${rows.length} ta mijoz bo'yicha jami`,
+    sumQty,
+    sumPaid,
+    sumCredit,
+    sumTotal,
+  ]);
+  totalRow.height = 30;
+
+  totalRow.eachCell((cell, colNumber) => {
+    cell.font = { name: 'Arial', size: 10.5, bold: true, color: { argb: 'FF000000' } };
+    cell.border = totalBorder;
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE0E7FF' },
+    };
+
+    if (colNumber === 2) {
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+    } else if (colNumber >= 6 && colNumber <= 9) {
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+      cell.numFmt = colNumber === 6 ? '#,##0.##' : '#,##0.00';
+    } else {
+      cell.alignment = { vertical: 'middle', horizontal: 'left' };
+    }
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const dateSuffix = new Date().toISOString().slice(0, 10);
+  a.download = `mijozlar_mahsulotlar_2_blok_${dateSuffix}.xlsx`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

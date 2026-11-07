@@ -1691,6 +1691,7 @@ export default function App() {
 
                 <ClientTable
                   clients={clients}
+                  dailyPlans={dailyPlans}
                   onOpenAddModal={() => {
                     setEditingClient(null);
                     setIsFormModalOpen(true);
@@ -1886,6 +1887,7 @@ export default function App() {
                   {/* Interactive Client Table */}
                   <ClientTable
                     clients={clients}
+                    dailyPlans={dailyPlans}
                     onOpenAddModal={() => {
                       setEditingClient(null);
                       setIsFormModalOpen(true);
