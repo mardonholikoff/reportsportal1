@@ -1376,71 +1376,14 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
                             return (
                               <div className="flex items-center justify-center gap-1 flex-wrap">
-                                {!isDone && onMarkPlannedActionDone && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onMarkPlannedActionDone(item);
-                                    }}
-                                    className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
-                                    title="Tanlangan reja amalini Bajarildi deb belgilash"
-                                  >
-                                    <Check className="w-3 h-3 stroke-[2.5]" />
-                                    <span>Bajarildi</span>
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => onOpenExecuteModal(item)}
-                                  className="px-2 py-1 rounded-lg bg-rose-700 hover:bg-rose-800 text-white text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
-                                  title="Amal tafsilotlari yoki qo'shimcha amal qo'shish"
-                                >
-                                  <Edit3 className="w-3 h-3" />
-                                  <span>{isDone ? "+ Amal" : "Amal / Hisobot"}</span>
-                                </button>
-                                {hasSoldProducts && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onOpenExecuteModal(item, true);
-                                    }}
-                                    className="px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-xs"
-                                    title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
-                                  >
-                                    <Edit3 className="w-3 h-3" />
-                                    <span>Mahsulotga o'zgartirish kiritish</span>
-                                  </button>
-                                )}
-                                {has234 && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => handleOpenNakladnoy(item, e)}
-                                    className="px-1.5 py-1 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer"
-                                    title="Yuk xati (PDF) qora borderlar bilan chiqarish"
-                                  >
-                                    <Printer className="w-3 h-3" />
-                                    <span>Yuk xati</span>
-                                  </button>
-                                )}
                                 <button
                                   type="button"
                                   onClick={() => handleOpenConfirmClose(item)}
-                                  className="px-1.5 py-1 rounded-lg border border-rose-300 hover:bg-rose-50 text-rose-800 text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer"
+                                  className="px-2.5 py-1 rounded-lg border border-rose-300 hover:bg-rose-50 text-rose-800 text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer shadow-2xs"
                                   title="Oxirgi marta yopish"
                                 >
                                   <Lock className="w-3 h-3 text-rose-700" />
                                   <span>Yopish</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleOpenRemoveSingle(item, e)}
-                                  className="px-1.5 py-1 rounded-lg border border-neutral-300 hover:border-rose-300 hover:bg-rose-50 text-neutral-600 hover:text-rose-700 text-[11px] font-bold transition flex items-center justify-center gap-0.5 cursor-pointer shadow-2xs"
-                                  title="Rejadan olib tashlash"
-                                >
-                                  <Trash2 className="w-3 h-3 text-rose-600" />
-                                  <span>Olib tashlash</span>
                                 </button>
                               </div>
                             );
@@ -1666,14 +1609,33 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                           )}
                         </div>
 
-                        {item.productsDelivered && item.productsDelivered.length > 0 && (
-                          <div className="text-neutral-800 font-medium flex items-center gap-1 truncate text-[10px]">
-                            <Package className="w-3 h-3 text-rose-700 shrink-0" />
-                            <span className="truncate">
-                              Berildi: {item.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
-                            </span>
-                          </div>
-                        )}
+                        {(() => {
+                          const soldData = getPlanSoldProductsData(item);
+                          if (soldData.productsDelivered.length === 0) return null;
+                          return (
+                            <div className="space-y-1">
+                              <div className="text-neutral-800 font-medium flex items-center gap-1 truncate text-[10px]">
+                                <Package className="w-3 h-3 text-rose-700 shrink-0" />
+                                <span className="truncate">
+                                  Berildi: {soldData.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
+                                </span>
+                              </div>
+                              {!isClosed && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenExecuteModal(item, true);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                >
+                                  <Edit3 className="w-2.5 h-2.5" />
+                                  <span>Mahsulotga o&apos;zgartirish kiritish</span>
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {item.productsReturned && item.productsReturned.length > 0 && (
                           <div className="text-amber-800 font-medium flex items-center gap-1 truncate text-[10px]">
@@ -1708,60 +1670,15 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       </div>
 
                       <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                        {!isClosed && getPlanSoldProductsData(item).productsDelivered.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenExecuteModal(item, true);
-                            }}
-                            className="px-2.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer flex items-center gap-1 shadow-xs"
-                          >
-                            <Edit3 className="w-3 h-3" />
-                            <span>Mahsulotga o'zgartirish kiritish</span>
-                          </button>
-                        )}
-                        {(paidAmount > 0 ||
-                          debtAmount > 0 ||
-                          getPlanSoldProductsData(item).productsDelivered.length > 0 ||
-                          (item.productsReturned && item.productsReturned.length > 0)) && (
-                          <button
-                            type="button"
-                            onClick={(e) => handleOpenNakladnoy(item, e)}
-                            className="px-2.5 py-1.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-bold cursor-pointer flex items-center gap-1"
-                          >
-                            <Printer className="w-3 h-3" />
-                            <span>Yuk xati (PDF)</span>
-                          </button>
-                        )}
                         {!isClosed ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => onOpenExecuteModal(item)}
-                              className="px-3 py-1.5 rounded-xl bg-rose-700 text-white text-xs font-bold cursor-pointer shadow-xs flex items-center gap-1"
-                            >
-                              <Edit3 className="w-3 h-3" />
-                              <span>{isDone ? "Qo'shimcha amal" : "Amal / Hisobot"}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenConfirmClose(item)}
-                              className="px-2.5 py-1.5 rounded-xl border border-rose-300 text-rose-800 text-xs font-bold cursor-pointer hover:bg-rose-50"
-                            >
-                              <Lock className="w-3 h-3 inline mr-1" />
-                              <span>Yopish</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => handleOpenRemoveSingle(item, e)}
-                              className="px-2.5 py-1.5 rounded-xl border border-neutral-300 hover:border-rose-300 text-neutral-600 hover:text-rose-700 hover:bg-rose-50 text-xs font-bold cursor-pointer flex items-center gap-1"
-                              title="Rejadan olib tashlash"
-                            >
-                              <Trash2 className="w-3 h-3 text-rose-600" />
-                              <span>Olib tashlash</span>
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenConfirmClose(item)}
+                            className="px-3 py-1.5 rounded-xl border border-rose-300 text-rose-800 text-xs font-bold cursor-pointer hover:bg-rose-50 flex items-center gap-1 shadow-2xs"
+                          >
+                            <Lock className="w-3 h-3 text-rose-700" />
+                            <span>Yopish</span>
+                          </button>
                         ) : (
                           <div className="flex items-center gap-1.5">
                             <button

@@ -412,7 +412,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const [isPlannedActionConfirmed, setIsPlannedActionConfirmed] = useState<boolean>(false);
   const [showExtraActionSelector, setShowExtraActionSelector] = useState<boolean>(false);
 
-  // Section 2: Financial payment (Supports single or multiple payment methods with optional UZS -> USD conversion)
+  // Section 2: Financial payment (Supports single or multiple payment methods with optional UZS -> USD conversion + extra direct USD)
   const [hasPayment, setHasPayment] = useState(false);
   const [isPaymentUzsMode, setIsPaymentUzsMode] = useState(false);
   const [selectedPaymentMethods, setSelectedPaymentMethods] = useState<FinancialMethodType[]>(['naqd']);
@@ -428,6 +428,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
     karta_otkazma: '',
     qr_otkazma: '',
   });
+  const [hasExtraDirectUsd, setHasExtraDirectUsd] = useState(false);
+  const [extraDirectUsdAmount, setExtraDirectUsdAmount] = useState<number | ''>('');
+  const [extraDirectUsdMethod, setExtraDirectUsdMethod] = useState<FinancialMethodType>('naqd');
   const [splitExchangeRate, setSplitExchangeRate] = useState<string>(() => {
     try {
       return localStorage.getItem('savdo_usd_uzs_rate_v1') || '12800';
@@ -437,7 +440,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   });
   const [paymentNote, setPaymentNote] = useState('');
 
-  // Section 3: Products delivered (with bidirectional discount % / USD + multi-method / partial credit + optional UZS -> USD conversion)
+  // Section 3: Products delivered (with bidirectional discount % / USD + multi-method / partial credit + optional UZS -> USD conversion + extra direct USD)
   const [hasProducts, setHasProducts] = useState(false);
   const [isEditingSoldProducts, setIsEditingSoldProducts] = useState(false);
   const [products, setProducts] = useState<ProductItem[]>([createEmptyProductRow()]);
@@ -459,6 +462,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
     qr_otkazma: '',
   });
   const [isDeliveryUzsMode, setIsDeliveryUzsMode] = useState(false);
+  const [hasExtraDeliveryDirectUsd, setHasExtraDeliveryDirectUsd] = useState(false);
+  const [extraDeliveryDirectUsdAmount, setExtraDeliveryDirectUsdAmount] = useState<number | ''>('');
+  const [extraDeliveryDirectUsdMethod, setExtraDeliveryDirectUsdMethod] = useState<FinancialMethodType>('naqd');
 
   const existingSoldData = useMemo(
     () => getPlanSoldProductsData(planItem),
@@ -470,6 +476,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
     if (!soldData || soldData.productsDelivered.length === 0) return;
     setIsEditingSoldProducts(true);
     setHasProducts(true);
+    setIsPlannedActionConfirmed(true);
     setProducts(
       soldData.productsDelivered.map((p) => ({
         ...p,
@@ -485,6 +492,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
     );
     setOrderDiscountPercent('');
     setOrderDiscountAmount('');
+    setHasExtraDeliveryDirectUsd(false);
+    setExtraDeliveryDirectUsdAmount('');
+    setExtraDeliveryDirectUsdMethod('naqd');
 
     const dp = soldData.deliveryPayment;
     if (!dp || dp.paymentType === 'qarzga' || (dp.paidAmount || 0) <= 0) {
@@ -526,18 +536,28 @@ export const ExecutePlanModal: React.FC<Props> = ({
         karta_otkazma: '',
         qr_otkazma: '',
       };
-      const rateToUse = dp.exchangeRate && dp.exchangeRate > 0 ? dp.exchangeRate : 12800;
+      let foundExtraDirectUsd = 0;
+      let foundExtraDirectMethod: FinancialMethodType = 'naqd';
 
       dp.splits.forEach((sp) => {
         const mId = sp.method || 'naqd';
-        if (!methods.includes(mId)) methods.push(mId);
-        nextUsd[mId] = sp.amount;
-        if (sp.amountUzs && sp.amountUzs > 0) {
-          nextUzs[mId] = sp.amountUzs;
-        } else if (hasUzs) {
-          nextUzs[mId] = Math.round(sp.amount * rateToUse);
+        if (hasUzs && (!sp.amountUzs || sp.amountUzs <= 0)) {
+          foundExtraDirectUsd += sp.amount || 0;
+          foundExtraDirectMethod = mId;
+        } else {
+          if (!methods.includes(mId)) methods.push(mId);
+          nextUsd[mId] = sp.amount;
+          if (sp.amountUzs && sp.amountUzs > 0) {
+            nextUzs[mId] = sp.amountUzs;
+          }
         }
       });
+
+      if (hasUzs && foundExtraDirectUsd > 0) {
+        setHasExtraDeliveryDirectUsd(true);
+        setExtraDeliveryDirectUsdAmount(Math.round(foundExtraDirectUsd * 100) / 100);
+        setExtraDeliveryDirectUsdMethod(foundExtraDirectMethod);
+      }
 
       setSelectedDeliveryMethods(methods.length > 0 ? methods : ['naqd']);
       setDeliveryAmountsUsd(nextUsd);
@@ -574,12 +594,31 @@ export const ExecutePlanModal: React.FC<Props> = ({
     }
   };
 
-  // Section 4: Products returned state: { [productId]: returnedQuantity }
+  // Section 4: Products returned state: checkbox + { [productId]: returnedQuantity }
+  const [hasReturns, setHasReturns] = useState(false);
   const [returnsMap, setReturnsMap] = useState<Record<string, number | ''>>({});
 
   // Section 4.2: Berilmagan mahsulot qaytarish (Ombordagi tovarlardan qaytarish)
   const [hasExtraReturns, setHasExtraReturns] = useState(false);
   const [extraReturns, setExtraReturns] = useState<ExtraReturnItem[]>([]);
+
+  // Helper: 2, 3 yoki 4-bloklardan biri yoki bir nechtasi belgilanganda avtomatik Bajarildi bo'ladi,
+  // belgi (tick) olinib qaytarib olinganda (hech biri belgilanmagan holga qaytganda) avtomatik Bajarilmadi bo'ladi
+  const syncConfirmationWithBlocks = (
+    nextPayment: boolean,
+    nextProducts: boolean,
+    nextReturns: boolean
+  ) => {
+    const anyChecked = Boolean(nextPayment || nextProducts || nextReturns);
+    if (anyChecked) {
+      setIsPlannedActionConfirmed(true);
+      if (planItem?.plannedAction) {
+        setActionDone(planItem.plannedAction);
+      }
+    } else {
+      setIsPlannedActionConfirmed(false);
+    }
+  };
 
   // Section 5: General report note
   const [reportNote, setReportNote] = useState('');
@@ -619,7 +658,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       );
       setActionDone(planItem.actionDone || planItem.plannedAction || 'joyiga borildi');
       setIsPlannedActionConfirmed(hasActualOps);
-      setShowExtraActionSelector(!planItem.plannedAction);
+      setShowExtraActionSelector(false);
       setCloseDate(getTodayDateStr());
       setHasPayment(false);
       setIsPaymentUzsMode(false);
@@ -636,6 +675,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
         karta_otkazma: '',
         qr_otkazma: '',
       });
+      setHasExtraDirectUsd(false);
+      setExtraDirectUsdAmount('');
+      setExtraDirectUsdMethod('naqd');
       setPaymentNote('');
       setHasProducts(false);
       setIsEditingSoldProducts(false);
@@ -657,6 +699,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
         qr_otkazma: '',
       });
       setIsDeliveryUzsMode(false);
+      setHasExtraDeliveryDirectUsd(false);
+      setExtraDeliveryDirectUsdAmount('');
+      setExtraDeliveryDirectUsdMethod('naqd');
+      setHasReturns(false);
       setReturnsMap({});
       setHasExtraReturns(false);
       setExtraReturns([]);
@@ -747,9 +793,24 @@ export const ExecutePlanModal: React.FC<Props> = ({
     }
   };
 
+  const numExtraDirectUsd = useMemo(() => {
+    if (!isPaymentUzsMode || !hasExtraDirectUsd) return 0;
+    const v = typeof extraDirectUsdAmount === 'number' ? extraDirectUsdAmount : Number(extraDirectUsdAmount) || 0;
+    return v > 0 ? Math.round(v * 100) / 100 : 0;
+  }, [isPaymentUzsMode, hasExtraDirectUsd, extraDirectUsdAmount]);
+
+  const numExtraDeliveryDirectUsd = useMemo(() => {
+    if (!isDeliveryUzsMode || !hasExtraDeliveryDirectUsd || deliveryPayMode === 'qarzga') return 0;
+    const v =
+      typeof extraDeliveryDirectUsdAmount === 'number'
+        ? extraDeliveryDirectUsdAmount
+        : Number(extraDeliveryDirectUsdAmount) || 0;
+    return v > 0 ? Math.round(v * 100) / 100 : 0;
+  }, [isDeliveryUzsMode, hasExtraDeliveryDirectUsd, extraDeliveryDirectUsdAmount, deliveryPayMode]);
+
   // Active splits with amounts > 0
   const activePaymentSplits = useMemo<FinancialPaymentSplit[]>(() => {
-    return selectedPaymentMethods
+    const baseSplits = selectedPaymentMethods
       .map((mId) => {
         const meta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === mId);
         const usdAmt =
@@ -777,7 +838,29 @@ export const ExecutePlanModal: React.FC<Props> = ({
         };
       })
       .filter((s) => s.amount > 0);
-  }, [selectedPaymentMethods, methodAmountsUsd, methodAmountsUzs, numExchangeRate, isPaymentUzsMode]);
+
+    if (isPaymentUzsMode && hasExtraDirectUsd && numExtraDirectUsd > 0) {
+      const extraMeta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === extraDirectUsdMethod);
+      baseSplits.push({
+        method: extraDirectUsdMethod,
+        methodLabel: `${extraMeta?.label || 'Naqd pul'} (Qo'shimcha $)`,
+        amount: numExtraDirectUsd,
+        amountUzs: undefined,
+        exchangeRate: undefined,
+      });
+    }
+
+    return baseSplits;
+  }, [
+    selectedPaymentMethods,
+    methodAmountsUsd,
+    methodAmountsUzs,
+    numExchangeRate,
+    isPaymentUzsMode,
+    hasExtraDirectUsd,
+    numExtraDirectUsd,
+    extraDirectUsdMethod,
+  ]);
 
   const totalPaymentUsd = useMemo(() => {
     const sum = activePaymentSplits.reduce((acc, s) => acc + s.amount, 0);
@@ -787,10 +870,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const totalPaymentUzs = useMemo(() => {
     if (!isPaymentUzsMode) return 0;
     return activePaymentSplits.reduce(
-      (acc, s) => acc + (s.amountUzs !== undefined ? s.amountUzs : Math.round(s.amount * numExchangeRate)),
+      (acc, s) => acc + (s.amountUzs !== undefined && s.amountUzs > 0 ? s.amountUzs : 0),
       0
     );
-  }, [activePaymentSplits, numExchangeRate, isPaymentUzsMode]);
+  }, [activePaymentSplits, isPaymentUzsMode]);
 
   const combinedPaymentSummary = useMemo(() => {
     if (activePaymentSplits.length === 0) {
@@ -828,7 +911,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
     );
 
     const breakdownText = isPaymentUzsMode && totalPaymentUzs > 0
-      ? `${labelParts.join(' + ')} = Umumiy: ${new Intl.NumberFormat('uz-UZ').format(totalPaymentUzs)} so'm (kurs: 1$ = ${new Intl.NumberFormat('uz-UZ').format(numExchangeRate)} so'm | ${formatMoney(totalPaymentUsd)})`
+      ? `${labelParts.join(' + ')} = Umumiy: ${new Intl.NumberFormat('uz-UZ').format(totalPaymentUzs)} so'm${numExtraDirectUsd > 0 ? ` + ${formatMoney(numExtraDirectUsd)} ($)` : ''} (kurs: 1$ = ${new Intl.NumberFormat('uz-UZ').format(numExchangeRate)} so'm | Jami: ${formatMoney(totalPaymentUsd)})`
       : `${labelParts.join(' + ')} = Umumiy: ${formatMoney(totalPaymentUsd)}`;
 
     return {
@@ -836,11 +919,11 @@ export const ExecutePlanModal: React.FC<Props> = ({
       methodLabel: shortLabelParts.join(' + '),
       autoBreakdownNote: breakdownText,
     };
-  }, [activePaymentSplits, selectedPaymentMethods, totalPaymentUzs, totalPaymentUsd, isPaymentUzsMode, numExchangeRate]);
+  }, [activePaymentSplits, selectedPaymentMethods, totalPaymentUzs, totalPaymentUsd, isPaymentUzsMode, numExchangeRate, numExtraDirectUsd]);
 
-  // Product return is automatically active when visit occurs
-  const showReturnSection =
-    actionDone === 'joyiga borildi' || actionDone === 'telefon qilindi + joyiga borildi';
+  // 2, 3 yoki 4-bloklardan biri yoki bir nechtasi belgilanganmi?
+  const isAnyBlock234Checked = Boolean(hasPayment || hasProducts || hasReturns);
+  const isActionConfirmed = Boolean(isPlannedActionConfirmed || isAnyBlock234Checked);
 
   const clientProducts = client?.products || [];
 
@@ -890,7 +973,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
     if (deliveryPayMode === 'qarzga') {
       setDeliveryAmountsUsd({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
       setDeliveryAmountsUzs({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
-    } else if (deliveryPayMode === 'full' && selectedDeliveryMethods.length === 1) {
+    } else if (deliveryPayMode === 'full' && selectedDeliveryMethods.length === 1 && !hasExtraDeliveryDirectUsd) {
       const mId = selectedDeliveryMethods[0];
       setDeliveryAmountsUsd({
         naqd: '',
@@ -909,7 +992,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
         });
       }
     }
-  }, [totalDeliveredSum, deliveryPayMode, selectedDeliveryMethods.length]);
+  }, [totalDeliveredSum, deliveryPayMode, selectedDeliveryMethods.length, hasExtraDeliveryDirectUsd]);
 
   const handleToggleDeliveryMethod = (methodId: FinancialMethodType) => {
     setSelectedDeliveryMethods((prev) => {
@@ -936,7 +1019,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
     } else if (numExchangeRate > 0) {
       const calcUsd = Math.round((uzsVal / numExchangeRate) * 100) / 100;
       setDeliveryAmountsUsd((prev) => ({ ...prev, [methodId]: calcUsd }));
-      if (deliveryPayMode === 'full' && calcUsd < totalDeliveredSum) {
+      if (deliveryPayMode === 'full' && calcUsd + numExtraDeliveryDirectUsd < totalDeliveredSum) {
         setDeliveryPayMode('partial');
       }
     }
@@ -954,7 +1037,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
           [methodId]: Math.round(usdVal * numExchangeRate),
         }));
       }
-      if (deliveryPayMode === 'full' && usdVal < totalDeliveredSum) {
+      if (deliveryPayMode === 'full' && usdVal + numExtraDeliveryDirectUsd < totalDeliveredSum) {
         setDeliveryPayMode('partial');
       }
     }
@@ -962,7 +1045,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
   const activeDeliverySplits = useMemo<FinancialPaymentSplit[]>(() => {
     if (deliveryPayMode === 'qarzga') return [];
-    return selectedDeliveryMethods
+    const baseSplits = selectedDeliveryMethods
       .map((mId) => {
         const meta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === mId);
         const usdAmt =
@@ -990,7 +1073,30 @@ export const ExecutePlanModal: React.FC<Props> = ({
         };
       })
       .filter((s) => s.amount > 0);
-  }, [deliveryPayMode, selectedDeliveryMethods, deliveryAmountsUsd, deliveryAmountsUzs, isDeliveryUzsMode, numExchangeRate]);
+
+    if (isDeliveryUzsMode && hasExtraDeliveryDirectUsd && numExtraDeliveryDirectUsd > 0) {
+      const extraMeta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === extraDeliveryDirectUsdMethod);
+      baseSplits.push({
+        method: extraDeliveryDirectUsdMethod,
+        methodLabel: `${extraMeta?.label || 'Naqd pul'} (Qo'shimcha $)`,
+        amount: numExtraDeliveryDirectUsd,
+        amountUzs: undefined,
+        exchangeRate: undefined,
+      });
+    }
+
+    return baseSplits;
+  }, [
+    deliveryPayMode,
+    selectedDeliveryMethods,
+    deliveryAmountsUsd,
+    deliveryAmountsUzs,
+    isDeliveryUzsMode,
+    numExchangeRate,
+    hasExtraDeliveryDirectUsd,
+    numExtraDeliveryDirectUsd,
+    extraDeliveryDirectUsdMethod,
+  ]);
 
   const totalDeliveryPaidUsd = useMemo(() => {
     if (deliveryPayMode === 'qarzga') return 0;
@@ -1001,10 +1107,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const totalDeliveryPaidUzs = useMemo(() => {
     if (deliveryPayMode === 'qarzga' || !isDeliveryUzsMode) return 0;
     return activeDeliverySplits.reduce(
-      (acc, s) => acc + (s.amountUzs !== undefined ? s.amountUzs : Math.round(s.amount * numExchangeRate)),
+      (acc, s) => acc + (s.amountUzs !== undefined && s.amountUzs > 0 ? s.amountUzs : 0),
       0
     );
-  }, [deliveryPayMode, isDeliveryUzsMode, activeDeliverySplits, numExchangeRate]);
+  }, [deliveryPayMode, isDeliveryUzsMode, activeDeliverySplits]);
 
   const remainingDeliveryDebtUsd = useMemo(() => {
     if (deliveryPayMode === 'qarzga') return totalDeliveredSum;
@@ -1405,7 +1511,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       ? products.filter((p) => p.name.trim() !== '')
       : [];
 
-    const directReturned = showReturnSection
+    const directReturned = hasReturns
       ? Object.entries(returnsMap)
           .filter(([_, qty]) => (typeof qty === 'number' ? qty > 0 : Number(qty) > 0))
           .map(([prodId, qty]) => {
@@ -1423,7 +1529,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       : [];
 
     const extraReturnedList =
-      showReturnSection && hasExtraReturns
+      hasReturns && hasExtraReturns
         ? extraReturns
             .filter(
               (r) =>
@@ -1571,7 +1677,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     // 3. Products returned (Section 4.1 + 4.2)
     const directReturned =
-      !isClosed && showReturnSection
+      !isClosed && hasReturns
         ? Object.entries(returnsMap)
             .filter(([_, qty]) => (typeof qty === 'number' ? qty > 0 : Number(qty) > 0))
             .map(([prodId, qty]) => {
@@ -1589,7 +1695,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
         : [];
 
     const extraReturnedList =
-      !isClosed && showReturnSection && hasExtraReturns
+      !isClosed && hasReturns && hasExtraReturns
         ? extraReturns
             .filter(
               (r) =>
@@ -1664,8 +1770,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
       validProducts.length > 0 ||
       productsReturned.length > 0;
 
-    // Faqat moliyaviy amaliyot yoki yuk berish yoki qaytarish bo'lsagina avtomatik bajarildi deb belgilanadi
-    const effectiveActionConfirmed = hasFinancialOrProducts ? true : isPlannedActionConfirmed;
+    // 2, 3 yoki 4-bloklardan biri yoki bir nechtasi belgilanganda yoki amaliyot kiritilganda Bajarildi bo'ladi
+    const effectiveActionConfirmed =
+      hasFinancialOrProducts || isAnyBlock234Checked ? true : isPlannedActionConfirmed;
 
     const hasAnyActionOrData =
       effectiveActionConfirmed ||
@@ -1701,8 +1808,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
       }
     }
 
-    // Agar amal bajarildi bosilmagan bo'lsa va moliyaviy/mahsulot amaliyoti kiritilmagan bo'lsa,
-    // yopish tugmasi bosilganda avtomatik ravishda "Bajarilmasdan yopilgan" bo'lib yopiladi
+    // Agar amal bajarildi bosilmagan bo'lsa va 2/3/4 bloklarda amaliyot bo'lmasa:
+    // - "Hisobotni saqlash va yopish" bosilganda "Bajarilmasdan yopilgan" bo'lib yopiladi
+    // - "Hisobotni saqlash" bosilganda esa yopilmasdan "Bajarilmadi / Jarayonda" holatida qoladi
     if (!hasAnyActionOrData) {
       if (closeAfterSave && onCloseWithoutAction) {
         const reason =
@@ -1714,12 +1822,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
         onClose();
         return;
       }
-      if (!closeAfterSave && onCloseWithoutAction) {
-        const reason = reportNote.trim() || 'Bajarilmasdan yopildi';
-        onCloseWithoutAction(planItem.id, reason, closeDate);
-        onClose();
-        return;
-      }
+      onClose();
+      return;
     }
 
     onSaveReport(
@@ -1952,6 +2056,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     type="button"
                     onClick={() => {
                       setHasPayment(true);
+                      syncConfirmationWithBlocks(true, hasProducts, hasReturns);
                       const firstMethod = selectedPaymentMethods[0] || 'naqd';
                       const amt = planItem.plannedAmount || 0;
                       setMethodAmountsUsd((prev) => ({
@@ -1979,7 +2084,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                 <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wide">
                   1. Qilingan amal turi <span className="text-rose-600">*</span>
                 </label>
-                {planItem.plannedAction && !isClosed && (
+                {!isClosed && (
                   <button
                     type="button"
                     onClick={() => setShowExtraActionSelector((prev) => !prev)}
@@ -1993,65 +2098,65 @@ export const ExecutePlanModal: React.FC<Props> = ({
                 )}
               </div>
 
-              {planItem.plannedAction && (
-                <div className="p-3 rounded-xl bg-white border border-rose-200 flex items-center justify-between gap-2 flex-wrap">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold text-neutral-500 uppercase">
-                        Reja tuzishda tanlangan amal:
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          (isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
-                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                            : 'bg-amber-100 text-amber-800 border border-amber-200'
-                        }`}
-                      >
-                        {(isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
-                          ? 'Holati: Bajarildi'
-                          : 'Holati: Jarayonda'}
-                      </span>
-                    </div>
-                    <span className="text-xs sm:text-sm font-bold text-neutral-900 mt-0.5 block">
-                      {ACTION_OPTIONS.find((o) => o.id === planItem.plannedAction)?.label ||
-                        planItem.plannedAction}
+              <div className="p-3 rounded-xl bg-white border border-rose-200 flex items-center justify-between gap-2 flex-wrap">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[10px] font-bold text-neutral-500 uppercase">
+                      Reja tuzishda tanlangan amal:
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        isActionConfirmed
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                          : 'bg-amber-100 text-amber-800 border border-amber-200'
+                      }`}
+                    >
+                      {isActionConfirmed ? 'Holati: Bajarildi' : 'Holati: Bajarilmadi'}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    disabled={isClosed}
-                    onClick={() => {
-                      setActionDone(planItem.plannedAction!);
-                      // Agar to'lov, mahsulot topshirish yoki qaytarish amali faol bo'lsa, bajarildi holatidan qaytmaydi
-                      if (hasPayment || hasProducts || showReturnSection) {
-                        setIsPlannedActionConfirmed(true);
-                      } else {
-                        setIsPlannedActionConfirmed((prev) => !prev);
-                      }
-                    }}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
-                      (isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
-                        ? 'bg-emerald-600 text-white shadow-xs'
-                        : 'bg-amber-500 hover:bg-emerald-600 text-white shadow-xs'
-                    }`}
-                  >
-                    <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                    <span>
-                      {(isPlannedActionConfirmed || hasPayment || hasProducts || showReturnSection) && actionDone === planItem.plannedAction
-                        ? 'Bajarildi (Belgilandi)'
-                        : 'Bajarildi deb belgilash'}
-                    </span>
-                  </button>
-                </div>
-              )}
-
-              {(!planItem.plannedAction || showExtraActionSelector) && (
-                <div className="space-y-1.5 pt-1">
-                  {planItem.plannedAction && (
-                    <span className="text-[11px] font-semibold text-neutral-600 block">
-                      Yoki boshqa / qo'shimcha amal turini tanlang:
+                  <span className="text-xs sm:text-sm font-bold text-neutral-900 mt-0.5 block">
+                    {ACTION_OPTIONS.find((o) => o.id === (planItem.plannedAction || actionDone))?.label ||
+                      planItem.plannedAction ||
+                      actionDone}
+                  </span>
+                  {isAnyBlock234Checked && (
+                    <span className="text-[10px] font-semibold text-emerald-700 mt-0.5 block">
+                      2, 3 yoki 4-blok belgilangani uchun avtomatik &quot;Bajarildi&quot; holatida (belgi olinsa &quot;Bajarilmadi&quot;ga qaytadi)
                     </span>
                   )}
+                </div>
+                <button
+                  type="button"
+                  disabled={isClosed}
+                  onClick={() => {
+                    if (planItem.plannedAction) {
+                      setActionDone(planItem.plannedAction);
+                    }
+                    // Agar 2, 3 yoki 4-bloklardan biri belgilangan bo'lsa, avtomatik Bajarildi holatida qoladi
+                    if (isAnyBlock234Checked) {
+                      setIsPlannedActionConfirmed(true);
+                    } else {
+                      setIsPlannedActionConfirmed((prev) => !prev);
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                    isActionConfirmed
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'bg-amber-500 hover:bg-emerald-600 text-white shadow-xs'
+                  }`}
+                >
+                  <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span>
+                    {isActionConfirmed ? 'Bajarildi (Belgilandi)' : 'Bajarildi deb belgilash'}
+                  </span>
+                </button>
+              </div>
+
+              {showExtraActionSelector && (
+                <div className="space-y-1.5 pt-1">
+                  <span className="text-[11px] font-semibold text-neutral-600 block">
+                    Yoki boshqa / qo&apos;shimcha amal turini tanlang:
+                  </span>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     {ACTION_OPTIONS.map((opt) => (
                       <button
@@ -2060,10 +2165,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
                         disabled={isClosed}
                         onClick={() => {
                           setActionDone(opt.id);
-                          setIsPlannedActionConfirmed(true);
                         }}
                         className={`p-3 rounded-xl border text-xs font-semibold text-center transition min-h-[44px] cursor-pointer ${
-                          isPlannedActionConfirmed && actionDone === opt.id
+                          actionDone === opt.id
                             ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
                             : 'bg-white border-neutral-200 text-neutral-700 hover:border-rose-300 hover:bg-rose-50/40'
                         }`}
@@ -2095,7 +2199,11 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   id="hasPaymentCheck"
                   disabled={isClosed}
                   checked={hasPayment}
-                  onChange={(e) => setHasPayment(e.target.checked)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setHasPayment(checked);
+                    syncConfirmationWithBlocks(checked, hasProducts, hasReturns);
+                  }}
                   className="w-4 h-4 text-rose-600 rounded cursor-pointer"
                 />
               </div>
@@ -2180,7 +2288,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
                             onChange={(e) => {
                               const checked = e.target.checked;
                               setIsPaymentUzsMode(checked);
-                              if (checked && numExchangeRate > 0) {
+                              if (!checked) {
+                                setHasExtraDirectUsd(false);
+                                setExtraDirectUsdAmount('');
+                              } else if (numExchangeRate > 0) {
                                 // Sync UZS from existing USD if UZS was empty
                                 setMethodAmountsUzs((prevUzs) => {
                                   const nextUzs = { ...prevUzs };
@@ -2336,12 +2447,122 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     })}
                   </div>
 
+                  {/* So'mda (UZS) konvertatsiya yoqilganda pastda Dollarni ($) o'zini ham qo'shimcha kiritish imkoniyati */}
+                  {isPaymentUzsMode && (
+                    <div className="space-y-2.5">
+                      <button
+                        type="button"
+                        disabled={isClosed}
+                        onClick={() => {
+                          setHasExtraDirectUsd((prev) => {
+                            const next = !prev;
+                            if (!next) setExtraDirectUsdAmount('');
+                            return next;
+                          });
+                        }}
+                        className={`w-full px-3.5 py-2.5 rounded-xl border text-xs font-extrabold transition cursor-pointer flex items-center justify-between gap-2 ${
+                          hasExtraDirectUsd
+                            ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                            : 'bg-white hover:bg-emerald-50 text-emerald-900 border-emerald-300 shadow-2xs'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <DollarSign className="w-4 h-4 shrink-0" />
+                          <span>So&apos;mdan tashqari dollarni ($) o&apos;zini ham qo&apos;shimcha kiritish</span>
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            hasExtraDirectUsd
+                              ? 'bg-white/20 text-white'
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}
+                        >
+                          {hasExtraDirectUsd ? 'Faol ✓' : "+ Dollar ($) qo'shish"}
+                        </span>
+                      </button>
+
+                      {hasExtraDirectUsd && (
+                        <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-300 space-y-2.5 animate-in fade-in duration-100">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <span className="text-xs font-extrabold text-emerald-950 flex items-center gap-1.5">
+                              <DollarSign className="w-3.5 h-3.5 text-emerald-700" />
+                              <span>So&apos;mga qo&apos;shimcha to&apos;g&apos;ridan-to&apos;g&apos;ri Dollar ($) kiritish</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setHasExtraDirectUsd(false);
+                                setExtraDirectUsdAmount('');
+                              }}
+                              className="text-[11px] font-semibold text-neutral-500 hover:text-rose-600 cursor-pointer"
+                            >
+                              Yopish ✕
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div>
+                              <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                                Qo&apos;shimcha Dollar (USD $) summasi
+                              </label>
+                              <input
+                                type="number"
+                                disabled={isClosed}
+                                min="0"
+                                step="any"
+                                placeholder="Masalan: 50"
+                                value={extraDirectUsdAmount}
+                                onChange={(e) =>
+                                  setExtraDirectUsdAmount(
+                                    e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                                  )
+                                }
+                                className="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-white font-mono font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-emerald-600"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                                Qo&apos;shimcha Dollar ($) to&apos;lov turi
+                              </label>
+                              <select
+                                disabled={isClosed}
+                                value={extraDirectUsdMethod}
+                                onChange={(e) =>
+                                  setExtraDirectUsdMethod(e.target.value as FinancialMethodType)
+                                }
+                                className="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-white font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-emerald-600 h-[38px]"
+                              >
+                                {FINANCIAL_PAYMENT_METHODS.map((m) => (
+                                  <option key={m.id} value={m.id}>
+                                    {m.label} (Dollar $)
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+
+                          {numExtraDirectUsd > 0 && (
+                            <div className="text-[11px] font-mono font-bold text-emerald-900 bg-white px-2.5 py-1.5 rounded-lg border border-emerald-200 flex items-center justify-between flex-wrap gap-2">
+                              <span>
+                                So&apos;mdan: {formatMoney(Math.max(0, Math.round((totalPaymentUsd - numExtraDirectUsd) * 100) / 100))} + Dollar o&apos;zi: {formatMoney(numExtraDirectUsd)}
+                              </span>
+                              <span className="text-emerald-800 font-black">
+                                Jami: {formatMoney(totalPaymentUsd)}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Umumiy jami to'lov (Barcha tanlangan to'lov turlari yig'indisi) */}
                   {activePaymentSplits.length > 0 && (
                     <div className="p-3 rounded-xl bg-emerald-50/90 border border-emerald-300 space-y-1.5">
                       <div className="text-[11px] font-bold text-emerald-950 flex flex-wrap items-center gap-x-2 gap-y-1">
                         {activePaymentSplits.map((sp, i) => (
-                          <React.Fragment key={sp.method}>
+                          <React.Fragment key={`${sp.method}_${i}`}>
                             {i > 0 && <span className="text-emerald-700 font-black">+</span>}
                             <span className="bg-white px-2 py-0.5 rounded-lg border border-emerald-200 font-mono text-[11px]">
                               <strong>{sp.methodLabel}:</strong>{' '}
@@ -2422,6 +2643,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                         setIsEditingSoldProducts(false);
                         setHasProducts(false);
                         setProducts([createEmptyProductRow()]);
+                        syncConfirmationWithBlocks(hasPayment, false, hasReturns);
                       }}
                       className="px-2.5 py-1 rounded-lg bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-300 text-[11px] font-bold transition cursor-pointer"
                     >
@@ -2439,6 +2661,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       if (!checked && isEditingSoldProducts) {
                         setIsEditingSoldProducts(false);
                       }
+                      syncConfirmationWithBlocks(hasPayment, checked, hasReturns);
                     }}
                     className="w-4 h-4 text-rose-600 rounded cursor-pointer"
                   />
@@ -2994,7 +3217,10 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                   onChange={(e) => {
                                     const checked = e.target.checked;
                                     setIsDeliveryUzsMode(checked);
-                                    if (checked && numExchangeRate > 0) {
+                                    if (!checked) {
+                                      setHasExtraDeliveryDirectUsd(false);
+                                      setExtraDeliveryDirectUsdAmount('');
+                                    } else if (numExchangeRate > 0) {
                                       setDeliveryAmountsUzs((prevUzs) => {
                                         const nextUzs = { ...prevUzs };
                                         selectedDeliveryMethods.forEach((mId) => {
@@ -3182,12 +3408,126 @@ export const ExecutePlanModal: React.FC<Props> = ({
                             })}
                           </div>
 
+                          {/* So'mda (UZS) konvertatsiya yoqilganda pastda Dollarni ($) o'zini ham qo'shimcha kiritish imkoniyati (3-blok uchun) */}
+                          {isDeliveryUzsMode && (
+                            <div className="space-y-2.5">
+                              <button
+                                type="button"
+                                disabled={isProductSectionLocked}
+                                onClick={() => {
+                                  setHasExtraDeliveryDirectUsd((prev) => {
+                                    const next = !prev;
+                                    if (!next) {
+                                      setExtraDeliveryDirectUsdAmount('');
+                                    } else if (deliveryPayMode === 'full') {
+                                      setDeliveryPayMode('partial');
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className={`w-full px-3.5 py-2.5 rounded-xl border text-xs font-extrabold transition cursor-pointer flex items-center justify-between gap-2 ${
+                                  hasExtraDeliveryDirectUsd
+                                    ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                                    : 'bg-white hover:bg-emerald-50 text-emerald-900 border-emerald-300 shadow-2xs'
+                                }`}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <DollarSign className="w-4 h-4 shrink-0" />
+                                  <span>So&apos;mdan tashqari dollarni ($) o&apos;zini ham qo&apos;shimcha kiritish</span>
+                                </span>
+                                <span
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                    hasExtraDeliveryDirectUsd
+                                      ? 'bg-white/20 text-white'
+                                      : 'bg-emerald-100 text-emerald-800'
+                                  }`}
+                                >
+                                  {hasExtraDeliveryDirectUsd ? 'Faol ✓' : "+ Dollar ($) qo'shish"}
+                                </span>
+                              </button>
+
+                              {hasExtraDeliveryDirectUsd && (
+                                <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-300 space-y-2.5 animate-in fade-in duration-100">
+                                  <div className="flex items-center justify-between flex-wrap gap-2">
+                                    <span className="text-xs font-extrabold text-emerald-950 flex items-center gap-1.5">
+                                      <DollarSign className="w-3.5 h-3.5 text-emerald-700" />
+                                      <span>So&apos;mga qo&apos;shimcha to&apos;g&apos;ridan-to&apos;g&apos;ri Dollar ($) kiritish</span>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      disabled={isProductSectionLocked}
+                                      onClick={() => {
+                                        setHasExtraDeliveryDirectUsd(false);
+                                        setExtraDeliveryDirectUsdAmount('');
+                                      }}
+                                      className="text-[11px] font-semibold text-neutral-500 hover:text-rose-600 cursor-pointer"
+                                    >
+                                      Yopish ✕
+                                    </button>
+                                  </div>
+
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                                        Qo&apos;shimcha Dollar (USD $) summasi
+                                      </label>
+                                      <input
+                                        type="number"
+                                        disabled={isProductSectionLocked}
+                                        min="0"
+                                        step="any"
+                                        placeholder="Masalan: 50"
+                                        value={extraDeliveryDirectUsdAmount}
+                                        onChange={(e) => {
+                                          const val = e.target.value === '' ? '' : parseFloat(e.target.value) || 0;
+                                          setExtraDeliveryDirectUsdAmount(val);
+                                        }}
+                                        className="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-white font-mono font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-emerald-600"
+                                      />
+                                    </div>
+
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-emerald-900 mb-1">
+                                        Qo&apos;shimcha Dollar ($) to&apos;lov turi
+                                      </label>
+                                      <select
+                                        disabled={isProductSectionLocked}
+                                        value={extraDeliveryDirectUsdMethod}
+                                        onChange={(e) =>
+                                          setExtraDeliveryDirectUsdMethod(e.target.value as FinancialMethodType)
+                                        }
+                                        className="w-full px-3 py-2 rounded-xl border border-emerald-300 bg-white font-bold text-xs sm:text-sm text-neutral-900 outline-none focus:border-emerald-600 h-[38px]"
+                                      >
+                                        {FINANCIAL_PAYMENT_METHODS.map((m) => (
+                                          <option key={m.id} value={m.id}>
+                                            {m.label} (Dollar $)
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  </div>
+
+                                  {numExtraDeliveryDirectUsd > 0 && (
+                                    <div className="text-[11px] font-mono font-bold text-emerald-900 bg-white px-2.5 py-1.5 rounded-lg border border-emerald-200 flex items-center justify-between flex-wrap gap-2">
+                                      <span>
+                                        So&apos;mdan: {formatMoney(Math.max(0, Math.round((totalDeliveryPaidUsd - numExtraDeliveryDirectUsd) * 100) / 100))} + Dollar o&apos;zi: {formatMoney(numExtraDeliveryDirectUsd)}
+                                      </span>
+                                      <span className="text-emerald-800 font-black">
+                                        Jami to&apos;lov: {formatMoney(totalDeliveryPaidUsd)}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {/* Umumiy to'langan va Qolgan nasiya (qarz) xulosasi */}
                           <div className="p-3.5 rounded-xl bg-emerald-50/90 border border-emerald-300 space-y-2">
                             {activeDeliverySplits.length > 0 && (
                               <div className="text-[11px] font-bold text-emerald-950 flex flex-wrap items-center gap-x-2 gap-y-1">
                                 {activeDeliverySplits.map((sp, i) => (
-                                  <React.Fragment key={sp.method}>
+                                  <React.Fragment key={`${sp.method}_${i}`}>
                                     {i > 0 && <span className="text-emerald-700 font-black">+</span>}
                                     <span className="bg-white px-2 py-0.5 rounded-lg border border-emerald-200 font-mono text-[11px]">
                                       <strong>{sp.methodLabel}:</strong>{' '}
@@ -3266,41 +3606,62 @@ export const ExecutePlanModal: React.FC<Props> = ({
             {/* ========================================================= */}
             {/* SECTION 4: MAHSULOTLARNI OMBORGA QAYTARISH (4.1 va 4.2) */}
             {/* ========================================================= */}
-            {showReturnSection && (
-              <div className="space-y-3 pt-3 border-t border-rose-100 animate-in fade-in duration-150">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2">
-                    <div className="w-6 h-6 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
-                      <Undo2 className="w-3.5 h-3.5 stroke-[2.5]" />
-                    </div>
-                    <div>
-                      <label className="text-xs font-bold text-neutral-900 uppercase tracking-wide block">
-                        4. Mahsulotlarni omborga qaytarish (4.1 va 4.2)
-                      </label>
-                      <span className="text-[10px] text-neutral-500">
-                        Joyiga borilganda mijoz qaytargan tovarlarni ombor zaxirasiga qo'shish
-                      </span>
-                    </div>
+            <div className="space-y-3 pt-3 border-t border-rose-100">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
+                    <Undo2 className="w-3.5 h-3.5 stroke-[2.5]" />
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    {totalReturnCount > 0 && (
-                      <>
-                        <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200 font-mono">
-                          {totalReturnCount} ta tovar qaytarilmoqda
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleOpenNakladnoy}
-                          className="flex items-center gap-1 text-xs font-bold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 px-2.5 py-1 rounded-lg border border-neutral-300 cursor-pointer"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                          <span>Print / Yuk xati (PDF)</span>
-                        </button>
-                      </>
-                    )}
+                  <div>
+                    <label
+                      htmlFor="hasReturnsCheck"
+                      className="text-xs font-bold text-neutral-900 uppercase tracking-wide block cursor-pointer"
+                    >
+                      4. Mahsulotlarni omborga qaytarish (4.1 va 4.2)
+                    </label>
+                    <span className="text-[10px] text-neutral-500">
+                      Mijoz qaytargan tovarlarni ombor zaxirasiga qo&apos;shish
+                    </span>
                   </div>
                 </div>
+
+                <div className="flex items-center gap-2">
+                  {hasReturns && totalReturnCount > 0 && (
+                    <>
+                      <span className="text-[11px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200 font-mono">
+                        {totalReturnCount} ta tovar qaytarilmoqda
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleOpenNakladnoy}
+                        className="flex items-center gap-1 text-xs font-bold text-neutral-800 bg-neutral-100 hover:bg-neutral-200 px-2.5 py-1 rounded-lg border border-neutral-300 cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Print / Yuk xati (PDF)</span>
+                      </button>
+                    </>
+                  )}
+                  <input
+                    type="checkbox"
+                    id="hasReturnsCheck"
+                    disabled={isClosed}
+                    checked={hasReturns}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setHasReturns(checked);
+                      if (!checked) {
+                        setReturnsMap({});
+                        setHasExtraReturns(false);
+                      }
+                      syncConfirmationWithBlocks(hasPayment, hasProducts, checked);
+                    }}
+                    className="w-4 h-4 text-rose-600 rounded cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              {hasReturns && (
+                <div className="space-y-3 animate-in fade-in duration-150">
 
                 {/* 4.1: Berilgan mahsulotlarni omborga qaytarish */}
                 <div className="p-3.5 bg-rose-50/30 rounded-2xl border border-rose-200/80 space-y-2.5">
@@ -3569,13 +3930,14 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     )}
                   </div>
                 )}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
 
             {/* SECTION 5: Hisobot Izohi */}
             <div className="space-y-1.5 pt-3 border-t border-rose-100">
               <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wide">
-                {showReturnSection ? '5. Umumiy hisobot izohi' : '4. Umumiy hisobot izohi'}
+                5. Umumiy hisobot izohi
               </label>
               <textarea
                 rows={2}
@@ -3603,9 +3965,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     />
                     <span className="text-xs font-extrabold text-amber-900 uppercase tracking-wide flex items-center gap-1.5">
                       <BellRing className="w-4 h-4 text-amber-600" />
-                      {showReturnSection
-                        ? "6. Eslatma qo'yish (Tanlangan sanaga eslatma)"
-                        : "5. Eslatma qo'yish (Tanlangan sanaga eslatma)"}
+                      6. Eslatma qo&apos;yish (Tanlangan sanaga eslatma)
                     </span>
                   </label>
                   {hasReminder && (
