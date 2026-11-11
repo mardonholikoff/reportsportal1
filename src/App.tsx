@@ -658,14 +658,27 @@ export default function App() {
           setDailyPlans([...freshPlans]);
           setExecutingPlanItem((prev) => {
             if (!prev) return null;
-            const prevOpen = !prev.isClosed && prev.status !== 'yopildi';
+            const prevOpen = Boolean(
+              (prev.reopenedAt && !prev.closedAt) ||
+                (!prev.isClosed && prev.status !== 'yopildi')
+            );
             const exactMatch = freshPlans.find((p) => p.id === prev.id);
             if (exactMatch) {
               const nextClosed = Boolean(
-                exactMatch.isClosed || exactMatch.status === 'yopildi'
+                (exactMatch.isClosed || exactMatch.status === 'yopildi') &&
+                  !(exactMatch.reopenedAt && !exactMatch.closedAt)
               );
               if (prevOpen && nextClosed) return prev;
               return exactMatch;
+            }
+            const openClientMatch = freshPlans.find(
+              (p) =>
+                p.clientId === prev.clientId &&
+                ((p.reopenedAt && !p.closedAt) ||
+                  (!p.isClosed && p.status !== 'yopildi'))
+            );
+            if (openClientMatch) {
+              return openClientMatch;
             }
             const prevDateKey =
               prev.planDate || (prev.createdAt ? prev.createdAt.slice(0, 10) : '');
@@ -677,7 +690,8 @@ export default function App() {
             });
             if (sameDateMatch) {
               const nextClosed = Boolean(
-                sameDateMatch.isClosed || sameDateMatch.status === 'yopildi'
+                (sameDateMatch.isClosed || sameDateMatch.status === 'yopildi') &&
+                  !(sameDateMatch.reopenedAt && !sameDateMatch.closedAt)
               );
               if (prevOpen && nextClosed) return prev;
               return sameDateMatch;
@@ -1675,8 +1689,22 @@ export default function App() {
                   onOpenCreatePlan={() => setIsCreatePlanOpen(true)}
                   onOpenMonthlyPlan={() => setAgentActiveTab('oylik_reja')}
                   onOpenExecuteModal={(item, editSold) => {
+                    const latestPlans = storageService.getActive24hPlans();
+                    const exact = latestPlans.find((p) => p.id === item.id);
+                    const openForClient = latestPlans.find(
+                      (p) =>
+                        p.clientId === item.clientId &&
+                        ((p.reopenedAt && !p.closedAt) ||
+                          (!p.isClosed && p.status !== 'yopildi'))
+                    );
+                    const resolved =
+                      exact &&
+                      ((exact.reopenedAt && !exact.closedAt) ||
+                        (!exact.isClosed && exact.status !== 'yopildi'))
+                        ? exact
+                        : openForClient || exact || item;
                     setExecutingPlanEditSoldMode(Boolean(editSold));
-                    setExecutingPlanItem(item);
+                    setExecutingPlanItem(resolved);
                   }}
                   onMarkPlannedActionDone={(item) =>
                     handleSavePlanReport(item.id, {
@@ -2102,8 +2130,22 @@ export default function App() {
                     clients={clients}
                     onRemovePlanItems={handleRemoveDailyPlanItems}
                     onOpenExecuteModal={(item, editSold) => {
+                      const latestPlans = storageService.getActive24hPlans();
+                      const exact = latestPlans.find((p) => p.id === item.id);
+                      const openForClient = latestPlans.find(
+                        (p) =>
+                          p.clientId === item.clientId &&
+                          ((p.reopenedAt && !p.closedAt) ||
+                            (!p.isClosed && p.status !== 'yopildi'))
+                      );
+                      const resolved =
+                        exact &&
+                        ((exact.reopenedAt && !exact.closedAt) ||
+                          (!exact.isClosed && exact.status !== 'yopildi'))
+                          ? exact
+                          : openForClient || exact || item;
                       setExecutingPlanEditSoldMode(Boolean(editSold));
-                      setExecutingPlanItem(item);
+                      setExecutingPlanItem(resolved);
                     }}
                   />
                 </div>
@@ -2320,6 +2362,13 @@ export default function App() {
         onUpdateSoldProducts={handleUpdateSoldProducts}
         onCloseWithoutAction={(planId, reason, closeDate) => handleClosePlanItem(planId, reason, true, closeDate)}
         onSaveReminder={handleSaveReminder}
+        onQuickReopen={async (planId) => {
+          await handleReopenPlanItems([planId], "Hisob-kitobga tuzatish kiritish uchun");
+          const fresh = storageService.getActive24hPlans().find((p) => p.id === planId);
+          if (fresh) {
+            setExecutingPlanItem({ ...fresh, isClosed: false, status: 'rejalashtirilgan' });
+          }
+        }}
         client={executingPlanItem ? clients.find((c) => c.id === executingPlanItem.clientId) : null}
         warehouseProducts={warehouseProducts}
       />

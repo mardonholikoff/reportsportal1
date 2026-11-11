@@ -90,6 +90,7 @@ interface Props {
     closeDate?: string
   ) => void;
   initialEditSoldProducts?: boolean;
+  onQuickReopen?: (planItemId: string) => void;
   client?: Client | null;
   warehouseProducts?: WarehouseProduct[];
 }
@@ -397,6 +398,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   onSaveReminder,
   onUpdateSoldProducts,
   initialEditSoldProducts = false,
+  onQuickReopen,
   client,
   warehouseProducts,
 }) => {
@@ -1602,7 +1604,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
   const executeSaveReport = (closeAfterSave: boolean) => {
     if (!planItem) return;
-    const isClosed = planItem.isClosed || planItem.status === 'yopildi';
+    const isReopenedActive = Boolean(planItem.reopenedAt && !planItem.closedAt);
+    const isClosed = !isReopenedActive && Boolean(planItem.isClosed || planItem.status === 'yopildi');
     if (isClosed && !isEditingSoldProducts) return;
 
     // 1. Financial data (Section 2 - supports single or multiple payment methods)
@@ -1870,7 +1873,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
   if (!isOpen || !planItem) return null;
 
-  const isClosed = planItem.isClosed || planItem.status === 'yopildi';
+  const isReopenedActive = Boolean(planItem.reopenedAt && !planItem.closedAt);
+  const isClosed = !isReopenedActive && Boolean(planItem.isClosed || planItem.status === 'yopildi');
   const isProductSectionLocked = isClosed && !isEditingSoldProducts;
   const totalDiscountAll = Math.max(
     0,
@@ -2005,18 +2009,29 @@ export const ExecutePlanModal: React.FC<Props> = ({
             </div>
 
             {isClosed && (
-              <div className="p-3.5 rounded-2xl bg-neutral-100 border border-neutral-300 flex items-center gap-2.5 text-neutral-800">
-                <Lock className="w-5 h-5 text-neutral-600 shrink-0" />
-                <div className="text-xs">
-                  <span className="font-bold block text-neutral-900">
-                    Ushbu mijoz bo'yicha reja yakunlangan va yopilgan!
-                  </span>
-                  <span className="text-neutral-500">
-                    {hasExistingSoldProducts
-                      ? "Mahsulotlarga yoki to'lov turiga o'zgartirish kiritish uchun avval rejani 'Qayta ochish' tugmasi orqali oching."
-                      : "Barcha amallar bajarib bo'lingan."}
-                  </span>
+              <div className="p-3.5 rounded-2xl bg-neutral-100 border border-neutral-300 flex items-center justify-between flex-wrap gap-2.5 text-neutral-800">
+                <div className="flex items-center gap-2.5">
+                  <Lock className="w-5 h-5 text-neutral-600 shrink-0" />
+                  <div className="text-xs">
+                    <span className="font-bold block text-neutral-900">
+                      Ushbu mijoz bo&apos;yicha reja yakunlangan va yopilgan!
+                    </span>
+                    <span className="text-neutral-500">
+                      {hasExistingSoldProducts
+                        ? "Mahsulotlarga yoki to'lov turiga o'zgartirish kiritish uchun avval rejani 'Qayta ochish' tugmasi orqali oching."
+                        : "Barcha amallar bajarib bo'lingan."}
+                    </span>
+                  </div>
                 </div>
+                {onQuickReopen && (
+                  <button
+                    type="button"
+                    onClick={() => onQuickReopen(planItem.id)}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition cursor-pointer shadow-2xs shrink-0"
+                  >
+                    Qayta ochish va tahrirlash
+                  </button>
+                )}
               </div>
             )}
 

@@ -872,9 +872,46 @@ class StorageService {
       }
     }
 
-    const uniquePlans = Array.from(byClient.values()).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    const dedupedByDate = Array.from(byClient.values());
+    const openClientIds = new Set<string>(
+      dedupedByDate
+        .filter((p) => !p.isClosed && p.status !== 'yopildi')
+        .map((p) => p.clientId)
     );
+
+    // Agar mijozning faol (ochiq yoki qayta ochilgan) rejasi bo'lsa, shu mijozning boshqa sanadagi bo'sh "bajarilmasdan yopilgan" dublikat yozuvlarini tozalaymiz
+    const filteredPlans: DailyPlanItem[] = [];
+    for (const p of dedupedByDate) {
+      const isClosed = Boolean(p.isClosed || p.status === 'yopildi');
+      if (isClosed && openClientIds.has(p.clientId) && p.closedWithoutAction) {
+        const hasProds = Boolean(p.productsDelivered && p.productsDelivered.length > 0);
+        const hasFin = Boolean(p.financialAction && p.financialAction.amount > 0);
+        const hasHistOps = Boolean(
+          p.actionsHistory &&
+            p.actionsHistory.some(
+              (a) =>
+                (a.productsDelivered && a.productsDelivered.length > 0) ||
+                (a.financialAction && a.financialAction.amount > 0)
+            )
+        );
+        if (!hasProds && !hasFin && !hasHistOps) {
+          duplicateIds.push(p.id);
+          continue;
+        }
+      }
+      filteredPlans.push(p);
+    }
+
+    // Ochiq va qayta ochilgan rejalar har doim ro'yxatning boshida turadi
+    const uniquePlans = filteredPlans.sort((a, b) => {
+      const aOpen = !a.isClosed && a.status !== 'yopildi';
+      const bOpen = !b.isClosed && b.status !== 'yopildi';
+      if (aOpen && !bOpen) return -1;
+      if (!aOpen && bOpen) return 1;
+      const aTime = new Date((aOpen ? a.reopenedAt : a.closedAt) || a.createdAt || 0).getTime();
+      const bTime = new Date((bOpen ? b.reopenedAt : b.closedAt) || b.createdAt || 0).getTime();
+      return bTime - aTime;
+    });
 
     return { uniquePlans, duplicateIds };
   }
@@ -1074,6 +1111,12 @@ class StorageService {
     if (planIndex === -1) return { success: false };
 
     const plan = plans[planIndex];
+    if (plan.reopenedAt && !plan.closedAt) {
+      plan.isClosed = false;
+      if (plan.status === 'yopildi') {
+        plan.status = 'rejalashtirilgan';
+      }
+    }
     if (plan.isClosed) {
       return { success: false }; // Yopilgan mijoz ustida qaytib amal bajarib bo'lmaydi
     }
@@ -1554,6 +1597,7 @@ class StorageService {
     plan.closedAt = effectiveClosedAt;
     plan.closedBy = author;
     plan.closeReason = finalReason;
+    delete plan.reopenedAt;
     plans[planIndex] = plan;
     this.saveDailyPlans(plans);
 

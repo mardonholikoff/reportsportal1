@@ -572,6 +572,10 @@ export async function syncPlanToFirestore(plan: DailyPlanItem): Promise<void> {
       if (!payload.status || payload.status === 'yopildi') {
         payload.status = 'rejalashtirilgan';
       }
+    } else {
+      payload.isClosed = true;
+      payload.status = 'yopildi';
+      payload.reopenedAt = null;
     }
     await setDoc(doc(db, 'dailyPlans', plan.id), payload);
   } catch (e) {
@@ -598,6 +602,10 @@ export async function syncPlansBulkToFirestore(plans: DailyPlanItem[]): Promise<
           if (!payload.status || payload.status === 'yopildi') {
             payload.status = 'rejalashtirilgan';
           }
+        } else {
+          payload.isClosed = true;
+          payload.status = 'yopildi';
+          payload.reopenedAt = null;
         }
         batch.set(doc(db, 'dailyPlans', p.id), payload);
       }
