@@ -622,9 +622,31 @@ export default function App() {
 
           const cleanRemote = remotePlans.filter((p) => !deletedIds.has(p.clientId));
 
+          // Preserve local recently reopened plans against in-flight snapshots
+          const localPlansById = new Map(
+            storageService.getDailyPlans().map((lp) => [lp.id, lp])
+          );
+          const reconciledRemote = cleanRemote.map((rp) => {
+            const lp = localPlansById.get(rp.id);
+            if (
+              lp &&
+              !lp.isClosed &&
+              lp.status !== 'yopildi' &&
+              lp.reopenedAt &&
+              (rp.isClosed || rp.status === 'yopildi')
+            ) {
+              const localReopenMs = new Date(lp.reopenedAt).getTime();
+              const remoteClosedMs = new Date(rp.closedAt || rp.completedAt || 0).getTime();
+              if (localReopenMs > remoteClosedMs) {
+                return lp;
+              }
+            }
+            return rp;
+          });
+
           // Deduplicate by clientId+planDate so each client appears once per date, and remove duplicate docs from Firestore
           const { uniquePlans, duplicateIds } =
-            storageService.deduplicatePlansByClient(cleanRemote);
+            storageService.deduplicatePlansByClient(reconciledRemote);
           if (duplicateIds.length > 0) {
             duplicateIds.forEach((dupId) => {
               deletePlanFromFirestore(dupId);
@@ -634,9 +656,34 @@ export default function App() {
           storageService.saveDailyPlans(uniquePlans);
           const freshPlans = storageService.getActive24hPlans();
           setDailyPlans([...freshPlans]);
-          setExecutingPlanItem((prev) =>
-            prev ? freshPlans.find((p) => p.id === prev.id || p.clientId === prev.clientId) || prev : null
-          );
+          setExecutingPlanItem((prev) => {
+            if (!prev) return null;
+            const prevOpen = !prev.isClosed && prev.status !== 'yopildi';
+            const exactMatch = freshPlans.find((p) => p.id === prev.id);
+            if (exactMatch) {
+              const nextClosed = Boolean(
+                exactMatch.isClosed || exactMatch.status === 'yopildi'
+              );
+              if (prevOpen && nextClosed) return prev;
+              return exactMatch;
+            }
+            const prevDateKey =
+              prev.planDate || (prev.createdAt ? prev.createdAt.slice(0, 10) : '');
+            const sameDateMatch = freshPlans.find((p) => {
+              if (p.clientId !== prev.clientId) return false;
+              const pDateKey =
+                p.planDate || (p.createdAt ? p.createdAt.slice(0, 10) : '');
+              return pDateKey === prevDateKey;
+            });
+            if (sameDateMatch) {
+              const nextClosed = Boolean(
+                sameDateMatch.isClosed || sameDateMatch.status === 'yopildi'
+              );
+              if (prevOpen && nextClosed) return prev;
+              return sameDateMatch;
+            }
+            return prev;
+          });
         }
       },
       onWarehouseChange: (remoteProducts: WarehouseProduct[]) => {
@@ -2264,6 +2311,7 @@ export default function App() {
       <ExecutePlanModal
         planItem={executingPlanItem}
         isOpen={!!executingPlanItem}
+        initialEditSoldProducts={executingPlanEditSoldMode}
         onClose={() => {
           setExecutingPlanItem(null);
           setExecutingPlanEditSoldMode(false);

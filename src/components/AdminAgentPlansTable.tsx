@@ -136,14 +136,16 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     return [];
   };
 
-  // Har bir mijoz rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz) va 7 kundan oshgan yopilganlarni yashirish
+  // Har bir mijoz bir sanadagi rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz) va 7 kundan oshgan yopilganlarni yashirish
   const uniquePlans = useMemo(() => {
-    const byClient = new Map<string, DailyPlanItem>();
+    const byClientDate = new Map<string, DailyPlanItem>();
     for (const p of plans) {
       if (!p || !p.clientId || isClosedPlanExpired7Days(p)) continue;
-      const existing = byClient.get(p.clientId);
+      const pDateKey = p.planDate ? p.planDate.slice(0, 10) : (p.createdAt ? p.createdAt.slice(0, 10) : '');
+      const key = `${p.clientId}_${pDateKey}`;
+      const existing = byClientDate.get(key);
       if (!existing) {
-        byClient.set(p.clientId, p);
+        byClientDate.set(key, p);
       } else {
         const eOpen = !existing.isClosed && existing.status !== 'yopildi';
         const cOpen = !p.isClosed && p.status !== 'yopildi';
@@ -154,19 +156,19 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
         if (cOpen && !eOpen) {
           // Ochiq reja har doim eski yopilgan rejadan ustun
-          byClient.set(p.clientId, p);
+          byClientDate.set(key, p);
         } else if (eOpen && !cOpen) {
           // Mavjud ochiq reja eski yopilgan reja bilan almashtirilmaydi
         } else if (cReopenFresh && !eReopenFresh) {
-          byClient.set(p.clientId, p);
+          byClientDate.set(key, p);
         } else if (eReopenFresh && !cReopenFresh) {
           // keep existing
         } else if (cTime >= eTime) {
-          byClient.set(p.clientId, p);
+          byClientDate.set(key, p);
         }
       }
     }
-    return Array.from(byClient.values());
+    return Array.from(byClientDate.values());
   }, [plans]);
 
   // Mijoz bo'yicha reja yopilganligini tekshirish (yopilganlar Bajarildi ichida, ochiqlari Jarayonda)

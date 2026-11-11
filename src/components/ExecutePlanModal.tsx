@@ -650,14 +650,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
   // Reset form when modal opens for a planItem
   useEffect(() => {
     if (isOpen && planItem) {
-      // Reja faqat moliyaviy yoki mahsulot amali bo'lsagina avval bajarilgan deb hisoblanadi
-      const hasActualOps = Boolean(
-        (planItem.financialAction && planItem.financialAction.amount > 0) ||
-        (planItem.productsDelivered && planItem.productsDelivered.length > 0) ||
-        (planItem.productsReturned && planItem.productsReturned.length > 0)
-      );
+      // Oyna ochilganda avtomatik "Bajarildi" bo'lib qolmaydi — faqat 2, 3 yoki 4-blok belgilanganda (yoki tasdiqlanganda) "Bajarildi"ga o'tadi
       setActionDone(planItem.actionDone || planItem.plannedAction || 'joyiga borildi');
-      setIsPlannedActionConfirmed(hasActualOps);
+      setIsPlannedActionConfirmed(false);
       setShowExtraActionSelector(false);
       setCloseDate(getTodayDateStr());
       setHasPayment(false);
@@ -2668,6 +2663,42 @@ export const ExecutePlanModal: React.FC<Props> = ({
                 </div>
               </div>
 
+              {!isClosed && hasExistingSoldProducts && !hasProducts && !isEditingSoldProducts && (
+                <div className="p-3 rounded-2xl bg-indigo-50/80 border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="text-xs text-indigo-950">
+                    <span className="font-bold block">
+                      Ushbu rejada oldin topshirilgan mahsulotlar mavjud ({existingSoldData.productsDelivered.length} turdagi tovar):
+                    </span>
+                    <span className="text-[11px] text-indigo-800">
+                      {existingSoldData.productsDelivered
+                        .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
+                        .join(', ')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => loadSoldProductsIntoForm(existingSoldData)}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>Berilgan mahsulotlarni tahrirlash</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHasProducts(true);
+                        syncConfirmationWithBlocks(hasPayment, true, hasReturns);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-800 border border-rose-200 text-xs font-bold transition cursor-pointer flex items-center gap-1"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Yangi mahsulot qo&apos;shish</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {hasProducts && (
                 <div className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3.5 animate-in fade-in duration-100">
                   <div className="flex items-center justify-between flex-wrap gap-2">
@@ -2683,7 +2714,17 @@ export const ExecutePlanModal: React.FC<Props> = ({
                           : "Aktual narxga foiz (%) yoki summa (USD) chegirma qo'llash mumkin"}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {!isClosed && hasExistingSoldProducts && !isEditingSoldProducts && (
+                        <button
+                          type="button"
+                          onClick={() => loadSoldProductsIntoForm(existingSoldData)}
+                          className="flex items-center gap-1 text-xs font-bold text-indigo-800 bg-indigo-50 px-2.5 py-1.5 rounded-lg border border-indigo-200 hover:bg-indigo-100 cursor-pointer shadow-2xs"
+                        >
+                          <Edit3 className="w-3.5 h-3.5 text-indigo-700" />
+                          <span>Oldin berilgan mahsulotlarni tahrirlash</span>
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={handleOpenNakladnoy}
