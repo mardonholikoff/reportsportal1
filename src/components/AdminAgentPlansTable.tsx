@@ -1,7 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { Client, DailyPlanItem } from '../types';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
-import { storageService, isClosedPlanExpired7Days, getPlanSoldProductsData } from '../services/storage';
+import {
+  storageService,
+  isClosedPlanExpired7Days,
+  getPlanSoldProductsData,
+  getPlanFinancialActionData,
+} from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import { RejaPrintModal } from './RejaPrintModal';
 import { StickyTableWrapper } from './StickyTableWrapper';
@@ -40,7 +45,11 @@ interface Props {
   plans: DailyPlanItem[];
   clients?: Client[];
   onRemovePlanItems?: (planItemIds: string[], reason: string) => void;
-  onOpenExecuteModal?: (item: DailyPlanItem, editSoldProducts?: boolean) => void;
+  onOpenExecuteModal?: (
+    item: DailyPlanItem,
+    editSoldProducts?: boolean,
+    editFinancialAction?: boolean
+  ) => void;
 }
 
 const PRESET_REMOVE_REASONS = [
@@ -136,11 +145,14 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     return [];
   };
 
-  // Har bir mijoz bir sanadagi rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz) va 7 kundan oshgan yopilganlarni yashirish
+  // Har bir mijoz bir sanadagi rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz)
+  // Maxsus kun tanlanganda yoki Barchasi/Yopilganlar ko'rilganda 7 kundan oshgan yopilgan rejalar ham to'liq ko'rinadi
   const uniquePlans = useMemo(() => {
     const byClientDate = new Map<string, DailyPlanItem>();
-    for (const p of plans) {
-      if (!p || !p.clientId || isClosedPlanExpired7Days(p)) continue;
+    const sourceList = dateFilter !== 'all' || statusFilter !== 'jarayonda' ? allSystemPlans : plans;
+    for (const p of sourceList) {
+      if (!p || !p.clientId) continue;
+      if (dateFilter === 'all' && statusFilter === 'jarayonda' && isClosedPlanExpired7Days(p)) continue;
       const pDateKey = p.planDate ? p.planDate.slice(0, 10) : (p.createdAt ? p.createdAt.slice(0, 10) : '');
       const key = `${p.clientId}_${pDateKey}`;
       const existing = byClientDate.get(key);
@@ -169,7 +181,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       }
     }
     return Array.from(byClientDate.values());
-  }, [plans]);
+  }, [plans, allSystemPlans, dateFilter, statusFilter]);
 
   // Mijoz bo'yicha reja yopilganligini tekshirish (yopilganlar Bajarildi ichida, ochiqlari Jarayonda)
   const isPlanCompleted = (p: DailyPlanItem): boolean => {
@@ -989,7 +1001,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => setDateFilter('today')}
+            onClick={() => {
+              setDateFilter('today');
+              setStatusFilter('all');
+            }}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               dateFilter === 'today'
                 ? 'bg-rose-700 text-white shadow-2xs'
@@ -1000,7 +1015,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => setDateFilter('yesterday')}
+            onClick={() => {
+              setDateFilter('yesterday');
+              setStatusFilter('all');
+            }}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               dateFilter === 'yesterday'
                 ? 'bg-rose-700 text-white shadow-2xs'
@@ -1011,7 +1029,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => setDateFilter('custom')}
+            onClick={() => {
+              setDateFilter('custom');
+              setStatusFilter('all');
+            }}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               dateFilter === 'custom'
                 ? 'bg-rose-700 text-white shadow-2xs'
@@ -1024,7 +1045,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             <input
               type="date"
               value={customDate}
-              onChange={(e) => setCustomDate(e.target.value)}
+              onChange={(e) => {
+                setCustomDate(e.target.value);
+                setStatusFilter('all');
+              }}
               className="px-2 py-1 rounded-lg border border-neutral-300 text-xs font-mono font-medium outline-none focus:border-rose-500 bg-white"
             />
           )}
@@ -1422,10 +1446,23 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {onOpenExecuteModal &&
                         !isClosed &&
+                        getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenExecuteModal(item, false, true)}
+                            className="px-2.5 py-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                            title="Moliyaviy amaliyotga (to'lovga) o'zgartirish kiritish"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>To&apos;lovni tahrirlash</span>
+                          </button>
+                        )}
+                      {onOpenExecuteModal &&
+                        !isClosed &&
                         getPlanSoldProductsData(item).productsDelivered.length > 0 && (
                           <button
                             type="button"
-                            onClick={() => onOpenExecuteModal(item, true)}
+                            onClick={() => onOpenExecuteModal(item, true, false)}
                             className="px-2.5 py-1 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
                             title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
                           >
@@ -1934,10 +1971,23 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                       <div className="flex items-center justify-center gap-1.5">
                         {onOpenExecuteModal &&
                           !isClosed &&
+                          getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenExecuteModal(item, false, true)}
+                              className="px-2 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-[10.5px] font-bold transition cursor-pointer flex items-center gap-1 shadow-2xs"
+                              title="Moliyaviy amaliyotga (to'lovga) o'zgartirish kiritish"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>To&apos;lovni o&apos;zgartirish</span>
+                            </button>
+                          )}
+                        {onOpenExecuteModal &&
+                          !isClosed &&
                           getPlanSoldProductsData(item).productsDelivered.length > 0 && (
                             <button
                               type="button"
-                              onClick={() => onOpenExecuteModal(item, true)}
+                              onClick={() => onOpenExecuteModal(item, true, false)}
                               className="px-2 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[10.5px] font-bold transition cursor-pointer flex items-center gap-1 shadow-2xs"
                               title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
                             >
@@ -2213,7 +2263,24 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
             {/* Footer */}
             <div className="p-4 bg-neutral-50 border-t border-neutral-200 flex items-center justify-between gap-2 flex-wrap">
-              <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {onOpenExecuteModal &&
+                  !inspectedPlan.isClosed &&
+                  inspectedPlan.status !== 'yopildi' &&
+                  getPlanFinancialActionData(inspectedPlan).totalFinancialAmount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = inspectedPlan;
+                        setInspectedPlan(null);
+                        onOpenExecuteModal(target, false, true);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>Moliyaviy amaliyotga o&apos;zgartirish kiritish</span>
+                    </button>
+                  )}
                 {onOpenExecuteModal &&
                   !inspectedPlan.isClosed &&
                   inspectedPlan.status !== 'yopildi' &&
@@ -2223,7 +2290,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                       onClick={() => {
                         const target = inspectedPlan;
                         setInspectedPlan(null);
-                        onOpenExecuteModal(target, true);
+                        onOpenExecuteModal(target, true, false);
                       }}
                       className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
                     >

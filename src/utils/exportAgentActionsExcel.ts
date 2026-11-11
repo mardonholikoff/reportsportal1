@@ -4,6 +4,7 @@ export interface ActionExportItem {
   id: string;
   timestamp: string;
   agentUsername: string;
+  agents?: string[];
   clientName: string;
   clientPhone: string;
   clientLocation: string;

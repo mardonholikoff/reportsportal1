@@ -1,21 +1,15 @@
 import React, { useMemo, useState } from 'react';
 import { Client, ClientReminder, DailyPlanItem } from '../types';
 import { StickyTableWrapper } from './StickyTableWrapper';
-import { formatDate, formatMoney, getAgentDisplayName } from '../utils/format';
-import { formatPhoneList } from '../utils/exportPlansDetailedExcel';
+import { formatDate, getAgentDisplayName } from '../utils/format';
 import {
   BellRing,
   Calendar as CalendarIcon,
   ChevronLeft,
   ChevronRight,
-  CheckCircle2,
-  Clock,
-  Phone,
-  MapPin,
+  Check,
   Search,
   Trash2,
-  Play,
-  RotateCcw,
   AlertCircle,
   Filter,
 } from 'lucide-react';
@@ -68,7 +62,6 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
   currentAgent: _currentAgent,
   onToggleReminderStatus,
   onDeleteReminder,
-  onExecuteClientFromReminder,
   onViewClientHistory,
 }) => {
   const todayYMD = useMemo(() => getLocalTodayYMD(), []);
@@ -143,10 +136,10 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
       if (q) {
         const client = clientsMap.get(r.clientId);
         const nameMatch = (client?.name || r.clientName || '').toLowerCase().includes(q);
-        const phoneMatch = (client?.phone || r.clientPhone || '').toLowerCase().includes(q);
         const noteMatch = (r.note || '').toLowerCase().includes(q);
-        const addrMatch = (client?.address || r.clientAddress || '').toLowerCase().includes(q);
-        if (!nameMatch && !phoneMatch && !noteMatch && !addrMatch) return false;
+        const agentMatch = (r.agentUsername || '').toLowerCase().includes(q);
+        const completedByMatch = (r.completedBy || '').toLowerCase().includes(q);
+        if (!nameMatch && !noteMatch && !agentMatch && !completedByMatch) return false;
       }
       return true;
     });
@@ -199,7 +192,7 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
               </span>
             </div>
             <p className="text-xs text-amber-100 mt-0.5">
-              Kalendardan istalgan sanani tanlab shu kundagi eslatmalarni ko&apos;ring yoki pastdagi jadvaldan to&apos;g&apos;ridan-to&apos;g&apos;ri amal bajaring
+              Eslatmalarni kalendar bo&apos;yicha ko&apos;rish va bajarilganligini tick (✓) orqali belgilash
             </p>
           </div>
         </div>
@@ -379,6 +372,11 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
                       {cell.reminders.slice(0, 2).map((rem) => (
                         <div
                           key={rem.id}
+                          title={
+                            rem.status === 'bajarildi'
+                              ? `${rem.clientName}: ${rem.note} (Bajarildi: ${getAgentDisplayName(rem.completedBy || rem.agentUsername)})`
+                              : `${rem.clientName}: ${rem.note}`
+                          }
                           className={`truncate text-[10px] font-semibold px-1 py-0.5 rounded ${
                             rem.status === 'bajarildi'
                               ? 'bg-emerald-50 text-emerald-800 line-through'
@@ -404,7 +402,7 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
         </div>
       </div>
 
-      {/* Section 2: Reminders Filter Bar & Table Below Calendar */}
+      {/* Section 2: Reminders Filter Bar & Simplified Table Below Calendar */}
       <div className="p-4 sm:p-5 border-b border-neutral-200 bg-white flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5 text-xs font-extrabold text-neutral-700 mr-1">
@@ -445,48 +443,38 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Mijoz, telefon yoki eslatma izohi..."
+            placeholder="Mijoz ismi, eslatma matni yoki agent..."
             className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-neutral-200 bg-neutral-50 focus:bg-white focus:border-amber-500 outline-none"
           />
         </div>
       </div>
 
-      {/* Reminders Table */}
+      {/* Reminders Table: Eslatma sanasi | Mijoz ismi | Eslatma izohi (oddiy tekst) | Qo'shgan agent | Tick (Bajarildi + kim qilgani) | O'chirish */}
       {filteredReminders.length === 0 ? (
         <div className="p-8 text-center">
           <BellRing className="w-10 h-10 text-amber-300 mx-auto mb-2" />
           <p className="text-sm font-bold text-neutral-700">
             {selectedDate
               ? `${formatYMDToUz(selectedDate)} sanasi uchun eslatmalar topilmadi.`
-              : "Hozircha eslatmalar mavjud emas."}
-          </p>
-          <p className="text-xs text-neutral-500 mt-1">
-            Yopilmagan mijoz ustida &quot;Amal bajarish&quot; oynasiga kirib, &quot;Eslatma qo&apos;yish&quot; bo&apos;limidan sana va izoh belgilashingiz mumkin.
+              : 'Hozircha eslatmalar mavjud emas.'}
           </p>
         </div>
       ) : (
         <StickyTableWrapper maxHeightClassName="max-h-[520px]">
-          <table className="w-full text-left border-collapse min-w-[980px]">
+          <table className="w-full text-left border-collapse min-w-[680px]">
             <thead>
               <tr className="bg-neutral-900 text-white text-[11px] uppercase tracking-wider font-bold">
-                <th className="py-3 px-3 text-center w-12">№</th>
-                <th className="py-3 px-3 w-36">Eslatma sanasi</th>
-                <th className="py-3 px-3">Mijoz F.I.Sh va Telefon</th>
-                <th className="py-3 px-3">Manzil</th>
-                <th className="py-3 px-3 text-right">Joriy Qarz / Haqdorlik</th>
-                <th className="py-3 px-3 w-72">Eslatma izohi</th>
-                <th className="py-3 px-3">Qo&apos;ygan agent</th>
-                <th className="py-3 px-3 text-center">Holati</th>
-                <th className="py-3 px-3 text-right">Amallar</th>
+                <th className="py-3 px-3.5 w-36">Eslatma sanasi</th>
+                <th className="py-3 px-3.5 w-48">Mijoz ismi</th>
+                <th className="py-3 px-3.5">Eslatma izohi</th>
+                <th className="py-3 px-3.5 w-40">Qo&apos;shgan agent</th>
+                <th className="py-3 px-3.5 text-center w-52">Bajarildi (Tick)</th>
+                <th className="py-3 px-3.5 text-center w-20">O&apos;chirish</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200 text-xs">
-              {filteredReminders.map((rem, idx) => {
+              {filteredReminders.map((rem) => {
                 const client = clientsMap.get(rem.clientId);
-                const phones =
-                  client?.phones && client.phones.length > 0
-                    ? client.phones
-                    : [client?.phone || rem.clientPhone];
                 const isDone = rem.status === 'bajarildi';
                 const isToday = rem.reminderDate === todayYMD;
                 const isOverdue = !isDone && rem.reminderDate < todayYMD;
@@ -496,141 +484,99 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
                     key={rem.id}
                     className={`transition-colors ${
                       isDone
-                        ? 'bg-emerald-50/30 hover:bg-emerald-50/60'
+                        ? 'bg-emerald-50/30 hover:bg-emerald-50/50'
                         : isOverdue
-                        ? 'bg-rose-50/40 hover:bg-rose-50/70'
+                        ? 'bg-rose-50/30 hover:bg-rose-50/50'
                         : isToday
-                        ? 'bg-amber-50/60 hover:bg-amber-50/90'
+                        ? 'bg-amber-50/40 hover:bg-amber-50/70'
                         : 'bg-white hover:bg-neutral-50'
                     }`}
                   >
-                    <td className="py-3 px-3 text-center font-mono font-bold text-neutral-500">
-                      {idx + 1}
+                    {/* 1. Eslatma sanasi */}
+                    <td className="py-3 px-3.5 font-mono font-bold text-neutral-900 whitespace-nowrap">
+                      <span>{formatYMDToUz(rem.reminderDate)}</span>
                     </td>
-                    <td className="py-3 px-3">
-                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-mono font-extrabold text-xs bg-amber-100 text-amber-900 border border-amber-300">
-                        <CalendarIcon className="w-3.5 h-3.5 text-amber-700" />
-                        <span>{formatYMDToUz(rem.reminderDate)}</span>
+
+                    {/* 2. Mijoz ismi */}
+                    <td className="py-3 px-3.5">
+                      {client && onViewClientHistory ? (
+                        <button
+                          type="button"
+                          onClick={() => onViewClientHistory(client)}
+                          className="font-bold text-neutral-900 hover:text-amber-700 text-left cursor-pointer"
+                        >
+                          {client.name || rem.clientName}
+                        </button>
+                      ) : (
+                        <span className="font-bold text-neutral-900">
+                          {client?.name || rem.clientName}
+                        </span>
+                      )}
+                    </td>
+
+                    {/* 3. Eslatma izohi (shunchaki oddiy tekst ko'rinishida) */}
+                    <td className="py-3 px-3.5">
+                      <span
+                        className={`text-xs sm:text-sm leading-relaxed whitespace-pre-wrap ${
+                          isDone ? 'text-neutral-500 line-through' : 'text-neutral-900'
+                        }`}
+                      >
+                        {rem.note}
+                      </span>
+                    </td>
+
+                    {/* 4. Qo'shgan agent */}
+                    <td className="py-3 px-3.5 font-semibold text-neutral-800 whitespace-nowrap">
+                      {getAgentDisplayName(rem.agentUsername)}
+                    </td>
+
+                    {/* 5. Yangi Tick (Bajarildi deb belgilash va kim tick qilgani ko'rinishi) */}
+                    <td className="py-3 px-3.5 text-center">
+                      <div className="inline-flex flex-col items-center justify-center gap-1">
+                        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={isDone}
+                            onChange={() => onToggleReminderStatus(rem.id, rem.clientId)}
+                            className="sr-only"
+                          />
+                          <span
+                            className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all ${
+                              isDone
+                                ? 'bg-emerald-600 border-emerald-600 text-white shadow-2xs'
+                                : 'bg-white border-neutral-300 hover:border-emerald-500 text-transparent'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5 stroke-[3]" />
+                          </span>
+                          <span
+                            className={`text-xs font-bold ${
+                              isDone ? 'text-emerald-700' : 'text-neutral-600'
+                            }`}
+                          >
+                            {isDone ? 'Bajarildi' : 'Bajarildi deb belgilash'}
+                          </span>
+                        </label>
+
+                        {isDone && (
+                          <div className="text-[10.5px] font-semibold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded-md border border-emerald-200 whitespace-nowrap">
+                            Tick qildi: {getAgentDisplayName(rem.completedBy || rem.agentUsername)}
+                            {rem.completedAt ? ` (${formatDate(rem.completedAt)})` : ''}
+                          </div>
+                        )}
                       </div>
-                      {isToday && !isDone && (
-                        <div className="mt-1 text-[10px] font-extrabold text-amber-700">
-                          ● Bugungi eslatma
-                        </div>
-                      )}
-                      {isOverdue && (
-                        <div className="mt-1 text-[10px] font-extrabold text-rose-600">
-                          ▲ Muddati o&apos;tgan
-                        </div>
-                      )}
                     </td>
-                    <td className="py-3 px-3">
+
+                    {/* 6. O'chirish */}
+                    <td className="py-3 px-3.5 text-center">
                       <button
                         type="button"
-                        onClick={() => client && onViewClientHistory && onViewClientHistory(client)}
-                        className="font-extrabold text-neutral-900 hover:text-amber-700 text-left cursor-pointer"
+                        onClick={() => onDeleteReminder(rem.id, rem.clientId)}
+                        className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer inline-flex items-center justify-center"
+                        title="Eslatmani o'chirish"
                       >
-                        {client?.name || rem.clientName}
+                        <Trash2 className="w-4 h-4" />
                       </button>
-                      <div className="flex items-center gap-1 text-neutral-500 font-mono text-[11px] mt-0.5">
-                        <Phone className="w-3 h-3 text-neutral-400 shrink-0" />
-                        <span>{formatPhoneList(phones)}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 text-neutral-600">
-                      <div className="flex items-start gap-1">
-                        <MapPin className="w-3.5 h-3.5 text-neutral-400 shrink-0 mt-0.5" />
-                        <span className="line-clamp-2">
-                          {client?.address || rem.clientAddress || '—'}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 text-right font-mono">
-                      {client && client.currentDebt > 0 ? (
-                        <span className="font-extrabold text-rose-600">
-                          Qarz: {formatMoney(client.currentDebt)}
-                        </span>
-                      ) : client && client.currentAdvance > 0 ? (
-                        <span className="font-extrabold text-emerald-600">
-                          Haqdor: {formatMoney(client.currentAdvance)}
-                        </span>
-                      ) : (
-                        <span className="text-neutral-400">0 USD</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3">
-                      <div className="p-2 rounded-xl bg-amber-50/90 border border-amber-200 text-neutral-900 font-semibold leading-snug whitespace-pre-wrap">
-                        {rem.note}
-                      </div>
-                    </td>
-                    <td className="py-3 px-3">
-                      <div className="font-bold text-neutral-800">
-                        {getAgentDisplayName(rem.agentUsername)}
-                      </div>
-                      <div className="text-[10px] text-neutral-500 font-mono mt-0.5">
-                        {formatDate(rem.createdAt)}
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 text-center">
-                      {isDone ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 text-[11px] font-extrabold">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Bajarildi</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-[11px] font-extrabold">
-                          <Clock className="w-3.5 h-3.5" />
-                          <span>Kutilmoqda</span>
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3 text-right">
-                      <div className="inline-flex items-center justify-end gap-1.5">
-                        {onExecuteClientFromReminder && (
-                          <button
-                            type="button"
-                            onClick={() => onExecuteClientFromReminder(rem)}
-                            className="px-2.5 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
-                            title="Shu mijoz bilan amal bajarish oynasini ochish"
-                          >
-                            <Play className="w-3 h-3" />
-                            <span>Amal bajarish</span>
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => onToggleReminderStatus(rem.id, rem.clientId)}
-                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer ${
-                            isDone
-                              ? 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
-                              : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                          }`}
-                          title={
-                            isDone
-                              ? "Qayta kutilmoqda holatiga o'tkazish"
-                              : "Eslatmani bajarildi deb belgilash"
-                          }
-                        >
-                          {isDone ? (
-                            <>
-                              <RotateCcw className="w-3 h-3" />
-                              <span>Qaytarish</span>
-                            </>
-                          ) : (
-                            <>
-                              <CheckCircle2 className="w-3 h-3" />
-                              <span>Bajarildi</span>
-                            </>
-                          )}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteReminder(rem.id, rem.clientId)}
-                          className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 cursor-pointer"
-                          title="Eslatmani o'chirish"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
                     </td>
                   </tr>
                 );

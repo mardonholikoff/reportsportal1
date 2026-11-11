@@ -11,7 +11,7 @@ import {
   DeliveryPaymentType,
 } from '../types';
 import { formatMoney, formatDateDMY } from '../utils/format';
-import { storageService, getPlanSoldProductsData } from '../services/storage';
+import { storageService, getPlanSoldProductsData, getPlanFinancialActionData } from '../services/storage';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import {
   X,
@@ -90,6 +90,16 @@ interface Props {
     closeDate?: string
   ) => void;
   initialEditSoldProducts?: boolean;
+  onUpdateFinancialAction?: (
+    planItemId: string,
+    data: {
+      financialAction: NonNullable<DailyPlanItem['financialAction']>;
+      reportNote?: string;
+    },
+    closeAfterSave?: boolean,
+    closeDate?: string
+  ) => void;
+  initialEditFinancialAction?: boolean;
   onQuickReopen?: (planItemId: string) => void;
   client?: Client | null;
   warehouseProducts?: WarehouseProduct[];
@@ -398,6 +408,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
   onSaveReminder,
   onUpdateSoldProducts,
   initialEditSoldProducts = false,
+  onUpdateFinancialAction,
+  initialEditFinancialAction = false,
   onQuickReopen,
   client,
   warehouseProducts,
@@ -416,6 +428,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
   // Section 2: Financial payment (Supports single or multiple payment methods with optional UZS -> USD conversion + extra direct USD)
   const [hasPayment, setHasPayment] = useState(false);
+  const [isEditingFinancialAction, setIsEditingFinancialAction] = useState(false);
   const [isPaymentUzsMode, setIsPaymentUzsMode] = useState(false);
   const [selectedPaymentMethods, setSelectedPaymentMethods] = useState<FinancialMethodType[]>(['naqd']);
   const [methodAmountsUsd, setMethodAmountsUsd] = useState<Partial<Record<FinancialMethodType, number | ''>>>({
@@ -473,6 +486,106 @@ export const ExecutePlanModal: React.FC<Props> = ({
     [planItem, isOpen]
   );
   const hasExistingSoldProducts = existingSoldData.productsDelivered.length > 0;
+
+  const existingFinancialData = useMemo(
+    () => getPlanFinancialActionData(planItem),
+    [planItem, isOpen]
+  );
+  const hasExistingFinancialAction = Boolean(
+    existingFinancialData.financialAction && existingFinancialData.totalFinancialAmount > 0
+  );
+
+  const loadFinancialActionIntoForm = (finData: ReturnType<typeof getPlanFinancialActionData>) => {
+    const fa = finData?.financialAction;
+    if (!fa || fa.amount <= 0) return;
+    setIsEditingFinancialAction(true);
+    setHasPayment(true);
+    setIsPlannedActionConfirmed(true);
+    setHasExtraDirectUsd(false);
+    setExtraDirectUsdAmount('');
+    setExtraDirectUsdMethod('naqd');
+
+    if (fa.exchangeRate && fa.exchangeRate > 0) {
+      setSplitExchangeRate(String(fa.exchangeRate));
+    }
+
+    const hasUzs =
+      Boolean(fa.amountUzs && fa.amountUzs > 0) ||
+      Boolean(fa.splits && fa.splits.some((s) => s.amountUzs && s.amountUzs > 0));
+    setIsPaymentUzsMode(hasUzs);
+
+    if (fa.splits && fa.splits.length > 0) {
+      const methods: FinancialMethodType[] = [];
+      const nextUsd: Partial<Record<FinancialMethodType, number | ''>> = {
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      };
+      const nextUzs: Partial<Record<FinancialMethodType, number | ''>> = {
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+      };
+      let foundExtraDirectUsd = 0;
+      let foundExtraDirectMethod: FinancialMethodType = 'naqd';
+
+      fa.splits.forEach((sp) => {
+        const mId = sp.method || 'naqd';
+        if (hasUzs && (!sp.amountUzs || sp.amountUzs <= 0)) {
+          foundExtraDirectUsd += sp.amount || 0;
+          foundExtraDirectMethod = mId;
+        } else {
+          if (!methods.includes(mId)) methods.push(mId);
+          nextUsd[mId] = sp.amount;
+          if (sp.amountUzs && sp.amountUzs > 0) {
+            nextUzs[mId] = sp.amountUzs;
+          }
+        }
+      });
+
+      if (hasUzs && foundExtraDirectUsd > 0) {
+        setHasExtraDirectUsd(true);
+        setExtraDirectUsdAmount(Math.round(foundExtraDirectUsd * 100) / 100);
+        setExtraDirectUsdMethod(foundExtraDirectMethod);
+      }
+
+      setSelectedPaymentMethods(methods.length > 0 ? methods : ['naqd']);
+      setMethodAmountsUsd(nextUsd);
+      setMethodAmountsUzs(nextUzs);
+    } else {
+      const mId: FinancialMethodType = fa.method || 'naqd';
+      setSelectedPaymentMethods([mId]);
+      setMethodAmountsUsd({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+        [mId]: finData.totalFinancialAmount || fa.amount || '',
+      });
+      setMethodAmountsUzs({
+        naqd: '',
+        bank_otkazma: '',
+        karta_otkazma: '',
+        qr_otkazma: '',
+        [mId]:
+          fa.amountUzs && fa.amountUzs > 0
+            ? fa.amountUzs
+            : hasUzs && fa.amount
+            ? Math.round(fa.amount * (fa.exchangeRate || 12800))
+            : '',
+      });
+    }
+
+    // Extract custom note if separated by ' | '
+    if (fa.note) {
+      const parts = fa.note.split(' | ');
+      setPaymentNote(parts.length > 1 ? parts.slice(1).join(' | ') : '');
+    } else {
+      setPaymentNote('');
+    }
+  };
 
   const loadSoldProductsIntoForm = (soldData: ReturnType<typeof getPlanSoldProductsData>) => {
     if (!soldData || soldData.productsDelivered.length === 0) return;
@@ -658,6 +771,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setShowExtraActionSelector(false);
       setCloseDate(getTodayDateStr());
       setHasPayment(false);
+      setIsEditingFinancialAction(false);
       setIsPaymentUzsMode(false);
       setSelectedPaymentMethods(['naqd']);
       setMethodAmountsUsd({
@@ -714,8 +828,17 @@ export const ExecutePlanModal: React.FC<Props> = ({
       if (initialEditSoldProducts && soldSnapshot.productsDelivered.length > 0) {
         loadSoldProductsIntoForm(soldSnapshot);
       }
+
+      const finSnapshot = getPlanFinancialActionData(planItem);
+      if (
+        initialEditFinancialAction &&
+        finSnapshot.financialAction &&
+        finSnapshot.totalFinancialAmount > 0
+      ) {
+        loadFinancialActionIntoForm(finSnapshot);
+      }
     }
-  }, [isOpen, planItem?.id, initialEditSoldProducts]);
+  }, [isOpen, planItem?.id, initialEditSoldProducts, initialEditFinancialAction]);
 
   const numExchangeRate = useMemo(() => {
     const r = parseFloat(splitExchangeRate);
@@ -1606,7 +1729,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
     if (!planItem) return;
     const isReopenedActive = Boolean(planItem.reopenedAt && !planItem.closedAt);
     const isClosed = !isReopenedActive && Boolean(planItem.isClosed || planItem.status === 'yopildi');
-    if (isClosed && !isEditingSoldProducts) return;
+    if (isClosed && !isEditingSoldProducts && !isEditingFinancialAction) return;
 
     // 1. Financial data (Section 2 - supports single or multiple payment methods)
     const numPaymentAmount = totalPaymentUsd;
@@ -1615,7 +1738,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       .join(' | ');
 
     const financialData =
-      !isClosed && hasPayment && numPaymentAmount > 0
+      (!isClosed || isEditingFinancialAction) && hasPayment && numPaymentAmount > 0
         ? {
             method: combinedPaymentSummary.primaryMethod,
             methodLabel: combinedPaymentSummary.methodLabel,
@@ -1712,8 +1835,15 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     const productsReturned = [...directReturned, ...extraReturnedList];
 
-    // Agar sotilgan mahsulotlarga o'zgartirish kiritish rejimi yoqilgan bo'lsa:
-    if (isEditingSoldProducts && onUpdateSoldProducts && validProducts.length > 0 && deliveryPayData) {
+    // Agar moliyaviy amaliyotga (2-bo'lim) yoki sotilgan mahsulotlarga (3-bo'lim) o'zgartirish kiritish rejimi yoqilgan bo'lsa:
+    const isUpdatingSold = Boolean(
+      isEditingSoldProducts && onUpdateSoldProducts && validProducts.length > 0 && deliveryPayData
+    );
+    const isUpdatingFinancial = Boolean(
+      isEditingFinancialAction && onUpdateFinancialAction && financialData
+    );
+
+    if (isUpdatingSold || isUpdatingFinancial) {
       if (hasReminder && !isClosed) {
         const effectiveRemNote = reminderNote.trim() || reportNote.trim();
         if (!reminderDate) {
@@ -1735,30 +1865,52 @@ export const ExecutePlanModal: React.FC<Props> = ({
         }
       }
 
-      // Agar ochiq rejada bir vaqtda 2-bo'lim (to'lov) yoki 4-bo'lim (qaytarish) ham kiritilgan bo'lsa, avval ularni saqlaymiz
-      if (!isClosed && (Boolean(financialData) || productsReturned.length > 0)) {
+      // Agar ochiq rejada tahrirlanmayotgan boshqa bo'limda yangi amaliyot ham kiritilgan bo'lsa, avval uni saqlaymiz
+      const hasNewUneditedFinancial = !isUpdatingFinancial && !isClosed && Boolean(financialData);
+      const hasNewUneditedProducts =
+        !isUpdatingSold && !isClosed && validProducts.length > 0 && Boolean(deliveryPayData);
+      const hasNewReturns = !isClosed && productsReturned.length > 0;
+
+      if (hasNewUneditedFinancial || hasNewUneditedProducts || hasNewReturns) {
         onSaveReport(
           planItem.id,
           {
             actionDone,
-            financialAction: financialData,
-            productsReturned: productsReturned.length > 0 ? productsReturned : undefined,
+            financialAction: hasNewUneditedFinancial ? financialData : undefined,
+            productsDelivered: hasNewUneditedProducts ? validProducts : undefined,
+            deliveryPayment: hasNewUneditedProducts ? deliveryPayData : undefined,
+            productsReturned: hasNewReturns ? productsReturned : undefined,
             reportNote: reportNote.trim(),
           },
           false
         );
       }
 
-      onUpdateSoldProducts(
-        planItem.id,
-        {
-          productsDelivered: validProducts,
-          deliveryPayment: deliveryPayData,
-          reportNote: reportNote.trim() || undefined,
-        },
-        closeAfterSave,
-        closeDate
-      );
+      if (isUpdatingFinancial && onUpdateFinancialAction && financialData) {
+        onUpdateFinancialAction(
+          planItem.id,
+          {
+            financialAction: financialData,
+            reportNote: reportNote.trim() || undefined,
+          },
+          isUpdatingSold ? false : closeAfterSave,
+          closeDate
+        );
+      }
+
+      if (isUpdatingSold && onUpdateSoldProducts && deliveryPayData) {
+        onUpdateSoldProducts(
+          planItem.id,
+          {
+            productsDelivered: validProducts,
+            deliveryPayment: deliveryPayData,
+            reportNote: reportNote.trim() || undefined,
+          },
+          closeAfterSave,
+          closeDate
+        );
+      }
+
       onClose();
       return;
     }
@@ -1876,6 +2028,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const isReopenedActive = Boolean(planItem.reopenedAt && !planItem.closedAt);
   const isClosed = !isReopenedActive && Boolean(planItem.isClosed || planItem.status === 'yopildi');
   const isProductSectionLocked = isClosed && !isEditingSoldProducts;
+  const isFinancialSectionLocked = isClosed && !isEditingFinancialAction;
   const totalDiscountAll = Math.max(
     0,
     Math.round((rawBaseDeliveredSum - totalDeliveredSum) * 100) / 100
@@ -2017,8 +2170,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       Ushbu mijoz bo&apos;yicha reja yakunlangan va yopilgan!
                     </span>
                     <span className="text-neutral-500">
-                      {hasExistingSoldProducts
-                        ? "Mahsulotlarga yoki to'lov turiga o'zgartirish kiritish uchun avval rejani 'Qayta ochish' tugmasi orqali oching."
+                      {hasExistingSoldProducts || hasExistingFinancialAction
+                        ? "Moliyaviy amaliyotga yoki mahsulotlarga o'zgartirish kiritish uchun avval rejani 'Qayta ochish' tugmasi orqali oching yoki tahrirlash tugmasini bosing."
                         : "Barcha amallar bajarib bo'lingan."}
                     </span>
                   </div>
@@ -2194,32 +2347,128 @@ export const ExecutePlanModal: React.FC<Props> = ({
             {/* SECTION 2: MOLIYAVIY AMALIYOT (USD + AVTOMATIK KONVERTATSIYA) */}
             {/* ========================================================= */}
             <div className="space-y-3 pt-3 border-t border-rose-100">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <CreditCard className="w-4 h-4 text-rose-700" />
                   <label
                     htmlFor="hasPaymentCheck"
                     className="text-xs font-bold text-neutral-800 uppercase tracking-wide cursor-pointer"
                   >
-                    2. Moliyaviy amaliyot (To'lov qabul qilindimi?)
+                    {isEditingFinancialAction
+                      ? "2. Moliyaviy amaliyotni (to'lovni) tahrirlash"
+                      : "2. Moliyaviy amaliyot (To'lov qabul qilindimi?)"}
                   </label>
                 </div>
-                <input
-                  type="checkbox"
-                  id="hasPaymentCheck"
-                  disabled={isClosed}
-                  checked={hasPayment}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setHasPayment(checked);
-                    syncConfirmationWithBlocks(checked, hasProducts, hasReturns);
-                  }}
-                  className="w-4 h-4 text-rose-600 rounded cursor-pointer"
-                />
+                <div className="flex items-center gap-2">
+                  {hasExistingFinancialAction && !isEditingFinancialAction && (
+                    <button
+                      type="button"
+                      onClick={() => loadFinancialActionIntoForm(existingFinancialData)}
+                      className="px-3 py-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      <span>Moliyaviy amaliyotga o&apos;zgartirish kiritish</span>
+                    </button>
+                  )}
+                  {isEditingFinancialAction && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingFinancialAction(false);
+                        setHasPayment(false);
+                        setMethodAmountsUsd({
+                          naqd: '',
+                          bank_otkazma: '',
+                          karta_otkazma: '',
+                          qr_otkazma: '',
+                        });
+                        setMethodAmountsUzs({
+                          naqd: '',
+                          bank_otkazma: '',
+                          karta_otkazma: '',
+                          qr_otkazma: '',
+                        });
+                        syncConfirmationWithBlocks(false, hasProducts, hasReturns);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white hover:bg-neutral-100 text-neutral-700 border border-neutral-300 text-[11px] font-bold transition cursor-pointer"
+                    >
+                      Tahrirlashni bekor qilish ✕
+                    </button>
+                  )}
+                  <input
+                    type="checkbox"
+                    id="hasPaymentCheck"
+                    disabled={isFinancialSectionLocked}
+                    checked={hasPayment}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setHasPayment(checked);
+                      if (!checked && isEditingFinancialAction) {
+                        setIsEditingFinancialAction(false);
+                      }
+                      syncConfirmationWithBlocks(checked, hasProducts, hasReturns);
+                    }}
+                    className="w-4 h-4 text-rose-600 rounded cursor-pointer"
+                  />
+                </div>
               </div>
+
+              {hasExistingFinancialAction && !hasPayment && !isEditingFinancialAction && (
+                <div className="p-3 rounded-2xl bg-emerald-50/80 border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="text-xs text-emerald-950">
+                    <span className="font-bold block">
+                      Ushbu rejada qabul qilingan moliyaviy amaliyot (to&apos;lov) mavjud:
+                    </span>
+                    <span className="text-[11px] text-emerald-800 font-mono font-bold">
+                      +{formatMoney(existingFinancialData.totalFinancialAmount)} (
+                      {existingFinancialData.financialAction?.methodLabel || "To'lov"})
+                      {existingFinancialData.financialAction?.note
+                        ? ` — ${existingFinancialData.financialAction.note}`
+                        : ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => loadFinancialActionIntoForm(existingFinancialData)}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>To&apos;lovni tahrirlash</span>
+                    </button>
+                    {!isClosed && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHasPayment(true);
+                          syncConfirmationWithBlocks(true, hasProducts, hasReturns);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-800 border border-rose-200 text-xs font-bold transition cursor-pointer flex items-center gap-1"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Qo&apos;shimcha yangi to&apos;lov qo&apos;shish</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {hasPayment && (
                 <div className="p-4 rounded-2xl bg-rose-50/50 border border-rose-200/80 space-y-3.5 animate-in fade-in duration-100">
+                  {isEditingFinancialAction && existingFinancialData.financialAction && (
+                    <div className="p-2.5 rounded-xl bg-emerald-100/80 border border-emerald-300 text-xs text-emerald-950 flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <span className="font-bold">Tahrirlanayotgan joriy to&apos;lov: </span>
+                        <span className="font-mono font-extrabold">
+                          {formatMoney(existingFinancialData.totalFinancialAmount)} (
+                          {existingFinancialData.financialAction.methodLabel})
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-semibold text-emerald-800">
+                        Yangi summani kiriting — mijoz qarzi avtomatik qayta hisoblanadi
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div>
                       <span className="text-[11px] font-bold text-rose-900 block">
@@ -2254,7 +2503,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                           <button
                             key={m.id}
                             type="button"
-                            disabled={isClosed}
+                            disabled={isFinancialSectionLocked}
                             onClick={() => handleTogglePaymentMethod(m.id)}
                             className={`px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center justify-center gap-1.5 ${
                               isSelected
@@ -2293,7 +2542,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                           <input
                             id="isPaymentUzsModeCheck"
                             type="checkbox"
-                            disabled={isClosed}
+                            disabled={isFinancialSectionLocked}
                             checked={isPaymentUzsMode}
                             onChange={(e) => {
                               const checked = e.target.checked;
@@ -2340,7 +2589,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                             <span className="text-[11px] font-extrabold text-amber-900">1$ kursi (so'm):</span>
                             <input
                               type="number"
-                              disabled={isClosed}
+                              disabled={isFinancialSectionLocked}
                               min="1"
                               step="any"
                               value={splitExchangeRate}
@@ -2371,7 +2620,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                               </span>
                               <span>{methodMeta?.label || "To'lov"}</span>
                             </span>
-                            {selectedPaymentMethods.length > 1 && !isClosed && (
+                            {selectedPaymentMethods.length > 1 && !isFinancialSectionLocked && (
                               <button
                                 type="button"
                                 onClick={() => handleTogglePaymentMethod(methodId)}
@@ -2391,7 +2640,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 </label>
                                 <input
                                   type="number"
-                                  disabled={isClosed}
+                                  disabled={isFinancialSectionLocked}
                                   min="0"
                                   step="any"
                                   placeholder="Masalan: 1280000"
@@ -2413,7 +2662,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 </label>
                                 <input
                                   type="number"
-                                  disabled={isClosed}
+                                  disabled={isFinancialSectionLocked}
                                   required={hasPayment && idx === 0 && totalPaymentUsd <= 0}
                                   min="0"
                                   step="any"
@@ -2436,7 +2685,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                               </label>
                               <input
                                 type="number"
-                                disabled={isClosed}
+                                disabled={isFinancialSectionLocked}
                                 required={hasPayment && idx === 0 && totalPaymentUsd <= 0}
                                 min="0"
                                 step="any"
@@ -2462,7 +2711,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     <div className="space-y-2.5">
                       <button
                         type="button"
-                        disabled={isClosed}
+                        disabled={isFinancialSectionLocked}
                         onClick={() => {
                           setHasExtraDirectUsd((prev) => {
                             const next = !prev;
@@ -2517,7 +2766,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                               </label>
                               <input
                                 type="number"
-                                disabled={isClosed}
+                                disabled={isFinancialSectionLocked}
                                 min="0"
                                 step="any"
                                 placeholder="Masalan: 50"
@@ -2536,7 +2785,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                                 Qo&apos;shimcha Dollar ($) to&apos;lov turi
                               </label>
                               <select
-                                disabled={isClosed}
+                                disabled={isFinancialSectionLocked}
                                 value={extraDirectUsdMethod}
                                 onChange={(e) =>
                                   setExtraDirectUsdMethod(e.target.value as FinancialMethodType)
@@ -2608,7 +2857,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     </label>
                     <input
                       type="text"
-                      disabled={isClosed}
+                      disabled={isFinancialSectionLocked}
                       placeholder="Chek raqami yoki qo'shimcha eslatma"
                       value={paymentNote}
                       onChange={(e) => setPaymentNote(e.target.value)}
@@ -3997,7 +4246,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
               </label>
               <textarea
                 rows={2}
-                disabled={isProductSectionLocked}
+                disabled={isProductSectionLocked && isFinancialSectionLocked}
                 placeholder="Mijoz bilan suhbat natijasi, konvertatsiya kursi, qaytarilgan tovarlar yoki keyingi qadamlar..."
                 value={reportNote}
                 onChange={(e) => setReportNote(e.target.value)}
@@ -4170,13 +4419,19 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   Bekor qilish
                 </button>
 
-                {isClosed && isEditingSoldProducts && (
+                {isClosed && (isEditingSoldProducts || isEditingFinancialAction) && (
                   <button
                     type="submit"
                     className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-900 text-white text-xs font-bold shadow-xs transition cursor-pointer min-h-[40px] flex items-center gap-1.5"
                   >
                     <CheckCircle className="w-4 h-4" />
-                    <span>Sotilgan mahsulot va to'lov o'zgarishlarini saqlash</span>
+                    <span>
+                      {isEditingFinancialAction && isEditingSoldProducts
+                        ? "To'lov va mahsulot o'zgarishlarini saqlash"
+                        : isEditingFinancialAction
+                        ? "Moliyaviy amaliyot (to'lov) o'zgarishlarini saqlash"
+                        : "Sotilgan mahsulot va to'lov o'zgarishlarini saqlash"}
+                    </span>
                   </button>
                 )}
 
@@ -4188,7 +4443,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     >
                       <CheckCircle className="w-4 h-4" />
                       <span>
-                        {isEditingSoldProducts
+                        {isEditingSoldProducts || isEditingFinancialAction
                           ? "O'zgarishlarni va hisobotni saqlash"
                           : 'Hisobotni saqlash'}
                       </span>
@@ -4202,7 +4457,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     >
                       <Lock className="w-4 h-4" />
                       <span>
-                        {isEditingSoldProducts
+                        {isEditingSoldProducts || isEditingFinancialAction
                           ? "O'zgarishlarni saqlash va yopish"
                           : 'Hisobotni saqlash va yopish'}
                       </span>

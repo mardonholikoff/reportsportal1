@@ -75,11 +75,12 @@ interface ClientAggregatedProductRow {
   productName: string;
   productKey: string;
   unit: string;
-  timesDelivered: number; // Necha marta berilgani
+  timesDelivered: number; // Shu turdagi mahsulotni necha marta olgani
   totalQuantity: number;
   totalSumUsd: number;
   paidSumUsd: number;
   creditSumUsd: number;
+  dates: string[];
 }
 
 interface ClientBlock2ComputedItem {
@@ -107,7 +108,7 @@ export const ClientTable: React.FC<Props> = ({
   const [activeClientBlock, setActiveClientBlock] = useState<'block1' | 'block2'>('block1');
 
   // =========================================================================
-  // 1-BLOK STATES (Viloyat, Tuman, Yangi qo'shilganlar, Barchasi, Qarzdorlar, Haqdorlar)
+  // 1-BLOK STATES (Viloyat, Tuman, Yangi qo'shilganlar, Sana/Muddat oralig'i, Barchasi, Qarzdorlar, Haqdorlar)
   // =========================================================================
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -115,6 +116,9 @@ export const ClientTable: React.FC<Props> = ({
   const [sortType, setSortType] = useState<SortType>('newest');
   const [selectedRegion, setSelectedRegion] = useState<string>('all');
   const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
+  const [block1StartDate, setBlock1StartDate] = useState<string>('');
+  const [block1EndDate, setBlock1EndDate] = useState<string>('');
+  const [block1DateCalcMode, setBlock1DateCalcMode] = useState<'snapshot' | 'period_activity'>('snapshot');
 
   const [isExporting, setIsExporting] = useState(false);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
@@ -150,17 +154,216 @@ export const ClientTable: React.FC<Props> = ({
       : storageService.getDailyPlans();
   }, [propDailyPlans, clients]);
 
+  const applyBlock1QuickDate = (preset: 'all' | 'today' | 'yesterday' | 7 | 'month' | 30) => {
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    if (preset === 'all') {
+      setBlock1StartDate('');
+      setBlock1EndDate('');
+      return;
+    }
+    if (preset === 'today') {
+      setBlock1StartDate(todayStr);
+      setBlock1EndDate(todayStr);
+      return;
+    }
+    if (preset === 'yesterday') {
+      const y = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+      setBlock1StartDate(y);
+      setBlock1EndDate(y);
+      return;
+    }
+    if (preset === 'month') {
+      const firstDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      setBlock1StartDate(firstDay);
+      setBlock1EndDate(todayStr);
+      return;
+    }
+    const startDt = new Date(now.getTime() - preset * 86400000);
+    setBlock1StartDate(startDt.toISOString().slice(0, 10));
+    setBlock1EndDate(todayStr);
+  };
+
+  // Compute each client's debt and advance for 1-Blok (supports current state, snapshot as of date/range, or activity within range)
+  const clientBlock1BalanceMap = useMemo(() => {
+    const map = new Map<string, { debt: number; advance: number; hasActivityInRange: boolean }>();
+    const hasDateFilter = Boolean(block1StartDate || block1EndDate);
+
+    if (!hasDateFilter) {
+      clients.forEach((c) => {
+        map.set(c.id, {
+          debt: Math.max(0, Number(c.currentDebt) || 0),
+          advance: Math.max(0, Number(c.currentAdvance) || 0),
+          hasActivityInRange: true,
+        });
+      });
+      return map;
+    }
+
+    const startStr = block1StartDate || '0000-01-01';
+    const endStr = block1EndDate || block1StartDate || '9999-12-31';
+
+    const plansByClient = new Map<string, DailyPlanItem[]>();
+    resolvedDailyPlans.forEach((p) => {
+      if (!p || !p.clientId) return;
+      const arr = plansByClient.get(p.clientId) || [];
+      arr.push(p);
+      plansByClient.set(p.clientId, arr);
+    });
+
+    clients.forEach((c) => {
+      const logs = [...(c.logs || [])].sort((a, b) =>
+        (b.timestamp || '').localeCompare(a.timestamp || '')
+      );
+      const cPlans = plansByClient.get(c.id) || [];
+
+      if (block1DateCalcMode === 'period_activity') {
+        // Shu muddat oralig'ida yuzaga kelgan qarzdorlik (nasiyaga berilgan yuk / qarz qo'shilishi) va haqdorlik/to'lovlar
+        let periodDebtAdded = 0;
+        let periodAdvanceOrPaid = 0;
+        let hasAct = false;
+
+        cPlans.forEach((plan) => {
+          const actions =
+            plan.actionsHistory && plan.actionsHistory.length > 0
+              ? plan.actionsHistory.map((act) => ({
+                  dateStr: (
+                    act.timestamp ||
+                    plan.closedAt ||
+                    plan.completedAt ||
+                    plan.planDate ||
+                    plan.createdAt ||
+                    ''
+                  ).slice(0, 10),
+                  financialAction: act.financialAction,
+                  deliveryPayment: act.deliveryPayment,
+                  productsDelivered: act.productsDelivered,
+                }))
+              : [
+                  {
+                    dateStr: (
+                      plan.closedAt ||
+                      plan.completedAt ||
+                      plan.planDate ||
+                      plan.createdAt ||
+                      ''
+                    ).slice(0, 10),
+                    financialAction: plan.financialAction,
+                    deliveryPayment: plan.deliveryPayment,
+                    productsDelivered: plan.productsDelivered,
+                  },
+                ];
+
+          actions.forEach((act) => {
+            if (!act.dateStr || act.dateStr < startStr || act.dateStr > endStr) return;
+            if (act.financialAction && (act.financialAction.amount || 0) > 0) {
+              periodAdvanceOrPaid += Number(act.financialAction.amount) || 0;
+              hasAct = true;
+            }
+            const prods = act.productsDelivered || [];
+            const prodTotal = prods.reduce(
+              (s, p) =>
+                s + (Number(p.totalPrice) || (Number(p.quantity) || 0) * (Number(p.unitPrice) || 0)),
+              0
+            );
+            if (act.deliveryPayment) {
+              const dp = act.deliveryPayment;
+              if (dp.paymentType === 'qarzga') {
+                const dAmt = Number(dp.debtAmount ?? dp.totalAmount ?? prodTotal) || 0;
+                if (dAmt > 0) {
+                  periodDebtAdded += dAmt;
+                  hasAct = true;
+                }
+              } else {
+                const pAmt = Number(dp.paidAmount) || 0;
+                const dAmt =
+                  dp.debtAmount !== undefined
+                    ? Number(dp.debtAmount) || 0
+                    : Math.max(0, prodTotal - pAmt);
+                if (pAmt > 0) {
+                  periodAdvanceOrPaid += pAmt;
+                  hasAct = true;
+                }
+                if (dAmt > 0) {
+                  periodDebtAdded += dAmt;
+                  hasAct = true;
+                }
+              }
+            } else if (prodTotal > 0) {
+              periodDebtAdded += prodTotal;
+              hasAct = true;
+            }
+          });
+        });
+
+        // Also check direct balance logs in range not already covered by visit_action
+        logs.forEach((l) => {
+          const dStr = (l.timestamp || '').slice(0, 10);
+          if (!dStr || dStr < startStr || dStr > endStr) return;
+          if (l.type === 'visit_action') return;
+          const amt = Number(l.amountChanged) || 0;
+          if (amt > 0) {
+            if (l.type === 'product_added') {
+              periodDebtAdded += amt;
+              hasAct = true;
+            } else if (l.type === 'payment') {
+              periodAdvanceOrPaid += amt;
+              hasAct = true;
+            }
+          }
+        });
+
+        map.set(c.id, {
+          debt: Math.round(periodDebtAdded * 100) / 100,
+          advance: Math.round(periodAdvanceOrPaid * 100) / 100,
+          hasActivityInRange: hasAct || periodDebtAdded > 0 || periodAdvanceOrPaid > 0,
+        });
+        return;
+      }
+
+      // Default mode ('snapshot'): Tanlangan sana / muddat yakunidagi (endStr) qarzdorlik va haqdorlik holati
+      let net = (Number(c.currentDebt) || 0) - (Number(c.currentAdvance) || 0);
+
+      // Revert logs that happened AFTER endStr
+      logs.forEach((l) => {
+        const dStr = (l.timestamp || '').slice(0, 10);
+        if (dStr > endStr && l.amountChanged) {
+          const amt = Number(l.amountChanged) || 0;
+          if (l.type === 'product_added') {
+            net -= amt;
+          } else if (l.type === 'payment') {
+            net += amt;
+          }
+        }
+      });
+
+      const snapDebt = net > 0 ? Math.round(net * 100) / 100 : 0;
+      const snapAdvance = net < 0 ? Math.round(Math.abs(net) * 100) / 100 : 0;
+
+      map.set(c.id, {
+        debt: snapDebt,
+        advance: snapAdvance,
+        hasActivityInRange: true,
+      });
+    });
+
+    return map;
+  }, [clients, resolvedDailyPlans, block1StartDate, block1EndDate, block1DateCalcMode]);
+
   // Pre-compute global tab counts in a single O(N) pass (1-Blok)
   const globalTabCounts = useMemo(() => {
     let debtors = 0;
     let creditors = 0;
     for (let i = 0; i < clients.length; i++) {
       const c = clients[i];
-      if (c.currentDebt > 0) debtors++;
-      if (c.currentAdvance > 0) creditors++;
+      const bal = clientBlock1BalanceMap.get(c.id);
+      const d = bal ? bal.debt : c.currentDebt;
+      const a = bal ? bal.advance : c.currentAdvance;
+      if (d > 0) debtors++;
+      if (a > 0) creditors++;
     }
     return { debtors, creditors };
-  }, [clients]);
+  }, [clients, clientBlock1BalanceMap]);
 
   // Extract unique regions from clients
   const uniqueRegions = useMemo(() => {
@@ -194,7 +397,9 @@ export const ClientTable: React.FC<Props> = ({
     searchQuery.trim() !== '' ||
     filterType !== 'all' ||
     selectedRegion !== 'all' ||
-    selectedDistrict !== 'all';
+    selectedDistrict !== 'all' ||
+    block1StartDate !== '' ||
+    block1EndDate !== '';
 
   const resetBlock1Filters = () => {
     setSearchQuery('');
@@ -202,10 +407,20 @@ export const ClientTable: React.FC<Props> = ({
     setSelectedRegion('all');
     setSelectedDistrict('all');
     setSortType('newest');
+    setBlock1StartDate('');
+    setBlock1EndDate('');
+    setBlock1DateCalcMode('snapshot');
   };
 
   const filteredClients = useMemo(() => {
     let result = [...clients];
+
+    if ((block1StartDate || block1EndDate) && block1DateCalcMode === 'period_activity') {
+      result = result.filter((c) => {
+        const bal = clientBlock1BalanceMap.get(c.id);
+        return bal ? bal.hasActivityInRange : false;
+      });
+    }
 
     if (deferredSearchQuery.trim()) {
       const q = deferredSearchQuery.toLowerCase().trim();
@@ -228,9 +443,11 @@ export const ClientTable: React.FC<Props> = ({
     }
 
     if (filterType === 'debtors') {
-      result = result.filter((c) => c.currentDebt > 0);
+      result = result.filter((c) => (clientBlock1BalanceMap.get(c.id)?.debt ?? c.currentDebt) > 0);
     } else if (filterType === 'creditors') {
-      result = result.filter((c) => c.currentAdvance > 0);
+      result = result.filter(
+        (c) => (clientBlock1BalanceMap.get(c.id)?.advance ?? c.currentAdvance) > 0
+      );
     }
 
     if (selectedRegion !== 'all') {
@@ -254,17 +471,40 @@ export const ClientTable: React.FC<Props> = ({
         return a.name.localeCompare(b.name, 'uz');
       }
       if (sortType === 'debt_desc') {
-        return b.currentDebt - a.currentDebt;
+        const dA = clientBlock1BalanceMap.get(a.id)?.debt ?? a.currentDebt;
+        const dB = clientBlock1BalanceMap.get(b.id)?.debt ?? b.currentDebt;
+        return dB - dA;
       }
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
 
     return result;
-  }, [clients, deferredSearchQuery, filterType, sortType, selectedRegion, selectedDistrict]);
+  }, [
+    clients,
+    deferredSearchQuery,
+    filterType,
+    sortType,
+    selectedRegion,
+    selectedDistrict,
+    block1StartDate,
+    block1EndDate,
+    block1DateCalcMode,
+    clientBlock1BalanceMap,
+  ]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [deferredSearchQuery, filterType, sortType, selectedRegion, selectedDistrict, pageSize]);
+  }, [
+    deferredSearchQuery,
+    filterType,
+    sortType,
+    selectedRegion,
+    selectedDistrict,
+    block1StartDate,
+    block1EndDate,
+    block1DateCalcMode,
+    pageSize,
+  ]);
 
   const totalPages = useMemo(() => {
     if (pageSize === 'all') return 1;
@@ -284,19 +524,20 @@ export const ClientTable: React.FC<Props> = ({
     let totalAdvance = 0;
     let debtorsCount = 0;
     let creditorsCount = 0;
-    let maxDebtor: Client | null = null;
+    let maxDebtor: { client: Client; debt: number } | null = null;
 
     filteredClients.forEach((c) => {
-      const d = c.currentDebt || 0;
-      const a = c.currentAdvance || 0;
+      const bal = clientBlock1BalanceMap.get(c.id);
+      const d = bal ? bal.debt : c.currentDebt || 0;
+      const a = bal ? bal.advance : c.currentAdvance || 0;
 
       totalDebt += d;
       totalAdvance += a;
 
       if (d > 0) {
         debtorsCount++;
-        if (!maxDebtor || d > (maxDebtor.currentDebt || 0)) {
-          maxDebtor = c;
+        if (!maxDebtor || d > maxDebtor.debt) {
+          maxDebtor = { client: c, debt: d };
         }
       }
       if (a > 0) {
@@ -316,14 +557,26 @@ export const ClientTable: React.FC<Props> = ({
       creditorsCount,
       avgDebtPerDebtor,
       netBalance,
-      maxDebtor: maxDebtor as Client | null,
+      maxDebtor: maxDebtor
+        ? ({ ...(maxDebtor as { client: Client; debt: number }).client, currentDebt: (maxDebtor as { client: Client; debt: number }).debt } as Client)
+        : null,
     };
-  }, [filteredClients, clients.length]);
+  }, [filteredClients, clients.length, clientBlock1BalanceMap]);
 
   const handleExportExcel = async () => {
     try {
       setIsExporting(true);
-      await exportClientsToXLSX(filteredClients.length > 0 ? filteredClients : clients);
+      const sourceList = filteredClients.length > 0 ? filteredClients : clients;
+      const exportList = sourceList.map((c) => {
+        const bal = clientBlock1BalanceMap.get(c.id);
+        if (!bal) return c;
+        return {
+          ...c,
+          currentDebt: bal.debt,
+          currentAdvance: bal.advance,
+        };
+      });
+      await exportClientsToXLSX(exportList);
     } catch (err) {
       console.error('Failed to export excel:', err);
     } finally {
@@ -435,9 +688,11 @@ export const ClientTable: React.FC<Props> = ({
 
             coveredQtyByProdKey.set(pKey, (coveredQtyByProdKey.get(pKey) || 0) + q);
 
+            const rawUnit = (p.unit || '').trim();
+            const normUnit = !rawUnit || rawUnit.toLowerCase() === 'birlik' ? 'dona' : rawUnit;
             const ex = groupedInBatch.get(pKey) || {
               name: cleanName,
-              unit: p.unit || 'dona',
+              unit: normUnit,
               qty: 0,
               sum: 0,
             };
@@ -478,6 +733,10 @@ export const ClientTable: React.FC<Props> = ({
 
         // Track remaining covered quantities for products without matching ID
         const remainingCoveredQty = new Map(coveredQtyByProdKey);
+        const fallbackGrouped = new Map<
+          string,
+          { name: string; unit: string; qty: number; sum: number }
+        >();
 
         clientProds.forEach((p) => {
           if (p.id && coveredProductIds.has(p.id)) return;
@@ -497,17 +756,31 @@ export const ClientTable: React.FC<Props> = ({
           remainingCoveredQty.set(pKey, 0);
           const ratio = q > 0 ? uncoveredQty / q : 1;
           const uncoveredSum = totalP * ratio;
+          const rawUnit = (p.unit || '').trim();
+          const normUnit = !rawUnit || rawUnit.toLowerCase() === 'birlik' ? 'dona' : rawUnit;
 
+          const ex = fallbackGrouped.get(pKey) || {
+            name: cleanName,
+            unit: normUnit,
+            qty: 0,
+            sum: 0,
+          };
+          ex.qty += uncoveredQty;
+          ex.sum += uncoveredSum;
+          fallbackGrouped.set(pKey, ex);
+        });
+
+        fallbackGrouped.forEach((g, pKey) => {
           occurrences.push({
             clientId: client.id,
             date: (client.createdAt || new Date().toISOString()).slice(0, 10),
-            productName: cleanName,
+            productName: g.name,
             productKey: pKey,
-            unit: p.unit || 'dona',
-            quantity: Math.round(uncoveredQty * 100) / 100,
-            totalPriceUsd: Math.round(uncoveredSum * 100) / 100,
-            paidUsd: Math.round(uncoveredSum * fallbackPaidRatio * 100) / 100,
-            creditUsd: Math.round(uncoveredSum * fallbackCreditRatio * 100) / 100,
+            unit: g.unit,
+            quantity: Math.round(g.qty * 100) / 100,
+            totalPriceUsd: Math.round(g.sum * 100) / 100,
+            paidUsd: Math.round(g.sum * fallbackPaidRatio * 100) / 100,
+            creditUsd: Math.round(g.sum * fallbackCreditRatio * 100) / 100,
           });
         });
       }
@@ -630,21 +903,26 @@ export const ClientTable: React.FC<Props> = ({
       // Group by productKey to compute how many times each product was delivered ("nechchi marta berilgani")
       const prodAggMap = new Map<string, ClientAggregatedProductRow>();
       relevantOccurrences.forEach((occ) => {
+        const normUnit = !occ.unit || occ.unit.toLowerCase() === 'birlik' ? 'dona' : occ.unit;
         const existing = prodAggMap.get(occ.productKey) || {
           productName: occ.productName,
           productKey: occ.productKey,
-          unit: occ.unit,
+          unit: normUnit,
           timesDelivered: 0,
           totalQuantity: 0,
           totalSumUsd: 0,
           paidSumUsd: 0,
           creditSumUsd: 0,
+          dates: [],
         };
         existing.timesDelivered += 1;
         existing.totalQuantity = Math.round((existing.totalQuantity + occ.quantity) * 100) / 100;
         existing.totalSumUsd = Math.round((existing.totalSumUsd + occ.totalPriceUsd) * 100) / 100;
         existing.paidSumUsd = Math.round((existing.paidSumUsd + occ.paidUsd) * 100) / 100;
         existing.creditSumUsd = Math.round((existing.creditSumUsd + occ.creditUsd) * 100) / 100;
+        if (occ.date && !existing.dates.includes(occ.date)) {
+          existing.dates.push(occ.date);
+        }
         prodAggMap.set(occ.productKey, existing);
       });
 
@@ -839,7 +1117,7 @@ export const ClientTable: React.FC<Props> = ({
     setMaxProductQty('');
   };
 
-  const applyQuickDateRange = (days: number | 'month' | 'today' | 'all') => {
+  const applyQuickDateRange = (days: number | 'month' | 'today' | 'yesterday' | 'all') => {
     const now = new Date();
     const todayStr = now.toISOString().slice(0, 10);
     if (days === 'all') {
@@ -850,6 +1128,12 @@ export const ClientTable: React.FC<Props> = ({
     if (days === 'today') {
       setBlock2StartDate(todayStr);
       setBlock2EndDate(todayStr);
+      return;
+    }
+    if (days === 'yesterday') {
+      const yStr = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+      setBlock2StartDate(yStr);
+      setBlock2EndDate(yStr);
       return;
     }
     if (days === 'month') {
@@ -877,9 +1161,7 @@ export const ClientTable: React.FC<Props> = ({
         client: r.client,
         productsSummaryLines: r.matchedProducts.map(
           (mp) =>
-            `${mp.productName} — ${mp.timesDelivered} marta (${formatNumber(mp.totalQuantity)} ${
-              mp.unit
-            }, ${formatMoney(mp.totalSumUsd)})`
+            `${mp.productName} — ${mp.timesDelivered} marta olgan (${formatNumber(mp.totalQuantity)} dona, ${formatMoney(mp.totalSumUsd)})`
         ),
         totalDeliveryEventsCount: r.totalTimesDelivered,
         totalQuantity: r.totalQuantity,
@@ -1095,6 +1377,146 @@ export const ClientTable: React.FC<Props> = ({
               </button>
             </div>
 
+            {/* 1-Blok Sana / Muddat oralig'i bo'yicha qarzdorlik va haqdorlikni ko'rish */}
+            <div className="p-3 rounded-2xl bg-rose-50/50 border border-rose-100 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-rose-950">
+                  <Calendar className="w-4 h-4 text-rose-700" />
+                  <span>Kun yoki muddat oralig'i bo'yicha qarzdorlik / haqdorlik:</span>
+                </span>
+
+                <div className="flex items-center gap-1 flex-wrap text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => applyBlock1QuickDate('all')}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                      !block1StartDate && !block1EndDate
+                        ? 'bg-rose-700 text-white shadow-2xs'
+                        : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+                    }`}
+                  >
+                    Joriy holat (Barchasi)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyBlock1QuickDate('today')}
+                    className="px-2.5 py-1 rounded-lg font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 transition cursor-pointer"
+                  >
+                    Bugun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyBlock1QuickDate('yesterday')}
+                    className="px-2.5 py-1 rounded-lg font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 transition cursor-pointer"
+                  >
+                    Kecha
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyBlock1QuickDate(7)}
+                    className="px-2.5 py-1 rounded-lg font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 transition cursor-pointer"
+                  >
+                    Oxirgi 7 kun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyBlock1QuickDate('month')}
+                    className="px-2.5 py-1 rounded-lg font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 transition cursor-pointer"
+                  >
+                    Shu oy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyBlock1QuickDate(30)}
+                    className="px-2.5 py-1 rounded-lg font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 transition cursor-pointer"
+                  >
+                    Oxirgi 30 kun
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Aniq 1 kun tanlash */}
+                  <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-xl border border-rose-200 text-xs">
+                    <span className="text-rose-800 font-bold">Aniq kun:</span>
+                    <input
+                      type="date"
+                      value={
+                        block1StartDate && block1StartDate === block1EndDate ? block1StartDate : ''
+                      }
+                      onChange={(e) => {
+                        setBlock1StartDate(e.target.value);
+                        setBlock1EndDate(e.target.value);
+                      }}
+                      className="font-mono font-bold text-neutral-900 bg-transparent outline-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Muddat oralig'i: Dan — Gacha */}
+                  <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-xl border border-neutral-200 text-xs">
+                    <span className="text-neutral-500 font-semibold">Dan:</span>
+                    <input
+                      type="date"
+                      value={block1StartDate}
+                      onChange={(e) => setBlock1StartDate(e.target.value)}
+                      className="font-mono font-bold text-neutral-900 bg-transparent outline-none cursor-pointer"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-xl border border-neutral-200 text-xs">
+                    <span className="text-neutral-500 font-semibold">Gacha:</span>
+                    <input
+                      type="date"
+                      value={block1EndDate}
+                      onChange={(e) => setBlock1EndDate(e.target.value)}
+                      className="font-mono font-bold text-neutral-900 bg-transparent outline-none cursor-pointer"
+                    />
+                  </div>
+
+                  {(block1StartDate || block1EndDate) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBlock1StartDate('');
+                        setBlock1EndDate('');
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-rose-100 hover:bg-rose-200 text-rose-900 text-xs font-bold cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Sanani tozalash</span>
+                    </button>
+                  )}
+                </div>
+
+                {(block1StartDate || block1EndDate) && (
+                  <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-rose-200 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setBlock1DateCalcMode('snapshot')}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                        block1DateCalcMode === 'snapshot'
+                          ? 'bg-rose-700 text-white'
+                          : 'text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      Sana holatidagi balans
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBlock1DateCalcMode('period_activity')}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                        block1DateCalcMode === 'period_activity'
+                          ? 'bg-rose-700 text-white'
+                          : 'text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      Shu muddatdagi qarz / to'lov
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Filter Tabs: Faqat Barchasi, Qarzdorlar, Haqdorlar */}
             <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-neutral-100 text-xs">
               <span className="text-[11px] font-bold text-neutral-500 uppercase mr-1">Filtr:</span>
@@ -1192,6 +1614,16 @@ export const ClientTable: React.FC<Props> = ({
                     ? "1-Blok: Filtr natijasi bo'yicha xulosa"
                     : "1-Blok: Jadval bo'yicha xulosaviy qiymatlar"}
                 </span>
+                {(block1StartDate || block1EndDate) && (
+                  <span className="px-2 py-0.5 rounded-lg bg-rose-100 text-rose-900 border border-rose-200 text-[11px] font-bold">
+                    Muddat:{' '}
+                    {block1StartDate && block1StartDate === block1EndDate
+                      ? formatDateDMY(block1StartDate)
+                      : `${block1StartDate ? formatDateDMY(block1StartDate) : 'Boshidan'} — ${
+                          block1EndDate ? formatDateDMY(block1EndDate) : 'Bugungacha'
+                        }`}
+                  </span>
+                )}
                 <span className="text-xs font-semibold text-neutral-600">
                   Ko'rsatilmoqda:{' '}
                   <strong className="text-neutral-900">{filteredSummary.totalCount} ta</strong> mijoz
@@ -1317,147 +1749,156 @@ export const ClientTable: React.FC<Props> = ({
                     <tr>
                       <th className="py-3.5 px-4">Mijoz ismi & Telefon</th>
                       <th className="py-3.5 px-4">Manzili</th>
-                      <th className="py-3.5 px-4 text-right">Joriy qarzdorlik</th>
-                      <th className="py-3.5 px-4 text-right">Joriy haqdorlik</th>
+                      <th className="py-3.5 px-4 text-right">
+                        {block1StartDate || block1EndDate ? 'Tanlangan davr qarzdorligi' : 'Joriy qarzdorlik'}
+                      </th>
+                      <th className="py-3.5 px-4 text-right">
+                        {block1StartDate || block1EndDate ? 'Tanlangan davr haqdorligi' : 'Joriy haqdorlik'}
+                      </th>
                       <th className="py-3.5 px-4">Qo'shgan & Sana</th>
                       <th className="py-3.5 px-4 text-center">Amallar</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-rose-100/60">
-                    {visibleClients.map((client) => (
-                      <tr
-                        key={client.id}
-                        className="hover:bg-rose-50/30 transition-colors group cursor-pointer"
-                        onClick={() => onViewClient(client)}
-                      >
-                        {/* Name & Phone */}
-                        <td className="py-3.5 px-4">
-                          <div className="font-bold text-sm text-neutral-900 group-hover:text-rose-700 transition-colors">
-                            {client.name}
-                          </div>
-                          <div className="flex items-center gap-1.5 text-neutral-600 mt-0.5">
-                            <Phone className="w-3 h-3 text-neutral-400 shrink-0" />
-                            <span className="font-mono text-[11px] tabular-nums font-semibold">
-                              {client.phone || "Telefon yo'q"}
-                            </span>
-                          </div>
-                          {client.lastPlanCloseReason && (
-                            <div
-                              className="mt-1 flex items-center gap-1 text-[10px] text-rose-800 font-semibold truncate max-w-[200px] bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
-                              title={`Reja yopilish sababi: ${client.lastPlanCloseReason}`}
-                            >
-                              <Lock className="w-2.5 h-2.5 text-rose-700 shrink-0" />
-                              <span className="truncate">
-                                Yopilgan: "{client.lastPlanCloseReason}"
+                    {visibleClients.map((client) => {
+                      const bal = clientBlock1BalanceMap.get(client.id);
+                      const dispDebt = bal ? bal.debt : client.currentDebt;
+                      const dispAdv = bal ? bal.advance : client.currentAdvance;
+                      return (
+                        <tr
+                          key={client.id}
+                          className="hover:bg-rose-50/30 transition-colors group cursor-pointer"
+                          onClick={() => onViewClient(client)}
+                        >
+                          {/* Name & Phone */}
+                          <td className="py-3.5 px-4">
+                            <div className="font-bold text-sm text-neutral-900 group-hover:text-rose-700 transition-colors">
+                              {client.name}
+                            </div>
+                            <div className="flex items-center gap-1.5 text-neutral-600 mt-0.5">
+                              <Phone className="w-3 h-3 text-neutral-400 shrink-0" />
+                              <span className="font-mono text-[11px] tabular-nums font-semibold">
+                                {client.phone || "Telefon yo'q"}
                               </span>
                             </div>
-                          )}
-                        </td>
-
-                        {/* Address: Viloyat, Tuman, Mo'ljal */}
-                        <td className="py-3.5 px-4 max-w-[260px]">
-                          <div className="flex items-start gap-1.5 text-neutral-700">
-                            <MapPin className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
-                            <div className="min-w-0">
+                            {client.lastPlanCloseReason && (
                               <div
-                                className="font-semibold text-neutral-900 truncate"
-                                title={
-                                  [client.region, client.district].filter(Boolean).join(', ') ||
-                                  client.address
-                                }
+                                className="mt-1 flex items-center gap-1 text-[10px] text-rose-800 font-semibold truncate max-w-[200px] bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
+                                title={`Reja yopilish sababi: ${client.lastPlanCloseReason}`}
                               >
-                                {[client.region, client.district].filter(Boolean).join(', ') ||
-                                  client.address ||
-                                  "Ko'rsatilmagan"}
+                                <Lock className="w-2.5 h-2.5 text-rose-700 shrink-0" />
+                                <span className="truncate">
+                                  Yopilgan: "{client.lastPlanCloseReason}"
+                                </span>
                               </div>
-                              {client.landmark && (
+                            )}
+                          </td>
+
+                          {/* Address: Viloyat, Tuman, Mo'ljal */}
+                          <td className="py-3.5 px-4 max-w-[260px]">
+                            <div className="flex items-start gap-1.5 text-neutral-700">
+                              <MapPin className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                              <div className="min-w-0">
                                 <div
-                                  className="text-[11px] text-neutral-500 truncate"
-                                  title={`Mo'ljal: ${client.landmark}`}
+                                  className="font-semibold text-neutral-900 truncate"
+                                  title={
+                                    [client.region, client.district].filter(Boolean).join(', ') ||
+                                    client.address
+                                  }
                                 >
-                                  Mo'ljal: {client.landmark}
+                                  {[client.region, client.district].filter(Boolean).join(', ') ||
+                                    client.address ||
+                                    "Ko'rsatilmagan"}
                                 </div>
+                                {client.landmark && (
+                                  <div
+                                    className="text-[11px] text-neutral-500 truncate"
+                                    title={`Mo'ljal: ${client.landmark}`}
+                                  >
+                                    Mo'ljal: {client.landmark}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Debt */}
+                          <td className="py-3.5 px-4 text-right">
+                            {dispDebt > 0 ? (
+                              <div className="inline-block px-2.5 py-1 rounded-lg bg-rose-100/90 text-rose-900 font-mono font-bold text-xs tabular-nums border border-rose-200">
+                                {formatMoney(dispDebt)}
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400 font-mono">0 USD</span>
+                            )}
+                          </td>
+
+                          {/* Advance (Haqdorlik) */}
+                          <td className="py-3.5 px-4 text-right">
+                            {dispAdv > 0 ? (
+                              <div className="inline-block px-2.5 py-1 rounded-lg bg-emerald-100/90 text-emerald-900 font-mono font-bold text-xs tabular-nums border border-emerald-200">
+                                {formatMoney(dispAdv)}
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400 font-mono">0 USD</span>
+                            )}
+                          </td>
+
+                          {/* Author & Date */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
+                                  client.createdBy === 'agentp1'
+                                    ? 'bg-amber-100 text-amber-900 border border-amber-200'
+                                    : 'bg-rose-100 text-rose-900 border border-rose-200'
+                                }`}
+                              >
+                                {getAgentDisplayName(client.createdBy || 'adminc')}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-neutral-500 font-mono mt-0.5">
+                              {formatDate(client.createdAt)}
+                            </div>
+                          </td>
+
+                          {/* Actions (Faqat Ko'rish, Tahrirlash, O'chirish) */}
+                          <td
+                            className="py-3.5 px-4 text-center"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => onViewClient(client)}
+                                className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                                title="Batafsil ko'rish"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </button>
+                              {userRole !== 'agent' && (
+                                <button
+                                  onClick={() => onEditClient(client)}
+                                  className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                                  title="Tahrirlash"
+                                >
+                                  <Edit className="w-4 h-4" />
+                                </button>
+                              )}
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() => setClientToDelete(client)}
+                                  className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                                  title="Mijoz va ma'lumotlarini o'chirish"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
                               )}
                             </div>
-                          </div>
-                        </td>
-
-                        {/* Current Debt */}
-                        <td className="py-3.5 px-4 text-right">
-                          {client.currentDebt > 0 ? (
-                            <div className="inline-block px-2.5 py-1 rounded-lg bg-rose-100/90 text-rose-900 font-mono font-bold text-xs tabular-nums border border-rose-200">
-                              {formatMoney(client.currentDebt)}
-                            </div>
-                          ) : (
-                            <span className="text-neutral-400 font-mono">0 USD</span>
-                          )}
-                        </td>
-
-                        {/* Current Advance (Haqdorlik) */}
-                        <td className="py-3.5 px-4 text-right">
-                          {client.currentAdvance > 0 ? (
-                            <div className="inline-block px-2.5 py-1 rounded-lg bg-emerald-100/90 text-emerald-900 font-mono font-bold text-xs tabular-nums border border-emerald-200">
-                              {formatMoney(client.currentAdvance)}
-                            </div>
-                          ) : (
-                            <span className="text-neutral-400 font-mono">0 USD</span>
-                          )}
-                        </td>
-
-                        {/* Author & Date */}
-                        <td className="py-3.5 px-4 whitespace-nowrap">
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
-                                client.createdBy === 'agentp1'
-                                  ? 'bg-amber-100 text-amber-900 border border-amber-200'
-                                  : 'bg-rose-100 text-rose-900 border border-rose-200'
-                              }`}
-                            >
-                              {getAgentDisplayName(client.createdBy || 'adminc')}
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-neutral-500 font-mono mt-0.5">
-                            {formatDate(client.createdAt)}
-                          </div>
-                        </td>
-
-                        {/* Actions (Faqat Ko'rish, Tahrirlash, O'chirish) */}
-                        <td
-                          className="py-3.5 px-4 text-center"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              onClick={() => onViewClient(client)}
-                              className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
-                              title="Batafsil ko'rish"
-                            >
-                              <Eye className="w-4 h-4" />
-                            </button>
-                            {userRole !== 'agent' && (
-                              <button
-                                onClick={() => onEditClient(client)}
-                                className="p-1.5 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
-                                title="Tahrirlash"
-                              >
-                                <Edit className="w-4 h-4" />
-                              </button>
-                            )}
-                            {canDelete && (
-                              <button
-                                type="button"
-                                onClick={() => setClientToDelete(client)}
-                                className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
-                                title="Mijoz va ma'lumotlarini o'chirish"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                   <tfoot className="bg-rose-50/90 border-t-2 border-rose-200 text-neutral-900 font-bold text-xs">
                     <tr>
@@ -1496,128 +1937,133 @@ export const ClientTable: React.FC<Props> = ({
           {/* 1-Blok Mobile Card List (< 768px) */}
           {filteredClients.length > 0 && (
             <div className="md:hidden space-y-3">
-              {visibleClients.map((client) => (
-                <div
-                  key={client.id}
-                  onClick={() => onViewClient(client)}
-                  className="bg-white rounded-2xl p-4 border border-rose-100 shadow-xs space-y-3 active:bg-rose-50/40 transition"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-9 h-9 rounded-xl bg-rose-700 text-white font-bold flex items-center justify-center text-xs shrink-0">
-                        {client.name.slice(0, 2).toUpperCase()}
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-bold text-neutral-900 leading-tight">
-                          {client.name}
-                        </h4>
-                        <p
-                          className="text-[11px] text-neutral-500 truncate max-w-[200px]"
-                          title={client.address}
-                        >
-                          {[client.region, client.district].filter(Boolean).join(', ') ||
-                            client.address ||
-                            "Manzil ko'rsatilmagan"}
-                          {client.landmark ? ` (${client.landmark})` : ''}
-                        </p>
-                        {client.lastPlanCloseReason && (
-                          <div
-                            className="mt-1 flex items-center gap-1 text-[10px] text-rose-800 font-semibold truncate max-w-[200px] bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
-                            title={`Reja yopilish sababi: ${client.lastPlanCloseReason}`}
-                          >
-                            <Lock className="w-2.5 h-2.5 text-rose-700 shrink-0" />
-                            <span className="truncate">
-                              Yopilgan: "{client.lastPlanCloseReason}"
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <a
-                      href={`tel:${client.phone}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-9 h-9 rounded-xl bg-neutral-100 hover:bg-rose-50 text-neutral-800 hover:text-rose-700 flex items-center justify-center border border-neutral-200 transition min-h-[44px] min-w-[44px]"
-                      title="Qo'ng'iroq qilish"
-                    >
-                      <Phone className="w-4 h-4" />
-                    </a>
-                  </div>
-
-                  {/* Balances: Debt and Advance */}
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200/80">
-                      <span className="text-[10px] font-bold text-rose-900 uppercase block">
-                        Qarzdorlik:
-                      </span>
-                      <span className="font-mono font-bold text-neutral-900 text-xs tabular-nums block mt-0.5">
-                        {formatMoney(client.currentDebt)}
-                      </span>
-                    </div>
-
-                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200/80">
-                      <span className="text-[10px] font-bold text-emerald-900 uppercase block">
-                        Haqdorlik / Avans:
-                      </span>
-                      <span className="font-mono font-bold text-neutral-900 text-xs tabular-nums block mt-0.5">
-                        {formatMoney(client.currentAdvance)}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Author & Creation date on mobile */}
-                  <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-1">
-                    <span className="flex items-center gap-1.5">
-                      <span>Qo'shgan:</span>
-                      <span
-                        className={`px-1.5 py-0.5 rounded font-mono font-bold text-[10px] ${
-                          client.createdBy === 'agentp1'
-                            ? 'bg-amber-100 text-amber-900 border border-amber-200'
-                            : 'bg-rose-100 text-rose-900 border border-rose-200'
-                        }`}
-                      >
-                        {getAgentDisplayName(client.createdBy || 'adminc')}
-                      </span>
-                    </span>
-                    <span className="font-mono text-[10px]">{formatDate(client.createdAt)}</span>
-                  </div>
-
-                  {/* Quick actions for mobile (Faqat Ko'rish, Tahrirlash, O'chirish) */}
+              {visibleClients.map((client) => {
+                const bal = clientBlock1BalanceMap.get(client.id);
+                const dispDebt = bal ? bal.debt : client.currentDebt;
+                const dispAdv = bal ? bal.advance : client.currentAdvance;
+                return (
                   <div
-                    className="pt-1 flex items-center justify-between gap-2 border-t border-neutral-100"
-                    onClick={(e) => e.stopPropagation()}
+                    key={client.id}
+                    onClick={() => onViewClient(client)}
+                    className="bg-white rounded-2xl p-4 border border-rose-100 shadow-xs space-y-3 active:bg-rose-50/40 transition"
                   >
-                    <button
-                      onClick={() => onViewClient(client)}
-                      className="flex-1 py-2 text-xs font-semibold rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition min-h-[44px] flex items-center justify-center gap-1"
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-9 h-9 rounded-xl bg-rose-700 text-white font-bold flex items-center justify-center text-xs shrink-0">
+                          {client.name.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-bold text-neutral-900 leading-tight">
+                            {client.name}
+                          </h4>
+                          <p
+                            className="text-[11px] text-neutral-500 truncate max-w-[200px]"
+                            title={client.address}
+                          >
+                            {[client.region, client.district].filter(Boolean).join(', ') ||
+                              client.address ||
+                              "Manzil ko'rsatilmagan"}
+                            {client.landmark ? ` (${client.landmark})` : ''}
+                          </p>
+                          {client.lastPlanCloseReason && (
+                            <div
+                              className="mt-1 flex items-center gap-1 text-[10px] text-rose-800 font-semibold truncate max-w-[200px] bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
+                              title={`Reja yopilish sababi: ${client.lastPlanCloseReason}`}
+                            >
+                              <Lock className="w-2.5 h-2.5 text-rose-700 shrink-0" />
+                              <span className="truncate">
+                                Yopilgan: "{client.lastPlanCloseReason}"
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <a
+                        href={`tel:${client.phone}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-9 h-9 rounded-xl bg-neutral-100 hover:bg-rose-50 text-neutral-800 hover:text-rose-700 flex items-center justify-center border border-neutral-200 transition min-h-[44px] min-w-[44px]"
+                        title="Qo'ng'iroq qilish"
+                      >
+                        <Phone className="w-4 h-4" />
+                      </a>
+                    </div>
+
+                    {/* Balances: Debt and Advance */}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200/80">
+                        <span className="text-[10px] font-bold text-rose-900 uppercase block">
+                          Qarzdorlik:
+                        </span>
+                        <span className="font-mono font-bold text-neutral-900 text-xs tabular-nums block mt-0.5">
+                          {formatMoney(dispDebt)}
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200/80">
+                        <span className="text-[10px] font-bold text-emerald-900 uppercase block">
+                          Haqdorlik / Avans:
+                        </span>
+                        <span className="font-mono font-bold text-neutral-900 text-xs tabular-nums block mt-0.5">
+                          {formatMoney(dispAdv)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Author & Creation date on mobile */}
+                    <div className="flex items-center justify-between text-[11px] text-neutral-500 pt-1">
+                      <span className="flex items-center gap-1.5">
+                        <span>Qo'shgan:</span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded font-mono font-bold text-[10px] ${
+                            client.createdBy === 'agentp1'
+                              ? 'bg-amber-100 text-amber-900 border border-amber-200'
+                              : 'bg-rose-100 text-rose-900 border border-rose-200'
+                          }`}
+                        >
+                          {getAgentDisplayName(client.createdBy || 'adminc')}
+                        </span>
+                      </span>
+                      <span className="font-mono text-[10px]">{formatDate(client.createdAt)}</span>
+                    </div>
+
+                    {/* Quick actions for mobile (Faqat Ko'rish, Tahrirlash, O'chirish) */}
+                    <div
+                      className="pt-1 flex items-center justify-between gap-2 border-t border-neutral-100"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Ko'rish</span>
-                    </button>
-
-                    {userRole !== 'agent' && (
                       <button
-                        onClick={() => onEditClient(client)}
-                        className="p-2 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
-                        title="Tahrirlash"
+                        onClick={() => onViewClient(client)}
+                        className="flex-1 py-2 text-xs font-semibold rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition min-h-[44px] flex items-center justify-center gap-1"
                       >
-                        <Edit className="w-4 h-4" />
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Ko'rish</span>
                       </button>
-                    )}
 
-                    {canDelete && (
-                      <button
-                        type="button"
-                        onClick={() => setClientToDelete(client)}
-                        className="p-2 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
-                        title="Mijoz va ma'lumotlarini o'chirish"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
+                      {userRole !== 'agent' && (
+                        <button
+                          onClick={() => onEditClient(client)}
+                          className="p-2 rounded-lg text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
+                          title="Tahrirlash"
+                        >
+                          <Edit className="w-4 h-4" />
+                        </button>
+                      )}
+
+                      {canDelete && (
+                        <button
+                          type="button"
+                          onClick={() => setClientToDelete(client)}
+                          className="p-2 rounded-lg text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer"
+                          title="Mijoz va ma'lumotlarini o'chirish"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -1715,13 +2161,13 @@ export const ClientTable: React.FC<Props> = ({
               </button>
             </div>
 
-            {/* 1-Qadam: Maxsus vaqt oralig'ini tanlash */}
+            {/* 1-Qadam: Maxsus kun yoki vaqt oralig'ini tanlash */}
             <div className="p-3.5 rounded-2xl bg-indigo-50/50 border border-indigo-100 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <span className="inline-flex items-center gap-1.5 text-xs font-extrabold text-indigo-950">
                     <Calendar className="w-4 h-4 text-indigo-700" />
-                    <span>1. Maxsus vaqt oralig'ini tanlash:</span>
+                    <span>1. Maxsus kun yoki kunlar oralig'ini tanlash:</span>
                   </span>
                 </div>
 
@@ -1744,6 +2190,13 @@ export const ClientTable: React.FC<Props> = ({
                     className="px-2.5 py-1 rounded-lg font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 transition cursor-pointer"
                   >
                     Bugun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyQuickDateRange('yesterday')}
+                    className="px-2.5 py-1 rounded-lg font-bold bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50 transition cursor-pointer"
+                  >
+                    Kecha
                   </button>
                   <button
                     type="button"
@@ -1770,6 +2223,20 @@ export const ClientTable: React.FC<Props> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-indigo-300 text-xs">
+                  <span className="text-indigo-800 font-bold">Aniq kun:</span>
+                  <input
+                    type="date"
+                    value={
+                      block2StartDate && block2StartDate === block2EndDate ? block2StartDate : ''
+                    }
+                    onChange={(e) => {
+                      setBlock2StartDate(e.target.value);
+                      setBlock2EndDate(e.target.value);
+                    }}
+                    className="font-mono font-bold text-neutral-900 bg-transparent outline-none cursor-pointer"
+                  />
+                </div>
                 <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-indigo-200 text-xs">
                   <span className="text-neutral-500 font-semibold">Dan:</span>
                   <input
@@ -1968,7 +2435,7 @@ export const ClientTable: React.FC<Props> = ({
                                 </div>
                                 <span className="text-[10px] font-mono text-neutral-500 shrink-0">
                                   {prod.clientsCount} mijoz • {prod.totalTimes} marta •{' '}
-                                  {formatNumber(prod.totalQty)} {prod.unit}
+                                  {formatNumber(prod.totalQty)} dona
                                 </span>
                               </button>
                             );
@@ -2200,7 +2667,7 @@ export const ClientTable: React.FC<Props> = ({
                   {formatMoney(block2Summary.totalSumUsd)}
                 </div>
                 <div className="text-[11px] text-neutral-500 mt-1 font-medium">
-                  Jami miqdor: <strong className="text-neutral-800">{formatNumber(block2Summary.totalQuantity)}</strong> birlik ({block2Summary.totalTimesDelivered} marta berilgan)
+                  Jami miqdor: <strong className="text-neutral-800">{formatNumber(block2Summary.totalQuantity)}</strong> dona
                 </div>
               </div>
 
@@ -2277,9 +2744,9 @@ export const ClientTable: React.FC<Props> = ({
                       <th className="py-3.5 px-4">Mijoz ismi & Telefon</th>
                       <th className="py-3.5 px-4">Manzili</th>
                       <th className="py-3.5 px-4">
-                        Qaysi mahsulot necha marta berilgani
+                        Qaysi mahsulot necha marta olingani
                       </th>
-                      <th className="py-3.5 px-4 text-right">Jami miqdori</th>
+                      <th className="py-3.5 px-4 text-right">Jami miqdori (dona)</th>
                       <th className="py-3.5 px-4 text-right">Nasiyasiz sotilgan</th>
                       <th className="py-3.5 px-4 text-right">Nasiyaga sotilgan</th>
                       <th className="py-3.5 px-4 text-right">Mahsulotlar qiymati</th>
@@ -2322,8 +2789,8 @@ export const ClientTable: React.FC<Props> = ({
                             )}
                           </td>
 
-                          {/* Qaysi mahsulotni necha marta berilgani (bitta ustunda) */}
-                          <td className="py-3.5 px-4 max-w-[340px]">
+                          {/* Qaysi mahsulotni necha marta olgani (bitta ustunda har bir turdagi mahsulot bo'yicha) */}
+                          <td className="py-3.5 px-4 max-w-[360px]">
                             <div className="space-y-1.5">
                               {matchedProducts.map((mp) => (
                                 <div
@@ -2334,26 +2801,36 @@ export const ClientTable: React.FC<Props> = ({
                                     <span className="font-bold text-neutral-900 block truncate">
                                       {mp.productName}
                                     </span>
-                                    <span className="text-[11px] text-neutral-500 font-mono">
-                                      Jami: {formatNumber(mp.totalQuantity)} {mp.unit} (
+                                    <span className="text-[11px] text-neutral-500 font-mono block">
+                                      Miqdori: {formatNumber(mp.totalQuantity)} dona (
                                       {formatMoney(mp.totalSumUsd)})
                                     </span>
+                                    {mp.dates && mp.dates.length > 0 && (
+                                      <span className="text-[10px] text-neutral-400 font-mono block">
+                                        Sana: {mp.dates.slice(0, 3).map(formatDateDMY).join(', ')}
+                                        {mp.dates.length > 3 ? ` (+${mp.dates.length - 3})` : ''}
+                                      </span>
+                                    )}
                                   </div>
                                   <span className="px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 border border-indigo-200 font-mono font-extrabold text-[11px] shrink-0">
-                                    {mp.timesDelivered} marta
+                                    {mp.timesDelivered} marta olgan
                                   </span>
                                 </div>
                               ))}
                             </div>
                           </td>
 
-                          {/* Jami miqdori */}
+                          {/* Jami miqdori (dona) va har bir mahsulot turi bo'yicha necha marta olingani */}
                           <td className="py-3.5 px-4 text-right whitespace-nowrap">
                             <div className="font-mono font-bold text-neutral-900 text-xs">
-                              {formatNumber(row.totalQuantity)} birlik
+                              {formatNumber(row.totalQuantity)} dona
                             </div>
-                            <div className="text-[10px] text-indigo-700 font-bold">
-                              Jami {row.totalTimesDelivered} marta berilgan
+                            <div className="text-[10px] text-indigo-700 font-bold space-y-0.5 mt-0.5">
+                              {matchedProducts.map((mp) => (
+                                <div key={mp.productKey} className="truncate max-w-[180px] ml-auto">
+                                  {mp.productName}: {mp.timesDelivered} marta
+                                </div>
+                              ))}
                             </div>
                           </td>
 
@@ -2411,11 +2888,11 @@ export const ClientTable: React.FC<Props> = ({
                           JAMI ({block2Summary.clientsCount} ta mijoz)
                         </div>
                         <div className="text-[10px] text-neutral-600">
-                          Jami {block2Summary.totalTimesDelivered} marta mahsulot berilgan
+                          Jami miqdor: {formatNumber(block2Summary.totalQuantity)} dona
                         </div>
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono font-extrabold">
-                        {formatNumber(block2Summary.totalQuantity)}
+                        {formatNumber(block2Summary.totalQuantity)} dona
                       </td>
                       <td className="py-3.5 px-4 text-right font-mono font-extrabold text-emerald-800 bg-emerald-100/80">
                         {formatMoney(block2Summary.paidSumUsd)}
@@ -2455,14 +2932,14 @@ export const ClientTable: React.FC<Props> = ({
                         </p>
                       </div>
                       <span className="px-2.5 py-1 rounded-xl bg-indigo-50 text-indigo-900 border border-indigo-200 text-[11px] font-mono font-bold">
-                        {row.totalTimesDelivered} marta
+                        {formatNumber(row.totalQuantity)} dona
                       </span>
                     </div>
 
                     {/* Qaysi mahsulot necha marta berilgani */}
                     <div className="space-y-1.5">
                       <span className="text-[10px] font-bold uppercase text-neutral-500 block">
-                        Olingan mahsulotlar va necha marta berilgani:
+                        Olingan mahsulotlar va necha marta olingani:
                       </span>
                       {matchedProducts.map((mp) => (
                         <div
@@ -2474,12 +2951,12 @@ export const ClientTable: React.FC<Props> = ({
                               {mp.productName}
                             </span>
                             <span className="text-[11px] text-neutral-500 font-mono">
-                              {formatNumber(mp.totalQuantity)} {mp.unit} •{' '}
+                              {formatNumber(mp.totalQuantity)} dona •{' '}
                               {formatMoney(mp.totalSumUsd)}
                             </span>
                           </div>
                           <span className="px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 font-mono font-extrabold text-[11px] shrink-0">
-                            {mp.timesDelivered} marta
+                            {mp.timesDelivered} marta olgan
                           </span>
                         </div>
                       ))}

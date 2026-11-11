@@ -127,6 +127,7 @@ export default function App() {
   const [isAgentWarehouseOpen, setIsAgentWarehouseOpen] = useState(false);
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [isAdminPlansOpen, setIsAdminPlansOpen] = useState(false);
+  const [isAdminRemindersOpen, setIsAdminRemindersOpen] = useState(false);
   const [isAdminLogsOpen, setIsAdminLogsOpen] = useState(false);
 
   // Modals state
@@ -146,6 +147,7 @@ export default function App() {
   const [isCreatePlanOpen, setIsCreatePlanOpen] = useState(false);
   const [executingPlanItem, setExecutingPlanItem] = useState<DailyPlanItem | null>(null);
   const [executingPlanEditSoldMode, setExecutingPlanEditSoldMode] = useState(false);
+  const [executingPlanEditFinancialMode, setExecutingPlanEditFinancialMode] = useState(false);
 
   // Warehouse state (Ombor zaxirasi)
   const [warehouseProducts, setWarehouseProducts] = useState<WarehouseProduct[]>(() =>
@@ -1174,8 +1176,26 @@ export default function App() {
       );
       if (updatedClient) {
         setClients([...storageService.getClients()]);
+        setSelectedClient((prev) => (prev && prev.id === clientId ? updatedClient : prev));
         syncClientToFirestore(updatedClient);
-        showToast('Eslatma holati yangilandi.');
+        const rem = updatedClient.reminders?.find((r) => r.id === reminderId);
+        if (rem) {
+          addSystemLog({
+            userId: currentUsername,
+            userRole: user?.role || 'agent',
+            actionType: 'amal_bajarish',
+            actionTitle:
+              rem.status === 'bajarildi'
+                ? `Eslatma bajarildi deb belgilandi (✓): ${updatedClient.name}`
+                : `Eslatma qayta kutilmoqda holatiga o'tkazildi: ${updatedClient.name}`,
+            details: `Eslatma (${rem.reminderDate}): "${rem.note}". Tick bosdi: @${currentUsername}`,
+          });
+        }
+        showToast(
+          rem?.status === 'bajarildi'
+            ? `Eslatma bajarildi (✓ — @${currentUsername})`
+            : 'Eslatma holati yangilandi.'
+        );
       }
     },
     [user]
@@ -1186,6 +1206,7 @@ export default function App() {
     const updatedClient = storageService.deleteReminder(reminderId, clientId);
     if (updatedClient) {
       setClients([...storageService.getClients()]);
+      setSelectedClient((prev) => (prev && prev.id === clientId ? updatedClient : prev));
       syncClientToFirestore(updatedClient);
       showToast("Eslatma o'chirildi.");
     }
@@ -1376,6 +1397,60 @@ export default function App() {
       const updatedWh = storageService.getWarehouseProducts();
       setWarehouseProducts(updatedWh);
       syncWarehouseProductsBulkToFirestore(updatedWh);
+    }
+  };
+
+  // Handle Update Financial Action (Payment) on an open or closed plan item
+  const handleUpdateFinancialAction = (
+    planItemId: string,
+    data: {
+      financialAction: NonNullable<DailyPlanItem['financialAction']>;
+      reportNote?: string;
+    },
+    closeAfterSave?: boolean,
+    closeDate?: string
+  ) => {
+    const currentUsername = user?.username || 'agentp1';
+    const result = storageService.updateFinancialActionOnPlanItem(
+      planItemId,
+      currentUsername,
+      data
+    );
+    if (result.success) {
+      if (closeAfterSave && result.plan && !result.plan.isClosed) {
+        const autoCloseReason =
+          data.reportNote?.trim() || "Moliyaviy amaliyot yangilandi va hisobot yopildi";
+        storageService.closeDailyPlanItem(
+          planItemId,
+          currentUsername,
+          autoCloseReason,
+          false,
+          closeDate
+        );
+      }
+
+      const finalPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
+      if (finalPlan) syncPlanToFirestore(finalPlan);
+
+      if (result.client) {
+        const freshClient = storageService.getClientById(result.client.id);
+        if (freshClient) syncClientToFirestore(freshClient);
+      }
+
+      addSystemLog({
+        userId: currentUsername,
+        userRole: user?.role || 'agent',
+        actionType: 'amal_bajarish',
+        actionTitle: `Moliyaviy amaliyot (to'lov) tahrirlandi (@${currentUsername})`,
+        details: `Mijoz: ${result.client?.name || finalPlan?.clientName || ''}. Yangilangan to'lov: ${data.financialAction.amount.toLocaleString('uz-UZ')} USD (${data.financialAction.methodLabel}).`,
+      });
+
+      showToast(
+        `Moliyaviy amaliyot (to'lov) muvaffaqiyatli yangilandi (@${currentUsername})!`
+      );
+
+      setDailyPlans([...storageService.getActive24hPlans()]);
+      setClients([...storageService.getClients()]);
     }
   };
 
@@ -1688,7 +1763,7 @@ export default function App() {
                   clients={clients}
                   onOpenCreatePlan={() => setIsCreatePlanOpen(true)}
                   onOpenMonthlyPlan={() => setAgentActiveTab('oylik_reja')}
-                  onOpenExecuteModal={(item, editSold) => {
+                  onOpenExecuteModal={(item, editSold, editFinancial) => {
                     const latestPlans = storageService.getActive24hPlans();
                     const exact = latestPlans.find((p) => p.id === item.id);
                     const openForClient = latestPlans.find(
@@ -1704,6 +1779,7 @@ export default function App() {
                         ? exact
                         : openForClient || exact || item;
                     setExecutingPlanEditSoldMode(Boolean(editSold));
+                    setExecutingPlanEditFinancialMode(Boolean(editFinancial));
                     setExecutingPlanItem(resolved);
                   }}
                   onMarkPlannedActionDone={(item) =>
@@ -2129,7 +2205,7 @@ export default function App() {
                     plans={dailyPlans}
                     clients={clients}
                     onRemovePlanItems={handleRemoveDailyPlanItems}
-                    onOpenExecuteModal={(item, editSold) => {
+                    onOpenExecuteModal={(item, editSold, editFinancial) => {
                       const latestPlans = storageService.getActive24hPlans();
                       const exact = latestPlans.find((p) => p.id === item.id);
                       const openForClient = latestPlans.find(
@@ -2145,7 +2221,82 @@ export default function App() {
                           ? exact
                           : openForClient || exact || item;
                       setExecutingPlanEditSoldMode(Boolean(editSold));
+                      setExecutingPlanEditFinancialMode(Boolean(editFinancial));
                       setExecutingPlanItem(resolved);
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ========================================================= */}
+        {/* ADMIN UCHUN: ESLATMALAR (AGENTLAR ESLATMALARI VA KALENDAR) */}
+        {/* ========================================================= */}
+        {isAdmin && (
+          <section className="bg-white rounded-3xl border border-amber-200 shadow-xs overflow-hidden transition-all duration-200">
+            <div
+              onClick={() => setIsAdminRemindersOpen(!isAdminRemindersOpen)}
+              className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-amber-50/40 transition select-none"
+            >
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500 text-white font-bold font-display flex items-center justify-center text-base shrink-0 shadow-xs">
+                  <BellRing className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
+                      Agentlar eslatmalari va kalendar
+                    </h2>
+                    <span className="text-[11px] font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded-md border border-amber-300">
+                      Jami: {allReminders.length} ta ({pendingRemindersCount} ta kutilmoqda)
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsAdminRemindersOpen(!isAdminRemindersOpen);
+                  }}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition min-h-[40px] cursor-pointer ${
+                    isAdminRemindersOpen
+                      ? 'bg-neutral-100 text-neutral-800 hover:bg-neutral-200'
+                      : 'bg-amber-600 text-white hover:bg-amber-700 shadow-xs'
+                  }`}
+                >
+                  {isAdminRemindersOpen ? (
+                    <>
+                      <ChevronUp className="w-4 h-4" />
+                      <span>Yopish</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="w-4 h-4" />
+                      <span>Ochish</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {isAdminRemindersOpen && (
+              <div className="p-5 sm:p-6 pt-0 border-t border-amber-100 animate-in fade-in duration-150">
+                <div className="pt-4">
+                  <AgentRemindersSection
+                    reminders={allReminders}
+                    clients={clients}
+                    allPlans={dailyPlans}
+                    currentAgent={user.username}
+                    onToggleReminderStatus={handleToggleReminderStatus}
+                    onDeleteReminder={handleDeleteReminder}
+                    onViewClientHistory={(client) => {
+                      setSelectedClient(client);
+                      setIsDetailModalOpen(true);
                     }}
                   />
                 </div>
@@ -2291,6 +2442,8 @@ export default function App() {
           setWarehouseDebtClient(client);
           setIsAddWarehouseDebtOpen(true);
         }}
+        onToggleReminderStatus={handleToggleReminderStatus}
+        onDeleteReminder={handleDeleteReminder}
         userRole={user.role}
         currentUsername={user.username}
       />
@@ -2354,12 +2507,15 @@ export default function App() {
         planItem={executingPlanItem}
         isOpen={!!executingPlanItem}
         initialEditSoldProducts={executingPlanEditSoldMode}
+        initialEditFinancialAction={executingPlanEditFinancialMode}
         onClose={() => {
           setExecutingPlanItem(null);
           setExecutingPlanEditSoldMode(false);
+          setExecutingPlanEditFinancialMode(false);
         }}
         onSaveReport={handleSavePlanReport}
         onUpdateSoldProducts={handleUpdateSoldProducts}
+        onUpdateFinancialAction={handleUpdateFinancialAction}
         onCloseWithoutAction={(planId, reason, closeDate) => handleClosePlanItem(planId, reason, true, closeDate)}
         onSaveReminder={handleSaveReminder}
         onQuickReopen={async (planId) => {

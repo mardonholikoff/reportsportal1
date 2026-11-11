@@ -72,6 +72,52 @@ export function getPlanSoldProductsData(plan: DailyPlanItem | null | undefined):
   return { productsDelivered: [], historyIndex: -1 };
 }
 
+export function getPlanFinancialActionData(plan: DailyPlanItem | null | undefined): {
+  financialAction?: NonNullable<DailyPlanItem['financialAction']>;
+  totalFinancialAmount: number;
+  historyIndex: number;
+} {
+  if (!plan) return { totalFinancialAmount: 0, historyIndex: -1 };
+  if (plan.actionsHistory && plan.actionsHistory.length > 0) {
+    let totalFinancialAmount = 0;
+    let firstIdx = -1;
+    let latestFinancialAction: NonNullable<DailyPlanItem['financialAction']> | null = null;
+    for (let idx = 0; idx < plan.actionsHistory.length; idx++) {
+      const act = plan.actionsHistory[idx];
+      if (act.financialAction && act.financialAction.amount > 0) {
+        if (firstIdx === -1) firstIdx = idx;
+        totalFinancialAmount += act.financialAction.amount;
+        latestFinancialAction = {
+          ...act.financialAction,
+          method: act.financialAction.method || 'naqd',
+        };
+      }
+    }
+    if (firstIdx !== -1 && latestFinancialAction) {
+      const mergedAction: NonNullable<DailyPlanItem['financialAction']> =
+        totalFinancialAmount !== latestFinancialAction.amount
+          ? {
+              ...latestFinancialAction,
+              amount: Math.round(totalFinancialAmount * 100) / 100,
+            }
+          : latestFinancialAction;
+      return {
+        financialAction: mergedAction,
+        totalFinancialAmount: Math.round(totalFinancialAmount * 100) / 100,
+        historyIndex: firstIdx,
+      };
+    }
+  }
+  if (plan.financialAction && plan.financialAction.amount > 0) {
+    return {
+      financialAction: plan.financialAction,
+      totalFinancialAmount: Math.round(plan.financialAction.amount * 100) / 100,
+      historyIndex: -1,
+    };
+  }
+  return { totalFinancialAmount: 0, historyIndex: -1 };
+}
+
 let deletedClientIdsCache: Set<string> | null = null;
 let deletedWarehouseIdsCache: Set<string> | null = null;
 
@@ -1539,6 +1585,174 @@ class StorageService {
       currentDebt: newDebt,
       currentAdvance: newAdvance,
       products: updatedClientProducts,
+      logs: clientLogs,
+      updatedAt: nowStr,
+    });
+
+    return { success: true, plan, client: updatedClient || undefined };
+  }
+
+  // Rejadagi mijozga qilingan moliyaviy amaliyot (to'lov)ga o'zgartirish kiritish (ochiq yoki yopilgan rejada)
+  public updateFinancialActionOnPlanItem(
+    planItemId: string,
+    author: string,
+    updateData: {
+      financialAction: NonNullable<DailyPlanItem['financialAction']>;
+      reportNote?: string;
+    }
+  ): { success: boolean; plan?: DailyPlanItem; client?: Client } {
+    const plans = this.getDailyPlans();
+    const planIndex = plans.findIndex((p) => p.id === planItemId);
+    if (planIndex === -1) return { success: false };
+
+    const plan = { ...plans[planIndex] };
+    const nowStr = new Date().toISOString();
+
+    // 1. Oldingi moliyaviy to'lov summasini aniqlaymiz
+    const existingFin = getPlanFinancialActionData(plan);
+    const oldTotalAmount = existingFin.totalFinancialAmount || 0;
+
+    // 2. Yangi moliyaviy to'lov ma'lumotlari
+    const newAmount = Math.max(
+      0,
+      Math.round((updateData.financialAction.amount || 0) * 100) / 100
+    );
+    const updatedFinAction: DailyPlanItem['financialAction'] =
+      newAmount > 0
+        ? {
+            ...updateData.financialAction,
+            amount: newAmount,
+            currency: updateData.financialAction.currency || 'USD',
+          }
+        : undefined;
+
+    // 3. Plan ma'lumotlarini va actionsHistory'ni yangilaymiz (ikkilanib qolmasligi uchun yagona yozuvga keltiramiz)
+    plan.financialAction = updatedFinAction;
+    if (updateData.reportNote !== undefined && updateData.reportNote.trim()) {
+      plan.reportNote = updateData.reportNote.trim();
+    }
+    plan.lastExecutedBy = author;
+
+    if (plan.actionsHistory && plan.actionsHistory.length > 0) {
+      const historyCopy = [...plan.actionsHistory];
+      const targetIdx = existingFin.historyIndex !== -1 ? existingFin.historyIndex : 0;
+      for (let i = 0; i < historyCopy.length; i++) {
+        if (i === targetIdx) {
+          historyCopy[i] = {
+            ...historyCopy[i],
+            author,
+            financialAction: updatedFinAction,
+            reportNote: updateData.reportNote?.trim() || historyCopy[i].reportNote,
+          };
+        } else if (historyCopy[i].financialAction) {
+          historyCopy[i] = {
+            ...historyCopy[i],
+            financialAction: undefined,
+          };
+        }
+      }
+      plan.actionsHistory = historyCopy;
+    } else if (updatedFinAction) {
+      plan.actionsHistory = [
+        {
+          timestamp: plan.completedAt || nowStr,
+          author,
+          actionDone: plan.actionDone || plan.plannedAction || 'joyiga borildi',
+          financialAction: updatedFinAction,
+          reportNote: updateData.reportNote?.trim() || plan.reportNote,
+        },
+      ];
+      plan.actionsCount = 1;
+    }
+
+    plans[planIndex] = plan;
+    this.saveDailyPlans(plans);
+
+    // 4. Mijozning qarz/haqdorlik balansini va tarix (logs) yozuvini yangilaymiz
+    const client = this.getClients().find((c) => c.id === plan.clientId);
+    if (!client) return { success: true, plan };
+
+    // Oldin oldTotalAmount mijoz qarzini kamaytirgan edi (-oldTotalAmount), endi newAmount kamaytiradi (-newAmount)
+    const currentNetDebt = (client.currentDebt || 0) - (client.currentAdvance || 0);
+    const debtDelta = Math.round((oldTotalAmount - newAmount) * 100) / 100;
+    const updatedNetDebt = Math.round((currentNetDebt + debtDelta) * 100) / 100;
+
+    const newDebt = updatedNetDebt >= 0 ? updatedNetDebt : 0;
+    const newAdvance = updatedNetDebt < 0 ? Math.abs(updatedNetDebt) : 0;
+
+    const clientLogs = [...(client.logs || [])];
+    const planDatePrefix = (plan.planDate || plan.createdAt || '').slice(0, 10);
+
+    // Mavjud to'lov logini topib yangilaymiz (ikkilanib hisoblanmasligi uchun)
+    let paymentLogIdx = clientLogs.findIndex(
+      (l) =>
+        l.type === 'payment' &&
+        (l.id.endsWith('_fin') || l.purpose === 'payment') &&
+        planDatePrefix &&
+        (l.timestamp || '').slice(0, 10) === planDatePrefix
+    );
+    if (paymentLogIdx === -1) {
+      paymentLogIdx = clientLogs.findIndex(
+        (l) => l.type === 'payment' && (l.id.endsWith('_fin') || l.purpose === 'payment')
+      );
+    }
+
+    const formattedNewAmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(
+      newAmount
+    );
+    const formattedOldAmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(
+      oldTotalAmount
+    );
+
+    if (newAmount > 0 && updatedFinAction) {
+      const updatedLogDetails = `${author} tomonidan qabul qilindi: ${formattedNewAmt} USD (${updatedFinAction.methodLabel}). ${updatedFinAction.note || ''}`.trim();
+      if (paymentLogIdx !== -1) {
+        clientLogs[paymentLogIdx] = {
+          ...clientLogs[paymentLogIdx],
+          author,
+          title: `To'lov qabul qilindi (${updatedFinAction.methodLabel})`,
+          details: updatedLogDetails,
+          amountChanged: newAmount,
+          amountUzs: updatedFinAction.amountUzs,
+          exchangeRate: updatedFinAction.exchangeRate,
+          purpose: 'payment',
+          paymentMethodLabel: updatedFinAction.methodLabel,
+        };
+      } else {
+        clientLogs.unshift({
+          id: 'log_' + Date.now() + '_fin',
+          clientId: client.id,
+          author,
+          timestamp: nowStr,
+          type: 'payment',
+          title: `To'lov qabul qilindi (${updatedFinAction.methodLabel})`,
+          details: updatedLogDetails,
+          amountChanged: newAmount,
+          amountUzs: updatedFinAction.amountUzs,
+          exchangeRate: updatedFinAction.exchangeRate,
+          purpose: 'payment',
+          paymentMethodLabel: updatedFinAction.methodLabel,
+        });
+      }
+    } else if (paymentLogIdx !== -1) {
+      clientLogs.splice(paymentLogIdx, 1);
+    }
+
+    // Tahrirlanganlik haqida ma'lumot logi (visit_action bo'lgani uchun tushumlar summasiga 2 marta qo'shilmaydi)
+    clientLogs.unshift({
+      id: 'log_' + Date.now() + '_fin_edit',
+      clientId: client.id,
+      author,
+      timestamp: nowStr,
+      type: 'visit_action',
+      title: "Moliyaviy amaliyot (to'lov) tahrirlandi",
+      details: `${author} tomonidan moliyaviy amaliyot o'zgartirildi: Oldingi to'lov: ${formattedOldAmt} USD -> Yangi to'lov: ${formattedNewAmt} USD (${updatedFinAction?.methodLabel || "To'lov bekor qilindi"}).${updatedFinAction?.note ? ' ' + updatedFinAction.note : ''}`,
+      amountChanged: newAmount,
+    });
+
+    const updatedClient = this.updateClient(client.id, {
+      currentDebt: newDebt,
+      currentAdvance: newAdvance,
       logs: clientLogs,
       updatedAt: nowStr,
     });
@@ -3232,10 +3446,17 @@ class StorageService {
     if (!client || !Array.isArray(client.reminders)) return null;
 
     const nowStr = new Date().toISOString();
+    let toggledNote = '';
+    let toggledDate = '';
+    let finalStatus: 'kutilmoqda' | 'bajarildi' = 'bajarildi';
+
     const updatedReminders = client.reminders.map((r) => {
       if (r.id !== reminderId) return r;
       const nextStatus: 'kutilmoqda' | 'bajarildi' =
         r.status === 'bajarildi' ? 'kutilmoqda' : 'bajarildi';
+      finalStatus = nextStatus;
+      toggledNote = r.note;
+      toggledDate = r.reminderDate;
       return {
         ...r,
         status: nextStatus,
@@ -3244,8 +3465,25 @@ class StorageService {
       };
     });
 
+    const currentLogs = client.logs ? [...client.logs] : [];
+    if (toggledNote) {
+      currentLogs.unshift({
+        id: 'log_' + Date.now() + '_rem_tick',
+        clientId: client.id,
+        author,
+        timestamp: nowStr,
+        type: 'visit_action',
+        title:
+          finalStatus === 'bajarildi'
+            ? `Eslatma bajarildi (✓) — @${author}`
+            : `Eslatma qayta kutilmoqda holatiga o'tkazildi — @${author}`,
+        details: `Eslatma (${toggledDate}): "${toggledNote}". Holatni o'zgartirdi: @${author}`,
+      });
+    }
+
     return this.updateClient(client.id, {
       reminders: updatedReminders,
+      logs: currentLogs,
     });
   }
 

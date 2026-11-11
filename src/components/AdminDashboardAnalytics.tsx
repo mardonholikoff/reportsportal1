@@ -288,6 +288,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [selectedClientCreator, setSelectedClientCreator] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState<number>(2026);
   const [selectedClientMonth, setSelectedClientMonth] = useState<number | 'all'>('all');
+  const [b2StartDate, setB2StartDate] = useState<string>('');
+  const [b2EndDate, setB2EndDate] = useState<string>('');
+  const [b2DateCalcMode, setB2DateCalcMode] = useState<'snapshot' | 'period_activity'>('snapshot');
   const [minDebtFilter, setMinDebtFilter] = useState<string>('');
   const [maxDebtFilter, setMaxDebtFilter] = useState<string>('');
   const [clientSortMode, setClientSortMode] = useState<ClientSortMode>('debt_desc');
@@ -296,6 +299,104 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [block2Page, setBlock2Page] = useState<number>(1);
   const [block2PageSize, setBlock2PageSize] = useState<number | 'all'>(50);
 
+  const isB2DateActive = Boolean(b2StartDate || b2EndDate);
+
+  const applyB2QuickDate = (preset: 'all' | 'today' | 'yesterday' | 'thisMonth') => {
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    if (preset === 'all') {
+      setB2StartDate('');
+      setB2EndDate('');
+    } else if (preset === 'today') {
+      setB2StartDate(todayStr);
+      setB2EndDate(todayStr);
+    } else if (preset === 'yesterday') {
+      const y = new Date(now);
+      y.setDate(now.getDate() - 1);
+      const yStr = y.toISOString().slice(0, 10);
+      setB2StartDate(yStr);
+      setB2EndDate(yStr);
+    } else if (preset === 'thisMonth') {
+      const firstStr = `${todayStr.slice(0, 8)}01`;
+      setB2StartDate(firstStr);
+      setB2EndDate(todayStr);
+    }
+  };
+
+  // Pre-compute per-client balance for Block 2 based on b2StartDate / b2EndDate
+  const clientB2BalanceMap = useMemo(() => {
+    const map = new Map<string, { debt: number; advance: number; hadActivityInPeriod: boolean }>();
+    const startStr = b2StartDate || '';
+    const endStr = b2EndDate || b2StartDate || '';
+
+    for (let i = 0; i < internalClients.length; i++) {
+      const c = internalClients[i];
+      if (!isB2DateActive) {
+        map.set(c.id, {
+          debt: Math.max(0, Math.round((c.currentDebt || 0) * 100) / 100),
+          advance: Math.max(0, Math.round((c.currentAdvance || 0) * 100) / 100),
+          hadActivityInPeriod: true,
+        });
+        continue;
+      }
+
+      const logs = c.logs || [];
+      let hadActivityInPeriod = false;
+
+      if (b2DateCalcMode === 'period_activity') {
+        let addedDebt = 0;
+        let paidOrReduced = 0;
+        for (let j = 0; j < logs.length; j++) {
+          const log = logs[j];
+          const logDate = (log.timestamp || '').slice(0, 10);
+          if (!logDate) continue;
+          if (startStr && logDate < startStr) continue;
+          if (endStr && logDate > endStr) continue;
+          hadActivityInPeriod = true;
+          const amt = Number(log.amountChanged) || 0;
+          if (log.type === 'product_added') {
+            addedDebt += amt;
+          } else if (log.type === 'payment') {
+            paidOrReduced += amt;
+          }
+        }
+        map.set(c.id, {
+          debt: Math.max(0, Math.round(addedDebt * 100) / 100),
+          advance: Math.max(0, Math.round(paidOrReduced * 100) / 100),
+          hadActivityInPeriod,
+        });
+      } else {
+        // 'snapshot': balance as of end of endStr
+        const createdDate = (c.createdAt || '').slice(0, 10);
+        if (endStr && createdDate && createdDate > endStr && logs.length === 0) {
+          map.set(c.id, { debt: 0, advance: 0, hadActivityInPeriod: false });
+          continue;
+        }
+        let netAtEnd = (c.currentDebt || 0) - (c.currentAdvance || 0);
+        for (let j = 0; j < logs.length; j++) {
+          const log = logs[j];
+          const logDate = (log.timestamp || '').slice(0, 10);
+          if (!logDate) continue;
+          if ((!startStr || logDate >= startStr) && (!endStr || logDate <= endStr)) {
+            hadActivityInPeriod = true;
+          }
+          if (endStr && logDate > endStr) {
+            const amt = Number(log.amountChanged) || 0;
+            if (log.type === 'product_added') {
+              netAtEnd -= amt;
+            } else if (log.type === 'payment') {
+              netAtEnd += amt;
+            }
+          }
+        }
+        const debt = netAtEnd > 0.005 ? Math.round(netAtEnd * 100) / 100 : 0;
+        const advance = netAtEnd < -0.005 ? Math.round(Math.abs(netAtEnd) * 100) / 100 : 0;
+        map.set(c.id, { debt, advance, hadActivityInPeriod });
+      }
+    }
+    return map;
+  }, [internalClients, isB2DateActive, b2StartDate, b2EndDate, b2DateCalcMode]);
+
   // Pre-compute global balance counts for Block 2 filter buttons in a single O(N) pass
   const globalClientBalanceCounts = useMemo(() => {
     let debtors = 0;
@@ -303,14 +404,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     let zero = 0;
     for (let i = 0; i < internalClients.length; i++) {
       const c = internalClients[i];
-      const d = c.currentDebt || 0;
-      const a = c.currentAdvance || 0;
+      const bal = clientB2BalanceMap.get(c.id);
+      const d = bal ? bal.debt : c.currentDebt || 0;
+      const a = bal ? bal.advance : c.currentAdvance || 0;
       if (d > 0) debtors++;
       if (a > 0) creditors++;
       if (d === 0 && a === 0) zero++;
     }
     return { debtors, creditors, zero };
-  }, [internalClients]);
+  }, [internalClients, clientB2BalanceMap]);
 
   // O(1) lookup map of internalClients by ID
   const internalClientsMap = useMemo(() => {
@@ -359,6 +461,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     selectedClientCreator !== 'all' ||
     clientBalanceFilter !== 'all' ||
     selectedClientMonth !== 'all' ||
+    b2StartDate !== '' ||
+    b2EndDate !== '' ||
     minDebtFilter.trim() !== '' ||
     maxDebtFilter.trim() !== '';
 
@@ -369,6 +473,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     setSelectedClientCreator('all');
     setClientBalanceFilter('all');
     setSelectedClientMonth('all');
+    setB2StartDate('');
+    setB2EndDate('');
     setMinDebtFilter('');
     setMaxDebtFilter('');
     setClientSortMode('debt_desc');
@@ -411,12 +517,22 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   };
 
   const filteredAnnualClients = useMemo(() => {
-    let list: ClientAnnualData[] = internalClients.map((c) => ({
-      client: c,
-      currentDebt: c.currentDebt || 0,
-      currentAdvance: c.currentAdvance || 0,
-      months: computeClientMonthlyBalances(c, selectedYear),
-    }));
+    let list: ClientAnnualData[] = internalClients.map((c) => {
+      const bal = clientB2BalanceMap.get(c.id);
+      return {
+        client: c,
+        currentDebt: bal ? bal.debt : c.currentDebt || 0,
+        currentAdvance: bal ? bal.advance : c.currentAdvance || 0,
+        months: computeClientMonthlyBalances(c, selectedYear),
+      };
+    });
+
+    if (isB2DateActive && b2DateCalcMode === 'period_activity') {
+      list = list.filter((item) => {
+        const bal = clientB2BalanceMap.get(item.client.id);
+        return Boolean(bal?.hadActivityInPeriod);
+      });
+    }
 
     if (deferredClientSearch.trim()) {
       const q = deferredClientSearch.toLowerCase().trim();
@@ -507,6 +623,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     maxDebtFilter,
     clientSortMode,
     clientBalanceFilter,
+    clientB2BalanceMap,
+    isB2DateActive,
+    b2DateCalcMode,
   ]);
 
   useEffect(() => {
@@ -518,6 +637,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     selectedClientCreator,
     selectedYear,
     selectedClientMonth,
+    b2StartDate,
+    b2EndDate,
+    b2DateCalcMode,
     minDebtFilter,
     maxDebtFilter,
     clientSortMode,
@@ -932,6 +1054,12 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [actionViewMode, setActionViewMode] = useState<'consolidated' | 'detailed'>('consolidated');
   const [expandedClientKeys, setExpandedClientKeys] = useState<Set<string>>(new Set());
 
+  // 4-Blok: Amallar soni bo'yicha filtr va saralash
+  const [actionCountQuickFilter, setActionCountQuickFilter] = useState<'all' | '1' | '2+' | '3+' | '5+'>('all');
+  const [minActionCount, setMinActionCount] = useState<string>('');
+  const [maxActionCount, setMaxActionCount] = useState<string>('');
+  const [actionCountSort, setActionCountSort] = useState<'date_desc' | 'count_desc' | 'count_asc'>('date_desc');
+
   const toggleClientExpand = (key: string) => {
     setExpandedClientKeys((prev) => {
       const next = new Set(prev);
@@ -944,15 +1072,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     });
   };
 
-  // Extract all single operations/actions across plans using O(1) internalClientsMap lookup
+  // Extract daily closed-plan actions across plans:
+  // Rule: If a client was selected for a plan on a given day and the plan was closed (with action),
+  // even if multiple financial or product operations were performed on that day, it counts as 1 action (1 marta) for that day.
   const allActionItems = useMemo(() => {
-    const records: ActionExportItem[] = [];
+    const dailyClientMap = new Map<string, ActionExportItem>();
 
     internalPlans.forEach((plan) => {
-      const client = internalClientsMap.get(plan.clientId);
-      const reg = plan.clientRegion || client?.region || parseLegacyAddress(plan.clientAddress || client?.address || '').region;
-      const dist = plan.clientDistrict || client?.district || parseLegacyAddress(plan.clientAddress || client?.address || '').district;
-      const locationStr = [reg, dist].filter(Boolean).join(', ') || plan.clientAddress || client?.address || '-';
+      const isClosedPlan = Boolean(plan.isClosed || plan.status === 'yopildi' || plan.status === 'bajarildi');
+      if (!isClosedPlan || plan.closedWithoutAction) return;
 
       const rawActions =
         plan.actionsHistory && plan.actionsHistory.length > 0
@@ -960,9 +1088,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           : plan.actionDone || plan.financialAction || plan.productsDelivered || plan.productsReturned
           ? [
               {
-                timestamp: plan.completedAt || plan.createdAt,
+                timestamp: plan.closedAt || plan.completedAt || plan.createdAt,
                 author: plan.agentUsername,
-                actionDone: plan.actionDone || ('joyiga borildi' as const),
+                actionDone: plan.actionDone || plan.plannedAction || ('joyiga borildi' as const),
                 financialAction: plan.financialAction,
                 deliveryPayment: plan.deliveryPayment,
                 productsDelivered: plan.productsDelivered,
@@ -972,13 +1100,69 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             ]
           : [];
 
-      rawActions.forEach((act, actIdx) => {
-        let naqd = 0;
-        let karta = 0;
-        let bank = 0;
-        let qr = 0;
+      const hasAnyAction =
+        Boolean(plan.actionDone) ||
+        Boolean(plan.plannedAction) ||
+        rawActions.length > 0;
+      if (!hasAnyAction) return;
 
-        // Payment from financialAction (supports single or multi-method splits)
+      const client = internalClientsMap.get(plan.clientId);
+      const reg =
+        plan.clientRegion ||
+        client?.region ||
+        parseLegacyAddress(plan.clientAddress || client?.address || '').region;
+      const dist =
+        plan.clientDistrict ||
+        client?.district ||
+        parseLegacyAddress(plan.clientAddress || client?.address || '').district;
+      const locationStr = [reg, dist].filter(Boolean).join(', ') || plan.clientAddress || client?.address || '-';
+
+      const opDateStr = (
+        plan.closedAt ||
+        plan.completedAt ||
+        plan.lastExecutedAt ||
+        (plan.actionsHistory && plan.actionsHistory[0]?.timestamp) ||
+        plan.planDate ||
+        plan.createdAt ||
+        ''
+      ).slice(0, 10);
+      const canonicalClientId = client?.id || plan.clientId || '';
+      const cleanPhone = (plan.clientPhone || client?.phone || '').replace(/\D/g, '');
+      const cleanName = (plan.clientName || client?.name || '').trim().toLowerCase();
+      const clientKey = canonicalClientId
+        ? canonicalClientId.toLowerCase()
+        : `${cleanName}___${cleanPhone.slice(-9)}`;
+      const dailyKey = `${clientKey}___${opDateStr}`;
+
+      const planAgents = new Set<string>();
+      if (plan.agentUsername) planAgents.add(plan.agentUsername.trim());
+      if (plan.lastExecutedBy) planAgents.add(plan.lastExecutedBy.trim());
+      if (plan.closedBy) planAgents.add(plan.closedBy.trim());
+
+      let naqd = 0;
+      let karta = 0;
+      let bank = 0;
+      let qr = 0;
+      let creditDeliv = 0;
+      let paidDeliv = 0;
+      let totalDeliv = 0;
+      let returnedCount = 0;
+      const deliveredDescList: string[] = [];
+      const returnedDescList: string[] = [];
+      const notesList: string[] = [];
+
+      let sawCall = false;
+      let sawVisit = false;
+      const planLevelAct = (plan.actionDone || plan.plannedAction || '').toLowerCase();
+      if (planLevelAct.includes('telefon')) sawCall = true;
+      if (planLevelAct.includes('joyiga')) sawVisit = true;
+
+      rawActions.forEach((act) => {
+        if (act.author) planAgents.add(act.author.trim());
+        const actStr = (act.actionDone || '').toLowerCase();
+        if (actStr.includes('telefon')) sawCall = true;
+        if (actStr.includes('joyiga')) sawVisit = true;
+
         if (act.financialAction && act.financialAction.amount > 0) {
           const splits = act.financialAction.splits;
           if (splits && splits.length > 0) {
@@ -1010,16 +1194,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           }
         }
 
-        // Delivery payment
-        let creditDeliv = 0;
-        let paidDeliv = 0;
+        let actCredit = 0;
+        let actPaid = 0;
         if (act.deliveryPayment) {
           const dp = act.deliveryPayment;
           const pType = dp.paymentType;
           if (pType === 'qarzga') {
-            creditDeliv += dp.totalAmount || dp.debtAmount || 0;
+            actCredit += dp.totalAmount || dp.debtAmount || 0;
           } else {
-            paidDeliv += dp.paidAmount || 0;
+            actPaid += dp.paidAmount || 0;
             if (dp.splits && dp.splits.length > 0) {
               dp.splits.forEach((sp) => {
                 const mStr = (sp.method || sp.methodLabel || '').toLowerCase();
@@ -1034,73 +1217,176 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               else if (pType === 'bank') bank += dp.paidAmount || 0;
               else if (pType === 'qr') qr += dp.paidAmount || 0;
             }
-
             if (dp.debtAmount && dp.debtAmount > 0) {
-              creditDeliv += dp.debtAmount;
+              actCredit += dp.debtAmount;
             }
           }
         }
 
-        const deliveredDesc = (act.productsDelivered || [])
-          .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
-          .join(', ');
-
-        const totalDeliv = (act.productsDelivered || []).reduce(
+        const actDelivSum = (act.productsDelivered || []).reduce(
           (sum, p) => sum + (p.totalPrice || p.quantity * (p.unitPrice || 0)),
           0
         );
-
-        if (creditDeliv === 0 && totalDeliv > paidDeliv) {
-          creditDeliv = totalDeliv - paidDeliv;
+        if (actCredit === 0 && actDelivSum > actPaid) {
+          actCredit = actDelivSum - actPaid;
         }
 
-        const returnedDesc = (act.productsReturned || [])
-          .map((r) => `${r.name} (${r.quantity} ${r.unit})`)
-          .join(', ');
+        creditDeliv += actCredit;
+        paidDeliv += actPaid;
+        totalDeliv += actCredit + actPaid || actDelivSum;
 
-        const returnedCount = (act.productsReturned || []).reduce(
-          (sum, r) => sum + (r.quantity || 0),
-          0
-        );
+        (act.productsDelivered || []).forEach((p) => {
+          const u = (p.unit || 'dona').toLowerCase() === 'birlik' ? 'dona' : p.unit || 'dona';
+          const desc = `${p.name} (${p.quantity} ${u})`;
+          if (!deliveredDescList.includes(desc)) deliveredDescList.push(desc);
+        });
 
-        records.push({
-          id: `${plan.id}_${actIdx}`,
-          timestamp: act.timestamp || plan.completedAt || plan.createdAt,
-          agentUsername: act.author || plan.agentUsername,
-          clientName: plan.clientName,
-          clientPhone: plan.clientPhone,
+        (act.productsReturned || []).forEach((r) => {
+          const u = (r.unit || 'dona').toLowerCase() === 'birlik' ? 'dona' : r.unit || 'dona';
+          const desc = `${r.name} (${r.quantity} ${u})`;
+          if (!returnedDescList.includes(desc)) returnedDescList.push(desc);
+          returnedCount += r.quantity || 0;
+        });
+
+        if (act.reportNote && act.reportNote.trim() && !notesList.includes(act.reportNote.trim())) {
+          notesList.push(act.reportNote.trim());
+        }
+      });
+
+      if (plan.reportNote && plan.reportNote.trim() && !notesList.includes(plan.reportNote.trim())) {
+        notesList.push(plan.reportNote.trim());
+      } else if (plan.planNote && plan.planNote.trim() && notesList.length === 0) {
+        notesList.push(plan.planNote.trim());
+      }
+
+      const resolvedActionDone: 'telefon qilindi' | 'joyiga borildi' | 'telefon qilindi + joyiga borildi' =
+        sawCall && sawVisit
+          ? 'telefon qilindi + joyiga borildi'
+          : sawCall
+          ? 'telefon qilindi'
+          : 'joyiga borildi';
+
+      const displayTimestamp =
+        plan.closedAt ||
+        plan.completedAt ||
+        plan.lastExecutedAt ||
+        (plan.actionsHistory && plan.actionsHistory[0]?.timestamp) ||
+        (plan.planDate
+          ? `${plan.planDate.slice(0, 10)}${(plan.createdAt || '').slice(10) || 'T12:00:00'}`
+          : plan.createdAt);
+
+      const existing = dailyClientMap.get(dailyKey);
+      if (!existing) {
+        const initialAgentsList = Array.from(planAgents).filter(Boolean);
+        const formattedAgent =
+          initialAgentsList.length > 1
+            ? `${initialAgentsList.map(getAgentDisplayName).join(', ')} (${initialAgentsList.length === 2 ? 'ikkala agent' : `${initialAgentsList.length} ta agent`})`
+            : initialAgentsList[0] || plan.agentUsername || 'Agent';
+
+        dailyClientMap.set(dailyKey, {
+          id: `${canonicalClientId || plan.id}_${opDateStr}`,
+          timestamp: displayTimestamp,
+          agentUsername: formattedAgent,
+          agents: initialAgentsList,
+          clientName: client?.name || plan.clientName,
+          clientPhone: client?.phone || plan.clientPhone,
           clientLocation: locationStr,
-          actionDone: act.actionDone || plan.actionDone || 'joyiga borildi',
+          actionDone: resolvedActionDone,
           receiptNaqd: naqd,
           receiptKarta: karta,
           receiptBank: bank,
           receiptQr: qr,
           totalReceipt: naqd + karta + bank + qr,
-          deliveredProductsDesc: deliveredDesc,
+          deliveredProductsDesc: deliveredDescList.join(', '),
           deliveredCreditSum: creditDeliv,
           deliveredPaidSum: paidDeliv,
-          totalDeliveredSum: creditDeliv + paidDeliv || totalDeliv,
-          returnedProductsDesc: returnedDesc,
+          totalDeliveredSum: totalDeliv,
+          returnedProductsDesc: returnedDescList.join(', '),
           returnedCount,
-          note: act.reportNote || plan.reportNote || plan.planNote || '',
+          note: notesList.join('; '),
         });
-      });
+      } else {
+        // Merge agents
+        const mergedAgentsSet = new Set<string>(existing.agents || []);
+        if (existing.agentUsername) {
+          existing.agentUsername.split(',').forEach((ag) => {
+            const cleanAg = ag.replace(/\(.*?\)/g, '').trim();
+            if (cleanAg) mergedAgentsSet.add(cleanAg);
+          });
+        }
+        planAgents.forEach((ag) => {
+          if (ag) mergedAgentsSet.add(ag);
+        });
+        const mergedAgentsList = Array.from(mergedAgentsSet).filter(Boolean);
+        existing.agents = mergedAgentsList;
+        existing.agentUsername =
+          mergedAgentsList.length > 1
+            ? `${mergedAgentsList.map(getAgentDisplayName).join(', ')} (${mergedAgentsList.length === 2 ? 'ikkala agent' : `${mergedAgentsList.length} ta agent`})`
+            : mergedAgentsList[0] || existing.agentUsername;
+
+        existing.receiptNaqd += naqd;
+        existing.receiptKarta += karta;
+        existing.receiptBank += bank;
+        existing.receiptQr += qr;
+        existing.totalReceipt += naqd + karta + bank + qr;
+        existing.deliveredCreditSum += creditDeliv;
+        existing.deliveredPaidSum += paidDeliv;
+        existing.totalDeliveredSum += totalDeliv;
+        existing.returnedCount += returnedCount;
+        if (deliveredDescList.length > 0) {
+          const mergedDel = new Set(
+            [...(existing.deliveredProductsDesc ? existing.deliveredProductsDesc.split(', ') : []), ...deliveredDescList].filter(Boolean)
+          );
+          existing.deliveredProductsDesc = Array.from(mergedDel).join(', ');
+        }
+        if (returnedDescList.length > 0) {
+          const mergedRet = new Set(
+            [...(existing.returnedProductsDesc ? existing.returnedProductsDesc.split(', ') : []), ...returnedDescList].filter(Boolean)
+          );
+          existing.returnedProductsDesc = Array.from(mergedRet).join(', ');
+        }
+        if (notesList.length > 0) {
+          const mergedNotes = new Set(
+            [...(existing.note ? existing.note.split('; ') : []), ...notesList].filter(Boolean)
+          );
+          existing.note = Array.from(mergedNotes).join('; ');
+        }
+        const prevAct = existing.actionDone.toLowerCase();
+        const combinedCall = prevAct.includes('telefon') || sawCall;
+        const combinedVisit = prevAct.includes('joyiga') || sawVisit;
+        existing.actionDone =
+          combinedCall && combinedVisit
+            ? 'telefon qilindi + joyiga borildi'
+            : combinedCall
+            ? 'telefon qilindi'
+            : 'joyiga borildi';
+
+        if (displayTimestamp && (!existing.timestamp || displayTimestamp > existing.timestamp)) {
+          existing.timestamp = displayTimestamp;
+        }
+      }
     });
 
-      return records;
+    return Array.from(dailyClientMap.values());
   }, [internalPlans, internalClientsMap]);
 
   // Unique agents in 4-blok
   const uniqueActionAgents = useMemo(() => {
     const set = new Set<string>();
     allActionItems.forEach((a) => {
-      if (a.agentUsername) set.add(a.agentUsername);
+      if (a.agents && a.agents.length > 0) {
+        a.agents.forEach((ag) => {
+          if (ag) set.add(ag);
+        });
+      } else if (a.agentUsername) {
+        set.add(a.agentUsername);
+      }
     });
     return Array.from(set).sort();
   }, [allActionItems]);
 
-  // Filter 4-Blok by: 1. Date Range -> 2. Action Type -> 3. Region/District -> 4. Search (deferred)
-  const filteredActionItems = useMemo(() => {
+  // Base filter 4-Blok by: 1. Date Range -> 2. Action Type -> 3. Region/District -> 4. Search (deferred)
+  const baseFilteredActionItems = useMemo(() => {
     return allActionItems.filter((item) => {
       // 1. Date range filter
       if (item.timestamp) {
@@ -1128,8 +1414,16 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       }
 
       // Agent filter
-      if (actionAgent !== 'all' && item.agentUsername !== actionAgent) {
-        return false;
+      if (actionAgent !== 'all') {
+        const hasAgent =
+          item.agents && item.agents.length > 0
+            ? item.agents.some(
+                (ag) =>
+                  ag.toLowerCase() === actionAgent.toLowerCase() ||
+                  ag.toLowerCase().includes(actionAgent.toLowerCase())
+              )
+            : item.agentUsername.toLowerCase().includes(actionAgent.toLowerCase());
+        if (!hasAgent) return false;
       }
 
       // Search
@@ -1156,65 +1450,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     deferredActionSearch,
   ]);
 
-  // 4-Blok Aggregates & KPI
-  const actionStats = useMemo(() => {
-    let callCount = 0;
-    let visitCount = 0;
-    let callAndVisitCount = 0;
-
-    let naqdSum = 0;
-    let kartaSum = 0;
-    let bankSum = 0;
-    let qrSum = 0;
-    let totalReceipts = 0;
-
-    let creditDelivSum = 0;
-    let paidDelivSum = 0;
-    let totalDeliveredSum = 0;
-
-    let returnedProductsCount = 0;
-
-    filteredActionItems.forEach((i) => {
-      const act = i.actionDone.toLowerCase();
-      if (act.includes('telefon') && act.includes('joyiga')) {
-        callAndVisitCount++;
-      } else if (act.includes('telefon')) {
-        callCount++;
-      } else if (act.includes('joyiga')) {
-        visitCount++;
-      }
-
-      naqdSum += i.receiptNaqd;
-      kartaSum += i.receiptKarta;
-      bankSum += i.receiptBank;
-      qrSum += i.receiptQr;
-      totalReceipts += i.totalReceipt;
-
-      creditDelivSum += i.deliveredCreditSum;
-      paidDelivSum += i.deliveredPaidSum;
-      totalDeliveredSum += i.totalDeliveredSum;
-
-      returnedProductsCount += i.returnedCount;
-    });
-
-    return {
-      totalActions: filteredActionItems.length,
-      callCount,
-      visitCount,
-      callAndVisitCount,
-      naqdSum,
-      kartaSum,
-      bankSum,
-      qrSum,
-      totalReceipts,
-      creditDelivSum,
-      paidDelivSum,
-      totalDeliveredSum,
-      returnedProductsCount,
-    };
-  }, [filteredActionItems]);
-
-  // Group / Consolidate actions by client for the selected date range
+  // Group / Consolidate actions by client for the selected date range & apply action count filter
   const consolidatedActionItems = useMemo(() => {
     const map = new Map<string, {
       key: string;
@@ -1244,7 +1480,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       rawItems: ActionExportItem[];
     }>();
 
-    filteredActionItems.forEach((item) => {
+    baseFilteredActionItems.forEach((item) => {
       const nameKey = (item.clientName || 'Noma\'lum').trim().toLowerCase();
       const phoneKey = (item.clientPhone || '').trim();
       const groupKey = `${nameKey}___${phoneKey}`;
@@ -1302,7 +1538,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         group.visitCount += 1;
       }
 
-      if (item.agentUsername && !group.agents.includes(item.agentUsername)) {
+      if (item.agents && item.agents.length > 0) {
+        item.agents.forEach((ag) => {
+          if (ag && !group.agents.includes(ag)) group.agents.push(ag);
+        });
+      } else if (item.agentUsername && !group.agents.includes(item.agentUsername)) {
         group.agents.push(item.agentUsername);
       }
 
@@ -1322,6 +1562,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         group.notes.push(item.note.trim());
       }
     });
+
+    const parsedMinCount = parseInt(minActionCount, 10);
+    const parsedMaxCount = parseInt(maxActionCount, 10);
 
     const result: Array<{
       key: string;
@@ -1352,16 +1595,30 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     }> = [];
 
     map.forEach((group) => {
+      // Filter by action count
+      if (actionCountQuickFilter === '1' && group.totalActionsCount !== 1) return;
+      if (actionCountQuickFilter === '2+' && group.totalActionsCount < 2) return;
+      if (actionCountQuickFilter === '3+' && group.totalActionsCount < 3) return;
+      if (actionCountQuickFilter === '5+' && group.totalActionsCount < 5) return;
+
+      if (!isNaN(parsedMinCount) && parsedMinCount > 0 && group.totalActionsCount < parsedMinCount) return;
+      if (!isNaN(parsedMaxCount) && parsedMaxCount > 0 && group.totalActionsCount > parsedMaxCount) return;
+
       group.rawItems.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 
+      const agentParenthesis =
+        group.agents.length > 1
+          ? ` (${group.agents.length === 2 ? 'ikkala agent' : `${group.agents.length} ta agent`}: ${group.agents.map(getAgentDisplayName).join(', ')})`
+          : '';
+
       if (group.totalActionsCount === 1) {
-        group.actionSummaryLabel = group.rawItems[0].actionDone || 'Amal bajarilgan';
+        group.actionSummaryLabel = `${group.rawItems[0]?.actionDone || 'Joyiga borildi'} (1 marta)${agentParenthesis}`;
       } else if (group.visitCount === group.totalActionsCount) {
-        group.actionSummaryLabel = `Joyiga borildi (${group.totalActionsCount} marta)`;
+        group.actionSummaryLabel = `Joyiga borildi (${group.totalActionsCount} marta)${agentParenthesis}`;
       } else if (group.callCount === group.totalActionsCount) {
-        group.actionSummaryLabel = `Telefon qilindi (${group.totalActionsCount} marta)`;
+        group.actionSummaryLabel = `Telefon qilindi (${group.totalActionsCount} marta)${agentParenthesis}`;
       } else if (group.callAndVisitCount === group.totalActionsCount) {
-        group.actionSummaryLabel = `Tel + Joyiga borildi (${group.totalActionsCount} marta)`;
+        group.actionSummaryLabel = `Tel + Joyiga borildi (${group.totalActionsCount} marta)${agentParenthesis}`;
       } else {
         const parts: string[] = [];
         if (group.visitCount > 0) parts.push(`${group.visitCount}x Joyiga borildi`);
@@ -1369,7 +1626,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         if (group.callAndVisitCount > 0) parts.push(`${group.callAndVisitCount}x Tel+Joyiga`);
         const remaining = group.totalActionsCount - (group.visitCount + group.callCount + group.callAndVisitCount);
         if (remaining > 0) parts.push(`${remaining}x Boshqa`);
-        group.actionSummaryLabel = `${group.totalActionsCount} marta (${parts.join(', ')})`;
+        group.actionSummaryLabel = `${group.totalActionsCount} marta (${parts.join(', ')})${agentParenthesis}`;
       }
 
       const delSet = new Set<string>();
@@ -1397,8 +1654,83 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       result.push(group);
     });
 
-    result.sort((a, b) => (b.lastTimestamp || '').localeCompare(a.lastTimestamp || ''));
+    result.sort((a, b) => {
+      if (actionCountSort === 'count_desc') {
+        if (b.totalActionsCount !== a.totalActionsCount) return b.totalActionsCount - a.totalActionsCount;
+      } else if (actionCountSort === 'count_asc') {
+        if (a.totalActionsCount !== b.totalActionsCount) return a.totalActionsCount - b.totalActionsCount;
+      }
+      return (b.lastTimestamp || '').localeCompare(a.lastTimestamp || '');
+    });
     return result;
+  }, [baseFilteredActionItems, actionCountQuickFilter, minActionCount, maxActionCount, actionCountSort]);
+
+  // Final filteredActionItems (respects action count filters as well)
+  const filteredActionItems = useMemo(() => {
+    const allowedClientKeys = new Set(consolidatedActionItems.map((g) => g.key));
+    return baseFilteredActionItems.filter((item) => {
+      const nameKey = (item.clientName || 'Noma\'lum').trim().toLowerCase();
+      const phoneKey = (item.clientPhone || '').trim();
+      return allowedClientKeys.has(`${nameKey}___${phoneKey}`);
+    });
+  }, [baseFilteredActionItems, consolidatedActionItems]);
+
+  // 4-Blok Aggregates & KPI
+  const actionStats = useMemo(() => {
+    let callCount = 0;
+    let visitCount = 0;
+    let callAndVisitCount = 0;
+
+    let naqdSum = 0;
+    let kartaSum = 0;
+    let bankSum = 0;
+    let qrSum = 0;
+    let totalReceipts = 0;
+
+    let creditDelivSum = 0;
+    let paidDelivSum = 0;
+    let totalDeliveredSum = 0;
+
+    let returnedProductsCount = 0;
+
+    filteredActionItems.forEach((i) => {
+      const act = i.actionDone.toLowerCase();
+      if (act.includes('telefon') && act.includes('joyiga')) {
+        callAndVisitCount++;
+      } else if (act.includes('telefon')) {
+        callCount++;
+      } else if (act.includes('joyiga')) {
+        visitCount++;
+      }
+
+      naqdSum += i.receiptNaqd;
+      kartaSum += i.receiptKarta;
+      bankSum += i.receiptBank;
+      qrSum += i.receiptQr;
+      totalReceipts += i.totalReceipt;
+
+      creditDelivSum += i.deliveredCreditSum;
+      paidDelivSum += i.deliveredPaidSum;
+      totalDeliveredSum += i.totalDeliveredSum;
+
+      returnedProductsCount += i.returnedCount;
+    });
+
+    return {
+      totalActions: filteredActionItems.length,
+      callCount,
+      visitCount,
+      callAndVisitCount,
+      naqdSum,
+      kartaSum,
+      bankSum,
+      qrSum,
+      totalReceipts,
+      creditDelivSum,
+      paidDelivSum,
+      totalDeliveredSum,
+      returnedProductsCount,
+    };
   }, [filteredActionItems]);
 
   // 4-Blok Excel Export with solid black borders
@@ -1465,7 +1797,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     actionRegion !== 'all' ||
     actionDistrict !== 'all' ||
     actionAgent !== 'all' ||
-    selectedActionType !== 'all';
+    selectedActionType !== 'all' ||
+    actionCountQuickFilter !== 'all' ||
+    minActionCount.trim() !== '' ||
+    maxActionCount.trim() !== '' ||
+    actionCountSort !== 'date_desc';
 
   // =========================================================================
   // 5-BLOK DATA & STATES (So'mda (kurs bilan) qabul qilingan to'lovlar va mahsulot to'lovlari)
@@ -2359,7 +2695,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           </div>
 
           <div className="p-4 bg-neutral-50/80 border-b border-neutral-200/80 space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
               <div className="relative">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                 <input
@@ -2369,21 +2705,6 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   onChange={(e) => setStockSearch(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-xs bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none transition"
                 />
-              </div>
-
-              <div>
-                <select
-                  value={selectedType}
-                  onChange={(e) => setSelectedType(e.target.value)}
-                  className="w-full px-3 py-2 text-xs font-semibold bg-white rounded-xl border border-neutral-300 focus:border-rose-500 outline-none cursor-pointer"
-                >
-                  <option value="all">Barcha mahsulot turlari ({uniqueTypes.length})</option>
-                  {uniqueTypes.map((t) => (
-                    <option key={t} value={t}>
-                      Turi / Birligi: {t}
-                    </option>
-                  ))}
-                </select>
               </div>
 
               <div>
@@ -2783,7 +3104,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                       : 'bg-white text-neutral-700 hover:bg-neutral-100 border border-neutral-200'
                   }`}
                 >
-                  Hisobi yopilgan ({globalClientBalanceCounts.zero})
+                  Qarz va haqsiz mijozlar ({globalClientBalanceCounts.zero})
                 </button>
               </div>
 
@@ -2835,6 +3156,92 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>Filtrlarni tozalash</span>
                   </button>
+                )}
+              </div>
+            </div>
+
+            {/* Uchinchi qator filtrlar: Qaysidir kun yoki muddat oralig'ini tanlash */}
+            <div className="p-2.5 rounded-2xl bg-white border border-rose-200/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-bold text-rose-900 flex items-center gap-1 mr-1">
+                  <Calendar className="w-3.5 h-3.5 text-rose-700" />
+                  <span>Muddat oralig'i bo'yicha qarz / haqdorlik:</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => applyB2QuickDate('all')}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                    !isB2DateActive
+                      ? 'bg-neutral-900 text-white'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  Hozirgi (Barcha vaqt)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyB2QuickDate('today')}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-rose-50 text-rose-900 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
+                >
+                  Bugun
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyB2QuickDate('yesterday')}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-neutral-100 text-neutral-700 hover:bg-neutral-200 transition cursor-pointer"
+                >
+                  Kecha
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyB2QuickDate('thisMonth')}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-neutral-100 text-neutral-700 hover:bg-neutral-200 transition cursor-pointer"
+                >
+                  Shu oy
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1 bg-rose-50/60 px-2 py-1 rounded-xl border border-rose-200">
+                  <span className="text-[10px] font-bold text-rose-900">Aniq kun:</span>
+                  <input
+                    type="date"
+                    value={b2StartDate && b2StartDate === b2EndDate ? b2StartDate : ''}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setB2StartDate(v);
+                      setB2EndDate(v);
+                    }}
+                    className="text-xs font-mono bg-white px-2 py-0.5 rounded-lg border border-rose-200 outline-none"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 bg-neutral-50 px-2.5 py-1 rounded-xl border border-neutral-200">
+                  <span className="text-[10px] font-bold text-neutral-600">Dan:</span>
+                  <input
+                    type="date"
+                    value={b2StartDate}
+                    onChange={(e) => setB2StartDate(e.target.value)}
+                    className="text-xs font-mono bg-white px-2 py-0.5 rounded-lg border border-neutral-200 outline-none"
+                  />
+                  <span className="text-[10px] font-bold text-neutral-600">Gacha:</span>
+                  <input
+                    type="date"
+                    value={b2EndDate}
+                    onChange={(e) => setB2EndDate(e.target.value)}
+                    className="text-xs font-mono bg-white px-2 py-0.5 rounded-lg border border-neutral-200 outline-none"
+                  />
+                </div>
+
+                {isB2DateActive && (
+                  <select
+                    value={b2DateCalcMode}
+                    onChange={(e) => setB2DateCalcMode(e.target.value as 'snapshot' | 'period_activity')}
+                    className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-rose-700 text-white outline-none cursor-pointer"
+                  >
+                    <option value="snapshot">Sana yakunidagi qoldiq (Qarz / Haq)</option>
+                    <option value="period_activity">Faqat shu muddatdagi harakat</option>
+                  </select>
                 )}
               </div>
             </div>
@@ -2904,7 +3311,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   {clientStats.filteredClientsCount} ta mijoz
                 </div>
                 <div className="text-[10px] text-neutral-600 mt-0.5">
-                  Qarzdor: {clientStats.debtorsCount} • Haqdor: {clientStats.creditorsCount} • Nol: {clientStats.zeroCount}
+                  Qarzdor: {clientStats.debtorsCount} • Haqdor: {clientStats.creditorsCount} • Qarz va haqsiz: {clientStats.zeroCount}
                 </div>
               </div>
 
@@ -3628,24 +4035,92 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 </div>
               </div>
 
-              {isActionFilterActive && (
-                <div className="flex justify-end pt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActionSearch('');
-                      setActionRegion('all');
-                      setActionDistrict('all');
-                      setActionAgent('all');
-                      setSelectedActionType('all');
-                    }}
-                    className="flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-900 transition px-2 py-1 rounded-lg hover:bg-rose-50 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Filtrlarni tozalash</span>
-                  </button>
+              {/* Amallar soni (necha marotaba qilingani) bo'yicha filtr va saralash */}
+              <div className="pt-2.5 border-t border-neutral-200/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-bold text-rose-900 uppercase mr-1">
+                    Amallar soni bo'yicha filtr:
+                  </span>
+                  {(
+                    [
+                      { id: 'all', label: 'Barchasi' },
+                      { id: '1', label: 'Faqat 1 marta' },
+                      { id: '2+', label: '2 va undan ko\'p (2+)' },
+                      { id: '3+', label: '3 va undan ko\'p (3+)' },
+                      { id: '5+', label: '5 va undan ko\'p (5+)' },
+                    ] as const
+                  ).map((btn) => (
+                    <button
+                      key={btn.id}
+                      type="button"
+                      onClick={() => setActionCountQuickFilter(btn.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                        actionCountQuickFilter === btn.id
+                          ? 'bg-rose-700 text-white shadow-2xs'
+                          : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                      }`}
+                    >
+                      {btn.label}
+                    </button>
+                  ))}
+
+                  <div className="flex items-center gap-1 bg-neutral-50 px-2.5 py-1 rounded-lg border border-neutral-300 ml-1">
+                    <span className="text-[10px] font-bold text-neutral-500 uppercase">Soni (marta):</span>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Min"
+                      value={minActionCount}
+                      onChange={(e) => setMinActionCount(e.target.value)}
+                      className="w-12 text-xs font-mono outline-none bg-transparent text-neutral-900"
+                    />
+                    <span className="text-neutral-300">-</span>
+                    <input
+                      type="number"
+                      min="1"
+                      placeholder="Max"
+                      value={maxActionCount}
+                      onChange={(e) => setMaxActionCount(e.target.value)}
+                      className="w-12 text-xs font-mono outline-none bg-transparent text-neutral-900"
+                    />
+                  </div>
                 </div>
-              )}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={actionCountSort}
+                    onChange={(e) =>
+                      setActionCountSort(e.target.value as 'date_desc' | 'count_desc' | 'count_asc')
+                    }
+                    className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-rose-50 text-rose-950 border border-rose-200 outline-none cursor-pointer"
+                  >
+                    <option value="date_desc">Saralash: So'nggi amal vaqti bo'yicha</option>
+                    <option value="count_desc">Amallar soni: Eng ko'p qilinganlar oldin</option>
+                    <option value="count_asc">Amallar soni: Eng kam qilinganlar oldin</option>
+                  </select>
+
+                  {isActionFilterActive && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActionSearch('');
+                        setActionRegion('all');
+                        setActionDistrict('all');
+                        setActionAgent('all');
+                        setSelectedActionType('all');
+                        setActionCountQuickFilter('all');
+                        setMinActionCount('');
+                        setMaxActionCount('');
+                        setActionCountSort('date_desc');
+                      }}
+                      className="flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-900 transition px-2.5 py-1 rounded-lg hover:bg-rose-50 cursor-pointer border border-rose-200"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Filtrlarni tozalash</span>
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
 
             {/* 4-Blok Summary Metric Cards: Tushumlar to'lov turiga qarab, Berilgan mahsulotlar qarz va to'lovga qarab, Qaytgan mahsulotlar */}
@@ -3848,7 +4323,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
                           {/* Agent(lar) */}
                           <td className="py-2.5 px-3">
-                            <div className="flex flex-wrap gap-1 max-w-[120px]">
+                            <div className="flex flex-wrap gap-1 max-w-[130px]">
                               {item.agents.map((ag) => (
                                 <span
                                   key={ag}
@@ -3858,6 +4333,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                                 </span>
                               ))}
                             </div>
+                            {item.agents.length > 1 && (
+                              <span className="text-[10px] font-bold text-rose-800 block mt-0.5">
+                                ({item.agents.length === 2 ? 'ikkala agent' : `${item.agents.length} ta agent`})
+                              </span>
+                            )}
                           </td>
 
                           {/* Mijoz va Telefon */}
@@ -3957,6 +4437,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                                     <MapPin className="w-3 h-3 text-rose-700" />
                                     <span>Joyiga borildi (1 marta)</span>
                                   </span>
+                                )}
+                                {item.agents.length > 1 && (
+                                  <div className="text-[10px] font-semibold text-rose-900 mt-0.5">
+                                    ({item.agents.length === 2 ? 'ikkala agent' : `${item.agents.length} ta agent`}: {item.agents.map(getAgentDisplayName).join(', ')})
+                                  </div>
                                 )}
                               </div>
                             )}
@@ -4109,12 +4594,35 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                                               : '-'}
                                           </td>
                                           <td className="py-2 px-2.5 font-bold text-neutral-800">
-                                            {getAgentDisplayName(actItem.agentUsername)}
+                                            <div className="flex flex-wrap gap-1 max-w-[120px]">
+                                              {actItem.agents && actItem.agents.length > 1 ? (
+                                                actItem.agents.map((ag) => (
+                                                  <span
+                                                    key={ag}
+                                                    className="inline-block bg-neutral-100 border border-neutral-200 text-neutral-800 font-bold px-1.5 py-0.2 rounded text-[10px]"
+                                                  >
+                                                    {getAgentDisplayName(ag)}
+                                                  </span>
+                                                ))
+                                              ) : (
+                                                <span>{getAgentDisplayName(actItem.agentUsername)}</span>
+                                              )}
+                                            </div>
+                                            {actItem.agents && actItem.agents.length > 1 && (
+                                              <span className="text-[9px] font-bold text-rose-800 block mt-0.5">
+                                                ({actItem.agents.length === 2 ? 'ikkala agent' : `${actItem.agents.length} ta agent`})
+                                              </span>
+                                            )}
                                           </td>
                                           <td className="py-2 px-2.5 font-semibold text-neutral-800">
                                             <span className="inline-block px-2 py-0.5 rounded bg-neutral-100 border border-neutral-200">
-                                              {actItem.actionDone}
+                                              {actItem.actionDone} (1 marta)
                                             </span>
+                                            {actItem.agents && actItem.agents.length > 1 && (
+                                              <span className="text-[10px] text-rose-900 font-semibold block mt-0.5">
+                                                ({actItem.agents.length === 2 ? 'ikkala agent' : `${actItem.agents.length} ta agent`}: {actItem.agents.map(getAgentDisplayName).join(', ')})
+                                              </span>
+                                            )}
                                           </td>
                                           <td className="py-2 px-2.5 text-right font-mono font-bold text-emerald-800">
                                             {actItem.totalReceipt > 0
@@ -4238,7 +4746,25 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                         </td>
 
                         <td className="py-2.5 px-3 font-bold text-neutral-800">
-                          {getAgentDisplayName(item.agentUsername)}
+                          <div className="flex flex-wrap gap-1 max-w-[130px]">
+                            {item.agents && item.agents.length > 1 ? (
+                              item.agents.map((ag) => (
+                                <span
+                                  key={ag}
+                                  className="inline-block bg-neutral-100 border border-neutral-200 text-neutral-800 font-bold px-1.5 py-0.5 rounded text-[10px]"
+                                >
+                                  {getAgentDisplayName(ag)}
+                                </span>
+                              ))
+                            ) : (
+                              <span>{getAgentDisplayName(item.agentUsername)}</span>
+                            )}
+                          </div>
+                          {item.agents && item.agents.length > 1 && (
+                            <span className="text-[10px] font-bold text-rose-800 block mt-0.5">
+                              ({item.agents.length === 2 ? 'ikkala agent' : `${item.agents.length} ta agent`})
+                            </span>
+                          )}
                         </td>
 
                         <td className="py-2.5 px-3.5">
@@ -4252,21 +4778,28 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
                         {/* Amal turi badge */}
                         <td className="py-2.5 px-3">
-                          {isBoth ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
-                              <Check className="w-3 h-3 text-purple-700" />
-                              <span>Tel + Joyiga borildi</span>
-                            </span>
-                          ) : isCall ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
-                              <Phone className="w-3 h-3 text-blue-700" />
-                              <span>Telefon qilindi</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-900 border border-rose-200">
-                              <MapPin className="w-3 h-3 text-rose-700" />
-                              <span>Joyiga borildi</span>
-                            </span>
+                          <div>
+                            {isBoth ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
+                                <Check className="w-3 h-3 text-purple-700" />
+                                <span>Tel + Joyiga borildi (1 marta)</span>
+                              </span>
+                            ) : isCall ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                                <Phone className="w-3 h-3 text-blue-700" />
+                                <span>Telefon qilindi (1 marta)</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-900 border border-rose-200">
+                                <MapPin className="w-3 h-3 text-rose-700" />
+                                <span>Joyiga borildi (1 marta)</span>
+                              </span>
+                            )}
+                          </div>
+                          {item.agents && item.agents.length > 1 && (
+                            <div className="text-[10px] font-semibold text-rose-900 mt-0.5">
+                              ({item.agents.length === 2 ? 'ikkala agent' : `${item.agents.length} ta agent`}: {item.agents.map(getAgentDisplayName).join(', ')})
+                            </div>
                           )}
                         </td>
 

@@ -1,7 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { Client, DailyPlanItem } from '../types';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
-import { storageService, isClosedPlanExpired7Days, getPlanSoldProductsData } from '../services/storage';
+import {
+  storageService,
+  isClosedPlanExpired7Days,
+  getPlanSoldProductsData,
+  getPlanFinancialActionData,
+} from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import {
   CalendarCheck,
@@ -35,7 +40,11 @@ interface Props {
   clients?: Client[];
   onOpenCreatePlan: () => void;
   onOpenMonthlyPlan?: () => void;
-  onOpenExecuteModal: (item: DailyPlanItem, editSoldProducts?: boolean) => void;
+  onOpenExecuteModal: (
+    item: DailyPlanItem,
+    editSoldProducts?: boolean,
+    editFinancialAction?: boolean
+  ) => void;
   onMarkPlannedActionDone?: (item: DailyPlanItem) => void;
   onUpdatePlanNote?: (planItemId: string, note: string) => void;
   onClosePlanItem?: (
@@ -1281,45 +1290,62 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
                         {/* 6. Financial: To'lov / Qarz alohida */}
                         <td className="py-2.5 px-2.5 text-right">
-                          {paidAmount > 0 && debtAmount > 0 ? (
-                            <div className="space-y-0.5">
+                          <div className="space-y-1 flex flex-col items-end">
+                            {paidAmount > 0 && debtAmount > 0 ? (
+                              <div className="space-y-0.5 text-right">
+                                <div
+                                  className="font-mono font-bold text-emerald-700 text-[11px] leading-tight"
+                                  title="To'lov summasi"
+                                >
+                                  To'lov: +{formatMoney(paidAmount)}
+                                </div>
+                                <div
+                                  className="font-mono font-bold text-rose-700 text-[11px] leading-tight"
+                                  title="Qarzga yozilgan summa"
+                                >
+                                  Qarz: +{formatMoney(debtAmount)}
+                                </div>
+                              </div>
+                            ) : paidAmount > 0 ? (
                               <div
-                                className="font-mono font-bold text-emerald-700 text-[11px] leading-tight"
+                                className="font-mono font-bold text-emerald-700 text-[11px]"
                                 title="To'lov summasi"
                               >
                                 To'lov: +{formatMoney(paidAmount)}
                               </div>
+                            ) : debtAmount > 0 ? (
                               <div
-                                className="font-mono font-bold text-rose-700 text-[11px] leading-tight"
+                                className="font-mono font-bold text-rose-700 text-[11px]"
                                 title="Qarzga yozilgan summa"
                               >
                                 Qarz: +{formatMoney(debtAmount)}
                               </div>
-                            </div>
-                          ) : paidAmount > 0 ? (
-                            <div
-                              className="font-mono font-bold text-emerald-700 text-[11px]"
-                              title="To'lov summasi"
-                            >
-                              To'lov: +{formatMoney(paidAmount)}
-                            </div>
-                          ) : debtAmount > 0 ? (
-                            <div
-                              className="font-mono font-bold text-rose-700 text-[11px]"
-                              title="Qarzga yozilgan summa"
-                            >
-                              Qarz: +{formatMoney(debtAmount)}
-                            </div>
-                          ) : item.plannedAmount && item.plannedAmount > 0 ? (
-                            <div
-                              className="font-mono font-semibold text-neutral-600 text-[10px]"
-                              title="Rejadagi undirish summasi"
-                            >
-                              Reja: {formatMoney(item.plannedAmount)}
-                            </div>
-                          ) : (
-                            <span className="text-neutral-400 text-xs">-</span>
-                          )}
+                            ) : item.plannedAmount && item.plannedAmount > 0 ? (
+                              <div
+                                className="font-mono font-semibold text-neutral-600 text-[10px]"
+                                title="Rejadagi undirish summasi"
+                              >
+                                Reja: {formatMoney(item.plannedAmount)}
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400 text-xs">-</span>
+                            )}
+                            {!isClosed &&
+                              getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenExecuteModal(item, false, true);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                  title="Moliyaviy amaliyotga (to'lovga) o'zgartirish kiritish"
+                                >
+                                  <Edit3 className="w-2.5 h-2.5" />
+                                  <span>To&apos;lovni o&apos;zgartirish</span>
+                                </button>
+                              )}
+                          </div>
                         </td>
 
                         {/* 7. Actions & Close / Reopen */}
@@ -1650,23 +1676,37 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
                     {/* Bottom Row: Payments / Debts & Buttons */}
                     <div className="mt-2.5 pt-2 border-t border-neutral-100 flex items-center justify-between gap-2">
-                      <div>
+                      <div className="space-y-1">
                         {paidAmount > 0 && debtAmount > 0 ? (
                           <div className="flex flex-col text-[11px] font-mono font-bold leading-tight">
                             <span className="text-emerald-700">To'lov: +{formatMoney(paidAmount)}</span>
                             <span className="text-rose-700">Qarz: +{formatMoney(debtAmount)}</span>
                           </div>
                         ) : paidAmount > 0 ? (
-                          <span className="text-emerald-700 font-mono font-bold text-[11px]">
+                          <span className="text-emerald-700 font-mono font-bold text-[11px] block">
                             To'lov: +{formatMoney(paidAmount)}
                           </span>
                         ) : debtAmount > 0 ? (
-                          <span className="text-rose-700 font-mono font-bold text-[11px]">
+                          <span className="text-rose-700 font-mono font-bold text-[11px] block">
                             Qarz: +{formatMoney(debtAmount)}
                           </span>
                         ) : (
                           <span className="text-neutral-400 text-xs">-</span>
                         )}
+                        {!isClosed &&
+                          getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenExecuteModal(item, false, true);
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                            >
+                              <Edit3 className="w-2.5 h-2.5" />
+                              <span>To&apos;lovga o&apos;zgartirish kiritish</span>
+                            </button>
+                          )}
                       </div>
 
                       <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
