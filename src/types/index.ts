@@ -55,6 +55,7 @@ export interface Client {
   district?: string; // Tuman
   landmark?: string; // Mo'ljal
   products: ProductItem[];
+  initialDebt?: number; // Dastlabki (boshlang'ich) qarzdorlik summasi (USD)
   currentDebt: number; // Joriy qarzdorlik
   currentAdvance: number; // Joriy haqdorlik
   notes?: string;

@@ -23,6 +23,8 @@ import {
   markClientAsDeleted,
   getDeletedWarehouseIds,
   markWarehouseProductAsDeleted,
+  getDeletedPlanIds,
+  markPlanAsDeleted,
   isClosedPlanExpired7Days,
 } from './storage';
 
@@ -559,24 +561,56 @@ export async function deleteClientFromFirestore(
   }
 }
 
+function preparePlanPayloadForFirestore(plan: DailyPlanItem): any {
+  const payload: any = cleanFirestoreData(plan);
+  if (!plan.isClosed && plan.status !== 'yopildi') {
+    payload.isClosed = false;
+    payload.closedWithoutAction = false;
+    payload.unperformedClose = null;
+    payload.closedAt = null;
+    payload.closedDisplayDate = null;
+    payload.closedUpdatedAt = null;
+    payload.closedBy = null;
+    payload.closeReason = null;
+    if (!payload.status || payload.status === 'yopildi') {
+      payload.status = 'rejalashtirilgan';
+    }
+  } else {
+    const displayClosedAt =
+      (plan as any).closedDisplayDate || plan.closedAt || new Date().toISOString();
+    payload.isClosed = true;
+    payload.status = 'yopildi';
+    payload.closedDisplayDate = displayClosedAt;
+    // Keep raw closedAt fresh so older cached clients/PWAs never treat historical close dates as >7d expired
+    payload.closedAt = new Date().toISOString();
+    payload.unperformedClose = Boolean(plan.closedWithoutAction);
+    // Keep raw closedWithoutAction false so older cached clients never purge it during deduplication
+    payload.closedWithoutAction = false;
+    payload.reopenedAt = null;
+    payload.reopenedBy = null;
+    payload.reopenReason = null;
+  }
+  return payload;
+}
+
+export function normalizeIncomingPlanFromFirestore(raw: any): DailyPlanItem {
+  if (!raw || typeof raw !== 'object') return raw as DailyPlanItem;
+  const item: any = { ...raw };
+  if (item.isClosed || item.status === 'yopildi') {
+    if (item.closedDisplayDate) {
+      item.closedAt = item.closedDisplayDate;
+    }
+    if (item.unperformedClose !== undefined && item.unperformedClose !== null) {
+      item.closedWithoutAction = Boolean(item.unperformedClose);
+    }
+  }
+  return item as DailyPlanItem;
+}
+
 // Sync Daily Plans (Single & Batched Bulk)
 export async function syncPlanToFirestore(plan: DailyPlanItem): Promise<void> {
   try {
-    const payload: any = cleanFirestoreData(plan);
-    if (!plan.isClosed && plan.status !== 'yopildi') {
-      payload.isClosed = false;
-      payload.closedWithoutAction = false;
-      payload.closedAt = null;
-      payload.closedBy = null;
-      payload.closeReason = null;
-      if (!payload.status || payload.status === 'yopildi') {
-        payload.status = 'rejalashtirilgan';
-      }
-    } else {
-      payload.isClosed = true;
-      payload.status = 'yopildi';
-      payload.reopenedAt = null;
-    }
+    const payload = preparePlanPayloadForFirestore(plan);
     await setDoc(doc(db, 'dailyPlans', plan.id), payload);
   } catch (e) {
     console.warn('Deferred plan sync to Firestore (offline queue)', e);
@@ -592,21 +626,7 @@ export async function syncPlansBulkToFirestore(plans: DailyPlanItem[]): Promise<
       const batch = writeBatch(db);
       for (let j = 0; j < chunk.length; j++) {
         const p = chunk[j];
-        const payload: any = cleanFirestoreData(p);
-        if (!p.isClosed && p.status !== 'yopildi') {
-          payload.isClosed = false;
-          payload.closedWithoutAction = false;
-          payload.closedAt = null;
-          payload.closedBy = null;
-          payload.closeReason = null;
-          if (!payload.status || payload.status === 'yopildi') {
-            payload.status = 'rejalashtirilgan';
-          }
-        } else {
-          payload.isClosed = true;
-          payload.status = 'yopildi';
-          payload.reopenedAt = null;
-        }
+        const payload = preparePlanPayloadForFirestore(p);
         batch.set(doc(db, 'dailyPlans', p.id), payload);
       }
       await batch.commit();
@@ -618,6 +638,7 @@ export async function syncPlansBulkToFirestore(plans: DailyPlanItem[]): Promise<
 
 export async function deletePlanFromFirestore(planId: string): Promise<void> {
   try {
+    markPlanAsDeleted(planId);
     await deleteDoc(doc(db, 'dailyPlans', planId));
   } catch (e) {
     console.warn('Deferred plan delete from Firestore', e);
@@ -771,12 +792,19 @@ export function subscribeToFirestoreData(callbacks: {
       { includeMetadataChanges: true },
       (snapshot) => {
         const deletedIds = getDeletedClientIds();
+        const deletedPlanIds = getDeletedPlanIds();
         const list: DailyPlanItem[] = [];
         snapshot.forEach((d) => {
-          const item = d.data() as DailyPlanItem;
-          if (!deletedIds.has(item.clientId) && !isClosedPlanExpired7Days(item)) {
+          const item = normalizeIncomingPlanFromFirestore(d.data());
+          if (
+            item &&
+            item.clientId &&
+            !deletedIds.has(item.clientId) &&
+            !deletedPlanIds.has(item.id) &&
+            !isClosedPlanExpired7Days(item)
+          ) {
             list.push(item);
-          } else {
+          } else if (item && (deletedIds.has(item.clientId) || deletedPlanIds.has(item.id))) {
             deleteDoc(d.ref).catch(() => {});
           }
         });
@@ -952,11 +980,18 @@ export async function pullAllFromFirestoreServer(callbacks: {
       })(),
       (async () => {
         if (!callbacks.onPlansChange) return;
+        const deletedPlanIds = getDeletedPlanIds();
         const snap = await fetchCollection('dailyPlans');
         const list: DailyPlanItem[] = [];
         snap.forEach((d) => {
-          const item = d.data() as DailyPlanItem;
-          if (!deletedIds.has(item.clientId) && !isClosedPlanExpired7Days(item)) {
+          const item = normalizeIncomingPlanFromFirestore(d.data());
+          if (
+            item &&
+            item.clientId &&
+            !deletedIds.has(item.clientId) &&
+            !deletedPlanIds.has(item.id) &&
+            !isClosedPlanExpired7Days(item)
+          ) {
             list.push(item);
           }
         });

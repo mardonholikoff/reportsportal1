@@ -12,6 +12,9 @@ import {
   markClientAsDeleted,
   getDeletedWarehouseIds,
   markWarehouseProductAsDeleted,
+  getDeletedPlanIds,
+  getPlanDateKey,
+  getClosedDateKey,
 } from './services/storage';
 import {
   Client,
@@ -616,44 +619,126 @@ export default function App() {
           const deletedIds = getDeletedClientIds();
 
           // Purge remote plans ONLY if they belong to explicitly deleted clients
+          const deletedPlanIds = getDeletedPlanIds();
           remotePlans.forEach((rp) => {
-            if (deletedIds.has(rp.clientId)) {
+            if (deletedIds.has(rp.clientId) || deletedPlanIds.has(rp.id)) {
               deletePlanFromFirestore(rp.id);
             }
           });
 
-          const cleanRemote = remotePlans.filter((p) => !deletedIds.has(p.clientId));
-
-          // Preserve local recently reopened plans against in-flight snapshots
-          const localPlansById = new Map(
-            storageService.getDailyPlans().map((lp) => [lp.id, lp])
+          const cleanRemote = remotePlans.filter(
+            (p) => !deletedIds.has(p.clientId) && !deletedPlanIds.has(p.id)
           );
-          const reconciledRemote = cleanRemote.map((rp) => {
-            const lp = localPlansById.get(rp.id);
-            if (
-              lp &&
-              !lp.isClosed &&
-              lp.status !== 'yopildi' &&
-              lp.reopenedAt &&
-              (rp.isClosed || rp.status === 'yopildi')
-            ) {
+
+          // Preserve local recently reopened OR recently closed plans against in-flight snapshots
+          const localPlans = storageService.getDailyPlans();
+          const localPlansById = new Map(localPlans.map((lp) => [lp.id, lp]));
+          const localPlansByDateKey = new Map(
+            localPlans.map((lp) => [`${lp.clientId}_${getPlanDateKey(lp)}`, lp])
+          );
+
+          const getCloseMs = (p: DailyPlanItem): number => {
+            const wallStr = (p as any).closedUpdatedAt;
+            const wallMs = wallStr ? new Date(wallStr).getTime() : 0;
+            const closedMs = p.closedAt ? new Date(p.closedAt).getTime() : 0;
+            return Math.max(isNaN(wallMs) ? 0 : wallMs, isNaN(closedMs) ? 0 : closedMs);
+          };
+
+          const reconciledRemote: DailyPlanItem[] = cleanRemote.map((rp) => {
+            const lp =
+              localPlansById.get(rp.id) ||
+              localPlansByDateKey.get(`${rp.clientId}_${getPlanDateKey(rp)}`);
+            if (!lp) return rp;
+
+            const lpClosed = Boolean(lp.isClosed || lp.status === 'yopildi');
+            const rpClosed = Boolean(rp.isClosed || rp.status === 'yopildi');
+
+            // 1. Local is reopened (open) while remote is still closed
+            if (!lpClosed && lp.reopenedAt && rpClosed) {
               const localReopenMs = new Date(lp.reopenedAt).getTime();
-              const remoteClosedMs = new Date(rp.closedAt || rp.completedAt || 0).getTime();
+              const remoteClosedMs = getCloseMs(rp) || new Date(rp.completedAt || 0).getTime();
               if (localReopenMs > remoteClosedMs) {
-                return lp;
+                return lp.id === rp.id
+                  ? lp
+                  : {
+                      ...rp,
+                      isClosed: false,
+                      status: 'rejalashtirilgan' as const,
+                      reopenedAt: lp.reopenedAt,
+                      reopenedBy: lp.reopenedBy,
+                      reopenReason: lp.reopenReason,
+                    };
               }
             }
+
+            // 2. Local is closed while remote is still open
+            if (lpClosed && !rpClosed) {
+              const localClosedMs = getCloseMs(lp);
+              const remoteReopenMs = rp.reopenedAt ? new Date(rp.reopenedAt).getTime() : 0;
+              if (!rp.reopenedAt || localClosedMs >= remoteReopenMs) {
+                const closedSynced: DailyPlanItem =
+                  lp.id === rp.id
+                    ? lp
+                    : {
+                        ...rp,
+                        isClosed: true,
+                        status: 'yopildi',
+                        closedWithoutAction: lp.closedWithoutAction,
+                        closedAt: lp.closedAt,
+                        closedBy: lp.closedBy,
+                        closeReason: lp.closeReason,
+                      };
+                delete closedSynced.reopenedAt;
+                delete closedSynced.reopenedBy;
+                delete closedSynced.reopenReason;
+                (closedSynced as any).closedDisplayDate =
+                  (lp as any).closedDisplayDate || lp.closedAt;
+                (closedSynced as any).closedUpdatedAt =
+                  (lp as any).closedUpdatedAt || lp.closedAt;
+                syncPlanToFirestore(closedSynced);
+                return closedSynced;
+              }
+            }
+
             return rp;
           });
 
-          // Deduplicate by clientId+planDate so each client appears once per date, and remove duplicate docs from Firestore
-          const { uniquePlans, duplicateIds } =
-            storageService.deduplicatePlansByClient(reconciledRemote);
-          if (duplicateIds.length > 0) {
-            duplicateIds.forEach((dupId) => {
-              deletePlanFromFirestore(dupId);
-            });
+          // Retain local plans (especially closed/recovered plans) that are missing from cleanRemote
+          const remoteIdsSet = new Set(reconciledRemote.map((rp) => rp.id));
+          const remoteDateKeysSet = new Set(
+            reconciledRemote.map((rp) => `${rp.clientId}_${getPlanDateKey(rp)}`)
+          );
+          const remoteClosedKeysSet = new Set(
+            reconciledRemote
+              .map((rp) => {
+                const cKey = getClosedDateKey(rp);
+                return cKey ? `${rp.clientId}_${cKey}` : '';
+              })
+              .filter(Boolean)
+          );
+
+          for (const lp of localPlans) {
+            if (!lp || !lp.clientId) continue;
+            if (deletedIds.has(lp.clientId) || deletedPlanIds.has(lp.id)) continue;
+            const lpDateKey = `${lp.clientId}_${getPlanDateKey(lp)}`;
+            const lpClosedDate = getClosedDateKey(lp);
+            const lpClosedKey = lpClosedDate ? `${lp.clientId}_${lpClosedDate}` : '';
+            const alreadyInRemote =
+              remoteIdsSet.has(lp.id) ||
+              remoteDateKeysSet.has(lpDateKey) ||
+              (lpClosedKey !== '' && remoteClosedKeysSet.has(lpClosedKey));
+            if (!alreadyInRemote) {
+              reconciledRemote.push(lp);
+              remoteIdsSet.add(lp.id);
+              remoteDateKeysSet.add(lpDateKey);
+              if (lpClosedKey) remoteClosedKeysSet.add(lpClosedKey);
+              syncPlanToFirestore(lp);
+            }
           }
+
+          // Deduplicate by clientId+planDate so each client appears once per date
+          const { uniquePlans } =
+            storageService.deduplicatePlansByClient(reconciledRemote);
 
           storageService.saveDailyPlans(uniquePlans);
           const freshPlans = storageService.getActive24hPlans();
@@ -1282,8 +1367,15 @@ export default function App() {
         storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false, closeDate);
       }
 
-      const updatedPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
-      if (updatedPlan) syncPlanToFirestore(updatedPlan);
+      const freshPlans = storageService.getDailyPlans();
+      const updatedPlan = freshPlans.find((p) => p.id === planItemId);
+      if (updatedPlan) {
+        const targetDate = getPlanDateKey(updatedPlan);
+        const matchingPlans = freshPlans.filter(
+          (p) => p.clientId === updatedPlan.clientId && getPlanDateKey(p) === targetDate
+        );
+        syncPlansBulkToFirestore(matchingPlans.length > 0 ? matchingPlans : [updatedPlan]);
+      }
 
       if (targetPlan) {
         const updatedClient = storageService.getClientById(targetPlan.clientId);
@@ -1358,14 +1450,21 @@ export default function App() {
       reportNote: data.reportNote,
     });
     if (result.success) {
-      if (closeAfterSave && result.plan && !result.plan.isClosed) {
+      if (closeAfterSave && result.plan) {
         const autoCloseReason =
           data.reportNote?.trim() || "Sotilgan mahsulotlar yangilandi va hisobot yopildi";
         storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false, closeDate);
       }
 
-      const finalPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
-      if (finalPlan) syncPlanToFirestore(finalPlan);
+      const freshPlans = storageService.getDailyPlans();
+      const finalPlan = freshPlans.find((p) => p.id === planItemId);
+      if (finalPlan) {
+        const targetDate = getPlanDateKey(finalPlan);
+        const matchingPlans = freshPlans.filter(
+          (p) => p.clientId === finalPlan.clientId && getPlanDateKey(p) === targetDate
+        );
+        syncPlansBulkToFirestore(matchingPlans.length > 0 ? matchingPlans : [finalPlan]);
+      }
 
       if (result.client) {
         const freshClient = storageService.getClientById(result.client.id);
@@ -1417,7 +1516,7 @@ export default function App() {
       data
     );
     if (result.success) {
-      if (closeAfterSave && result.plan && !result.plan.isClosed) {
+      if (closeAfterSave && result.plan) {
         const autoCloseReason =
           data.reportNote?.trim() || "Moliyaviy amaliyot yangilandi va hisobot yopildi";
         storageService.closeDailyPlanItem(
@@ -1429,8 +1528,15 @@ export default function App() {
         );
       }
 
-      const finalPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
-      if (finalPlan) syncPlanToFirestore(finalPlan);
+      const freshPlans = storageService.getDailyPlans();
+      const finalPlan = freshPlans.find((p) => p.id === planItemId);
+      if (finalPlan) {
+        const targetDate = getPlanDateKey(finalPlan);
+        const matchingPlans = freshPlans.filter(
+          (p) => p.clientId === finalPlan.clientId && getPlanDateKey(p) === targetDate
+        );
+        syncPlansBulkToFirestore(matchingPlans.length > 0 ? matchingPlans : [finalPlan]);
+      }
 
       if (result.client) {
         const freshClient = storageService.getClientById(result.client.id);
@@ -1482,8 +1588,15 @@ export default function App() {
       closeDate
     );
     if (success) {
-      const updatedPlan = storageService.getDailyPlans().find((p) => p.id === planItemId);
-      if (updatedPlan) syncPlanToFirestore(updatedPlan);
+      const freshPlans = storageService.getDailyPlans();
+      const updatedPlan = freshPlans.find((p) => p.id === planItemId);
+      if (updatedPlan) {
+        const targetDate = getPlanDateKey(updatedPlan);
+        const matchingPlans = freshPlans.filter(
+          (p) => p.clientId === updatedPlan.clientId && getPlanDateKey(p) === targetDate
+        );
+        syncPlansBulkToFirestore(matchingPlans.length > 0 ? matchingPlans : [updatedPlan]);
+      }
 
       const targetClientId = updatedPlan?.clientId;
       if (targetClientId) {
@@ -1766,18 +1879,13 @@ export default function App() {
                   onOpenExecuteModal={(item, editSold, editFinancial) => {
                     const latestPlans = storageService.getActive24hPlans();
                     const exact = latestPlans.find((p) => p.id === item.id);
-                    const openForClient = latestPlans.find(
+                    const itemDateKey = getPlanDateKey(item);
+                    const sameDateForClient = latestPlans.find(
                       (p) =>
                         p.clientId === item.clientId &&
-                        ((p.reopenedAt && !p.closedAt) ||
-                          (!p.isClosed && p.status !== 'yopildi'))
+                        getPlanDateKey(p) === itemDateKey
                     );
-                    const resolved =
-                      exact &&
-                      ((exact.reopenedAt && !exact.closedAt) ||
-                        (!exact.isClosed && exact.status !== 'yopildi'))
-                        ? exact
-                        : openForClient || exact || item;
+                    const resolved = exact || sameDateForClient || item;
                     setExecutingPlanEditSoldMode(Boolean(editSold));
                     setExecutingPlanEditFinancialMode(Boolean(editFinancial));
                     setExecutingPlanItem(resolved);
@@ -2208,18 +2316,13 @@ export default function App() {
                     onOpenExecuteModal={(item, editSold, editFinancial) => {
                       const latestPlans = storageService.getActive24hPlans();
                       const exact = latestPlans.find((p) => p.id === item.id);
-                      const openForClient = latestPlans.find(
+                      const itemDateKey = getPlanDateKey(item);
+                      const sameDateForClient = latestPlans.find(
                         (p) =>
                           p.clientId === item.clientId &&
-                          ((p.reopenedAt && !p.closedAt) ||
-                            (!p.isClosed && p.status !== 'yopildi'))
+                          getPlanDateKey(p) === itemDateKey
                       );
-                      const resolved =
-                        exact &&
-                        ((exact.reopenedAt && !exact.closedAt) ||
-                          (!exact.isClosed && exact.status !== 'yopildi'))
-                          ? exact
-                          : openForClient || exact || item;
+                      const resolved = exact || sameDateForClient || item;
                       setExecutingPlanEditSoldMode(Boolean(editSold));
                       setExecutingPlanEditFinancialMode(Boolean(editFinancial));
                       setExecutingPlanItem(resolved);

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { Client, DailyPlanItem } from '../types';
-import { formatMoney, formatNumber, formatDate, formatDateDMY, getAgentDisplayName } from '../utils/format';
+import { formatMoney, formatNumber, formatDate, formatDateDMY, getAgentDisplayName, getInitialDebtForClient } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import { storageService } from '../services/storage';
 import {
@@ -1993,7 +1993,7 @@ export const ClientTable: React.FC<Props> = ({
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200/80">
                         <span className="text-[10px] font-bold text-rose-900 uppercase block">
-                          Qarzdorlik:
+                          Joriy Qarzdorlik:
                         </span>
                         <span className="font-mono font-bold text-neutral-900 text-xs tabular-nums block mt-0.5">
                           {formatMoney(dispDebt)}

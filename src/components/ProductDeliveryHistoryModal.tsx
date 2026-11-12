@@ -359,25 +359,117 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     });
   }, [allDeliveryRecords, searchQuery, dateFilter, todayYmd, yesterdayYmd, firstDayOfMonthYmd, startDate, endDate]);
 
-  // Aggregated Summary Stats for filtered range
+  // Aggregated Summary Stats for filtered range (with package/korobka & piece/kanistr conversion)
   const summary = useMemo(() => {
-    let totalPieces = 0;
+    let grandTotalPieces = 0;
     let totalSumUsd = 0;
     const clientIdsSet = new Set<string>();
 
+    if (!product) {
+      return {
+        totalPieces: 0,
+        formattedPieces: '0 dona',
+        subtext: '',
+        totalSumUsd: 0,
+        deliveryCount: 0,
+        clientsCount: 0,
+      };
+    }
+
+    const piecesPerPkg = product.piecesPerPackage && product.piecesPerPackage > 0 ? product.piecesPerPackage : 1;
+    const pkgName = product.packageUnitName || 'korobka';
+    const pieceName = product.pieceUnitName || 'kanistr';
+    const hasPackage = Boolean(product.packageUnitName && product.packageUnitName.trim() && piecesPerPkg > 1);
+
     filteredRecords.forEach((r) => {
-      totalPieces += r.quantity;
+      const isPkgUnit =
+        hasPackage &&
+        (r.unit.toLowerCase() === pkgName.toLowerCase() ||
+          r.unit.toLowerCase().includes('korobk') ||
+          r.unit.toLowerCase().includes('quti') ||
+          r.unit.toLowerCase().includes('pack'));
+
+      const rPieces = isPkgUnit ? r.quantity * piecesPerPkg : r.quantity;
+
+      grandTotalPieces += rPieces;
       totalSumUsd += r.totalPrice;
       if (r.clientId) clientIdsSet.add(r.clientId);
     });
 
+    let formattedPieces = `${grandTotalPieces.toLocaleString()} ${pieceName}`;
+    let subtext = '';
+
+    if (hasPackage) {
+      const pkgs = Math.floor(grandTotalPieces / piecesPerPkg);
+      const rem = grandTotalPieces % piecesPerPkg;
+
+      if (pkgs > 0 && rem > 0) {
+        formattedPieces = `${pkgs} ${pkgName} + ${rem} ${pieceName}`;
+      } else if (pkgs > 0) {
+        formattedPieces = `${pkgs} ${pkgName}`;
+      } else {
+        formattedPieces = `${rem} ${pieceName}`;
+      }
+
+      subtext = `Jami: ${grandTotalPieces.toLocaleString()} ${pieceName} (1 ${pkgName} = ${piecesPerPkg} ${pieceName})`;
+    }
+
     return {
-      totalPieces,
+      totalPieces: grandTotalPieces,
+      formattedPieces,
+      subtext,
       totalSumUsd,
       deliveryCount: filteredRecords.length,
       clientsCount: clientIdsSet.size,
     };
-  }, [filteredRecords]);
+  }, [filteredRecords, product]);
+
+  // Helper: Format record quantity for table and mobile cards
+  const getFormattedRecordQty = (rec: ProductDeliveryRecord) => {
+    if (!product) return { primary: `${rec.quantity} ${rec.unit}`, secondary: '' };
+
+    const piecesPerPkg = product.piecesPerPackage && product.piecesPerPackage > 0 ? product.piecesPerPackage : 1;
+    const pkgName = product.packageUnitName || 'korobka';
+    const pieceName = product.pieceUnitName || 'kanistr';
+    const hasPackage = Boolean(product.packageUnitName && product.packageUnitName.trim() && piecesPerPkg > 1);
+
+    const isPkgUnit =
+      hasPackage &&
+      (rec.unit.toLowerCase() === pkgName.toLowerCase() ||
+        rec.unit.toLowerCase().includes('korobk') ||
+        rec.unit.toLowerCase().includes('quti') ||
+        rec.unit.toLowerCase().includes('pack'));
+
+    const rPieces = isPkgUnit ? rec.quantity * piecesPerPkg : rec.quantity;
+
+    if (!hasPackage) {
+      return {
+        primary: `${rec.quantity.toLocaleString()} ${rec.unit || pieceName}`,
+        secondary: '',
+      };
+    }
+
+    const pkgs = Math.floor(rPieces / piecesPerPkg);
+    const rem = rPieces % piecesPerPkg;
+
+    let equivText = '';
+    if (isPkgUnit) {
+      equivText = `(${rPieces.toLocaleString()} ${pieceName})`;
+    } else {
+      if (pkgs > 0 && rem > 0) {
+        equivText = `(${pkgs} ${pkgName} + ${rem} ${pieceName})`;
+      } else if (pkgs > 0) {
+        equivText = `(${pkgs} ${pkgName})`;
+      } else {
+        equivText = `(${rem} ${pieceName})`;
+      }
+    }
+
+    return {
+      primary: `${rec.quantity.toLocaleString()} ${rec.unit}`,
+      secondary: equivText,
+    };
+  };
 
   if (!isOpen || !product) return null;
 
@@ -403,8 +495,27 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                 <span className="text-xs font-bold text-rose-300 bg-white/10 px-2 py-0.5 rounded-md border border-white/10 uppercase tracking-wider">
                   {product.brand}
                 </span>
-                <h2 className="text-base sm:text-lg font-bold font-display tracking-tight text-white">
-                  {product.name}
+                <h2 className="text-base sm:text-lg font-bold font-display tracking-tight text-white flex items-center gap-2 flex-wrap">
+                  <span>{product.name}</span>
+                  {product.mark1 && (
+                    <span className="text-xs bg-rose-500/30 text-rose-100 px-2.5 py-0.5 rounded-md border border-rose-400/40 font-bold font-mono">
+                      {product.mark1}
+                    </span>
+                  )}
+                  {product.mark2 && (
+                    <span className="text-xs bg-rose-500/30 text-rose-100 px-2.5 py-0.5 rounded-md border border-rose-400/40 font-bold font-mono">
+                      {product.mark2}
+                    </span>
+                  )}
+                  {product.extraMarks &&
+                    product.extraMarks.map((em, idx) => (
+                      <span
+                        key={idx}
+                        className="text-xs bg-rose-500/30 text-rose-100 px-2.5 py-0.5 rounded-md border border-rose-400/40 font-bold font-mono"
+                      >
+                        {em}
+                      </span>
+                    ))}
                 </h2>
               </div>
               <p className="text-xs text-neutral-300 mt-0.5">
@@ -426,12 +537,14 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
         <div className="p-4 bg-neutral-50 border-b border-neutral-200 grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0">
           <div className="p-3.5 rounded-2xl bg-white border border-neutral-200 shadow-2xs">
             <div className="text-[11px] text-neutral-500 font-medium">Jami topshirilgan:</div>
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-neutral-900 mt-0.5 tabular-nums">
-              {summary.totalPieces.toLocaleString()}{' '}
-              <span className="text-xs text-neutral-500 font-normal">
-                {product.pieceUnitName || 'dona'}
-              </span>
+            <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5 tabular-nums">
+              {summary.formattedPieces}
             </div>
+            {summary.subtext && (
+              <div className="text-[10px] text-emerald-800 font-semibold font-mono mt-0.5">
+                {summary.subtext}
+              </div>
+            )}
           </div>
 
           <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 shadow-2xs">
@@ -660,12 +773,24 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
 
                             {/* Qanchadan (Quantity & Unit Price) */}
                             <td className="py-3 px-3.5 text-center whitespace-nowrap">
-                              <div className="font-extrabold text-neutral-900 font-mono text-sm">
-                                {rec.quantity.toLocaleString()} {rec.unit}
-                              </div>
-                              <div className="text-[11px] text-neutral-500 font-mono">
-                                {rec.unitPrice.toLocaleString()} USD / {rec.unit}
-                              </div>
+                              {(() => {
+                                const formattedQty = getFormattedRecordQty(rec);
+                                return (
+                                  <>
+                                    <div className="font-extrabold text-neutral-900 font-mono text-sm">
+                                      {formattedQty.primary}
+                                    </div>
+                                    {formattedQty.secondary && (
+                                      <div className="text-[11px] text-emerald-800 font-bold font-mono">
+                                        {formattedQty.secondary}
+                                      </div>
+                                    )}
+                                    <div className="text-[11px] text-neutral-500 font-mono mt-0.5">
+                                      {rec.unitPrice.toLocaleString()} USD / {rec.unit}
+                                    </div>
+                                  </>
+                                );
+                              })()}
                             </td>
 
                             {/* Jami Summa */}
@@ -717,6 +842,8 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                     rec.debtAmount
                   );
 
+                  const formattedQty = getFormattedRecordQty(rec);
+
                   return (
                     <div
                       key={rec.id}
@@ -743,8 +870,13 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                         <div>
                           <span className="text-neutral-500 text-[10px] block">Miqdori va Narxi:</span>
                           <span className="font-extrabold text-neutral-900 font-mono">
-                            {rec.quantity} {rec.unit}
+                            {formattedQty.primary}
                           </span>
+                          {formattedQty.secondary && (
+                            <span className="text-[10px] font-bold text-emerald-800 block">
+                              {formattedQty.secondary}
+                            </span>
+                          )}
                           <span className="text-[10px] text-neutral-500 block">
                             @{rec.unitPrice.toLocaleString()} USD
                           </span>

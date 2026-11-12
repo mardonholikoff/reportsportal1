@@ -6,6 +6,8 @@ import {
   isClosedPlanExpired7Days,
   getPlanSoldProductsData,
   getPlanFinancialActionData,
+  getPlanDateKey,
+  getClosedDateKey,
 } from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import {
@@ -240,14 +242,23 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   // Date filtering applied first
   const dateFilteredPlans = useMemo(() => {
     if (dateFilter === 'all') return validPlans;
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const todayStr = getTodayDateStr();
+    const yesterdayStr = getYesterdayDateStr();
 
     return validPlans.filter((p) => {
-      const pDate = (p.planDate || p.createdAt || '').slice(0, 10);
-      if (dateFilter === 'today') return pDate === todayStr;
-      if (dateFilter === 'yesterday') return pDate === yesterdayStr;
-      if (dateFilter === 'custom' && customDate) return pDate === customDate;
+      const pDate = getPlanDateKey(p);
+      const pRawDate = (p.planDate || p.createdAt || '').slice(0, 10);
+      const pClosedDate = getClosedDateKey(p);
+      const pRawClosedDate = ((p as any).closedDisplayDate || p.closedAt || '').slice(0, 10);
+      const matchesTarget = (target: string) =>
+        pDate === target ||
+        pRawDate === target ||
+        pClosedDate === target ||
+        pRawClosedDate === target;
+
+      if (dateFilter === 'today') return matchesTarget(todayStr);
+      if (dateFilter === 'yesterday') return matchesTarget(yesterdayStr);
+      if (dateFilter === 'custom' && customDate) return matchesTarget(customDate);
       return true;
     });
   }, [validPlans, dateFilter, customDate]);

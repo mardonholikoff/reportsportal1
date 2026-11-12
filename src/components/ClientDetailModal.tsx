@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Client } from '../types';
-import { formatMoney, formatDate, formatNumber, getAgentDisplayName } from '../utils/format';
+import { formatMoney, formatDate, formatNumber, getAgentDisplayName, getInitialDebtForClient } from '../utils/format';
 import { storageService } from '../services/storage';
 import {
   X,
@@ -447,8 +447,15 @@ export const ClientDetailModal: React.FC<Props> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Joriy qarzdorlik */}
             <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200">
-              <div className="text-xs font-bold text-rose-900 uppercase tracking-wide">
-                Joriy qarzdorlik
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-bold text-rose-900 uppercase tracking-wide">
+                  Joriy qarzdorlik
+                </div>
+                {getInitialDebtForClient(client) > 0 && (
+                  <div className="text-[11px] font-bold text-amber-800 font-mono bg-amber-100/90 px-2 py-0.5 rounded border border-amber-200">
+                    Dastlabki: {formatMoney(getInitialDebtForClient(client))}
+                  </div>
+                )}
               </div>
               <div className="text-2xl font-bold font-display text-neutral-900 font-mono tabular-nums mt-1">
                 {formatMoney(client.currentDebt)}

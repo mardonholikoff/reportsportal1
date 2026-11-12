@@ -825,13 +825,12 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setReminderSuccessMsg(null);
 
       const soldSnapshot = getPlanSoldProductsData(planItem);
-      if (initialEditSoldProducts && soldSnapshot.productsDelivered.length > 0) {
+      if (soldSnapshot.productsDelivered.length > 0) {
         loadSoldProductsIntoForm(soldSnapshot);
       }
 
       const finSnapshot = getPlanFinancialActionData(planItem);
       if (
-        initialEditFinancialAction &&
         finSnapshot.financialAction &&
         finSnapshot.totalFinancialAmount > 0
       ) {
@@ -2917,7 +2916,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     onChange={(e) => {
                       const checked = e.target.checked;
                       setHasProducts(checked);
-                      if (!checked && isEditingSoldProducts) {
+                      if (checked && hasExistingSoldProducts) {
+                        loadSoldProductsIntoForm(existingSoldData);
+                      } else if (!checked && isEditingSoldProducts) {
                         setIsEditingSoldProducts(false);
                       }
                       syncConfirmationWithBlocks(hasPayment, checked, hasReturns);

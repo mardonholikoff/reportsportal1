@@ -18,6 +18,7 @@ import {
   ClientReminder,
 } from '../types';
 import { parseLegacyAddress, formatAddress } from '../utils/location';
+import { getInitialDebtForClient } from '../utils/format';
 
 const STORAGE_KEY = 'savdo_clients_data_v1';
 const SYNC_QUEUE_KEY = 'savdo_sync_queue_v1';
@@ -28,20 +29,50 @@ const WAREHOUSE_KEY = 'savdo_warehouse_products_v1';
 const MONTHLY_PLANS_KEY = 'savdo_monthly_plans_v1';
 export const DELETED_CLIENT_IDS_KEY = 'savdo_deleted_client_ids_v1';
 export const DELETED_WAREHOUSE_IDS_KEY = 'savdo_deleted_warehouse_ids_v1';
+export const DELETED_PLAN_IDS_KEY = 'savdo_deleted_plan_ids_v1';
 export const APP_INITIALIZED_KEY = 'savdo_app_initialized_v1';
 
 // Yopilgan rejalar 7 kundan keyin avtomatik tozalanishi va barchada ko'rinmasligi uchun
 export const CLOSED_PLAN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 kun
 
-export function isClosedPlanExpired7Days(plan: DailyPlanItem): boolean {
-  if (!plan) return false;
-  const isClosed = Boolean(plan.isClosed || plan.status === 'yopildi');
-  if (!isClosed) return false;
-  const closedTimeStr = plan.closedAt || plan.completedAt || plan.createdAt;
-  if (!closedTimeStr) return false;
-  const closedMs = new Date(closedTimeStr).getTime();
-  if (isNaN(closedMs)) return false;
-  return Date.now() - closedMs >= CLOSED_PLAN_RETENTION_MS;
+export function isClosedPlanExpired7Days(_plan: DailyPlanItem): boolean {
+  // Yopilgan rejalar "Yopilganlar" ro'yxatidan o'z-o'zidan o'chib ketmasligi va har doim ko'rinishi uchun false qaytaramiz
+  return false;
+}
+
+export function getPlanDateKey(p: DailyPlanItem | null | undefined): string {
+  if (!p) return '';
+  if (p.planDate && /^\d{4}-\d{2}-\d{2}/.test(p.planDate.trim())) {
+    return p.planDate.trim().slice(0, 10);
+  }
+  if (p.createdAt) {
+    const d = new Date(p.createdAt);
+    if (!isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+    return p.createdAt.slice(0, 10);
+  }
+  return '';
+}
+
+export function getClosedDateKey(p: DailyPlanItem | null | undefined): string {
+  if (!p) return '';
+  const rawStr = ((p as any).closedDisplayDate || p.closedAt || '').trim();
+  if (!rawStr) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(rawStr)) {
+    return rawStr;
+  }
+  const d = new Date(rawStr);
+  if (!isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return rawStr.slice(0, 10);
 }
 
 export function getPlanSoldProductsData(plan: DailyPlanItem | null | undefined): {
@@ -168,6 +199,45 @@ export function markWarehouseProductAsDeleted(productId: string): void {
     localStorage.setItem(DELETED_WAREHOUSE_IDS_KEY, JSON.stringify(Array.from(ids)));
   } catch (e) {
     console.error('Failed to mark warehouse product as deleted', e);
+  }
+}
+
+let deletedPlanIdsCache: Set<string> | null = null;
+
+export function getDeletedPlanIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  if (deletedPlanIdsCache) return deletedPlanIdsCache;
+  try {
+    const raw = localStorage.getItem(DELETED_PLAN_IDS_KEY);
+    deletedPlanIdsCache = raw ? new Set(JSON.parse(raw)) : new Set();
+    return deletedPlanIdsCache;
+  } catch {
+    deletedPlanIdsCache = new Set();
+    return deletedPlanIdsCache;
+  }
+}
+
+export function markPlanAsDeleted(planId: string): void {
+  if (typeof window === 'undefined' || !planId) return;
+  try {
+    const ids = getDeletedPlanIds();
+    if (ids.has(planId)) return;
+    ids.add(planId);
+    localStorage.setItem(DELETED_PLAN_IDS_KEY, JSON.stringify(Array.from(ids)));
+  } catch (e) {
+    console.error('Failed to mark plan as deleted', e);
+  }
+}
+
+export function unmarkPlanAsDeleted(planId: string): void {
+  if (typeof window === 'undefined' || !planId) return;
+  try {
+    const ids = getDeletedPlanIds();
+    if (!ids.has(planId)) return;
+    ids.delete(planId);
+    localStorage.setItem(DELETED_PLAN_IDS_KEY, JSON.stringify(Array.from(ids)));
+  } catch {
+    // ignore
   }
 }
 
@@ -509,6 +579,7 @@ class StorageService {
           }
           return {
             ...c,
+            initialDebt: getInitialDebtForClient(c),
             region,
             district,
             landmark,
@@ -563,6 +634,7 @@ class StorageService {
 
     const newClient: Client = {
       ...clientData,
+      initialDebt: clientData.initialDebt !== undefined ? clientData.initialDebt : (clientData.currentDebt || 0),
       id: clientId,
       createdAt: nowStr,
       updatedAt: nowStr,
@@ -600,6 +672,7 @@ class StorageService {
 
       const newClient: Client = {
         ...clientData,
+        initialDebt: clientData.initialDebt !== undefined ? clientData.initialDebt : (clientData.currentDebt || 0),
         id: clientId,
         createdAt: nowStr,
         updatedAt: nowStr,
@@ -635,14 +708,48 @@ class StorageService {
     return createdClients;
   }
 
-  public updateClient(id: string, updates: Partial<Omit<Client, 'id' | 'createdAt'>>): Client | null {
+  public updateClient(id: string, updates: Partial<Omit<Client, 'id'>>): Client | null {
     const clients = [...this.getClients()];
     const index = clients.findIndex((c) => c.id === id);
     if (index === -1) return null;
 
+    const existing = clients[index];
+    const newCreatedAt = updates.createdAt || existing.createdAt;
+
+    let updatedLogs = updates.logs ? [...updates.logs] : (existing.logs ? [...existing.logs] : []);
+    if (updates.initialDebt !== undefined || updates.createdAt) {
+      const initLogIndex = updatedLogs.findIndex(
+        (l) => l && (l.type === 'created' || (l.title && (l.title.includes("qo'shildi") || l.title.includes("yuklandi"))))
+      );
+      const effInitDebt = updates.initialDebt !== undefined ? updates.initialDebt : getInitialDebtForClient(existing);
+      if (initLogIndex !== -1) {
+        const oldLog = updatedLogs[initLogIndex];
+        const newDetails = oldLog.details && oldLog.details.includes('Qarz:')
+          ? oldLog.details.replace(/Qarz:\s*[\d.,]+/i, `Qarz: ${effInitDebt}`)
+          : `${oldLog.details || ''}. Qarz: ${effInitDebt} USD`.trim();
+        updatedLogs[initLogIndex] = {
+          ...oldLog,
+          timestamp: newCreatedAt,
+          details: newDetails,
+        };
+      } else {
+        updatedLogs.unshift({
+          id: 'log_' + Date.now() + '_init',
+          clientId: id,
+          author: existing.createdBy || 'adminc',
+          timestamp: newCreatedAt,
+          type: 'created',
+          title: "Mijoz ro'yxatga qo'shildi",
+          details: `Tizimga qo'shildi. Qarz: ${effInitDebt} USD`,
+        });
+      }
+    }
+
     const updated: Client = {
-      ...clients[index],
+      ...existing,
       ...updates,
+      createdAt: newCreatedAt,
+      logs: updatedLogs,
       updatedAt: new Date().toISOString(),
       syncStatus: navigator.onLine ? 'synced' : 'pending',
     };
@@ -828,18 +935,26 @@ class StorageService {
     const byClient = new Map<string, DailyPlanItem>();
     const duplicateIds: string[] = [];
 
+    const getPlanCloseWallMs = (p: DailyPlanItem): number => {
+      const wallStr = (p as any).closedUpdatedAt;
+      const wallMs = wallStr ? new Date(wallStr).getTime() : 0;
+      const closedMs = p.closedAt ? new Date(p.closedAt).getTime() : 0;
+      return Math.max(isNaN(wallMs) ? 0 : wallMs, isNaN(closedMs) ? 0 : closedMs);
+    };
+
+    const getPlanEventTime = (p: DailyPlanItem): number => {
+      const times = [
+        p.reopenedAt ? new Date(p.reopenedAt).getTime() : 0,
+        getPlanCloseWallMs(p),
+        p.completedAt ? new Date(p.completedAt).getTime() : 0,
+        p.lastExecutedAt ? new Date(p.lastExecutedAt).getTime() : 0,
+        p.createdAt ? new Date(p.createdAt).getTime() : 0,
+      ].filter((t) => !isNaN(t) && t > 0);
+      return times.length > 0 ? Math.max(...times) : 0;
+    };
+
     const scorePlan = (p: DailyPlanItem): number => {
       let score = 0;
-      const isOpen = !p.isClosed && p.status !== 'yopildi';
-      const isFreshReopen = Boolean(p.reopenedAt && isOpen);
-      if (isFreshReopen) {
-        // Qayta ochilgan va hali faol reja eng yuqori ustuvorlikka ega!
-        score += 5000;
-      } else if (isOpen) {
-        score += 3000;
-      } else {
-        score += 100;
-      }
       if (p.status === 'bajarildi' || p.actionDone) score += 500;
       score += (p.actionsCount || (p.actionsHistory ? p.actionsHistory.length : 0)) * 50;
       return score;
@@ -847,35 +962,43 @@ class StorageService {
 
     for (const plan of plans) {
       if (!plan || !plan.clientId) continue;
-      const planDateKey = plan.planDate || (plan.createdAt ? plan.createdAt.slice(0, 10) : '');
+      const planDateKey = getPlanDateKey(plan);
       const key = `${plan.clientId}_${planDateKey}`;
       const existing = byClient.get(key);
       if (!existing) {
         byClient.set(key, plan);
       } else {
-        const existingScore = scorePlan(existing);
-        const currentScore = scorePlan(plan);
-        const existingTime = new Date(
-          existing.reopenedAt || existing.completedAt || existing.closedAt || existing.createdAt || 0
-        ).getTime();
-        const currentTime = new Date(
-          plan.reopenedAt || plan.completedAt || plan.closedAt || plan.createdAt || 0
-        ).getTime();
+        const existingClosed = Boolean(existing.isClosed || existing.status === 'yopildi');
+        const planClosed = Boolean(plan.isClosed || plan.status === 'yopildi');
 
-        const planOpen = !plan.isClosed && plan.status !== 'yopildi';
-        const existingOpen = !existing.isClosed && existing.status !== 'yopildi';
+        const existingReopened = Boolean(existing.reopenedAt && !existingClosed);
+        const planReopened = Boolean(plan.reopenedAt && !planClosed);
 
         let pickCurrent = false;
-        if (planOpen && !existingOpen) {
-          // Yangi yoki qayta ochilgan ochiq reja eski yopilgan rejadan har doim ustun!
+        if (planReopened && !existingReopened) {
+          const planReopenMs = new Date(plan.reopenedAt!).getTime();
+          const existingClosedMs = existingClosed ? getPlanCloseWallMs(existing) : 0;
+          pickCurrent = planReopenMs > existingClosedMs;
+        } else if (existingReopened && !planReopened) {
+          const existingReopenMs = new Date(existing.reopenedAt!).getTime();
+          const planClosedMs = planClosed ? getPlanCloseWallMs(plan) : 0;
+          pickCurrent = planClosedMs >= existingReopenMs;
+        } else if (planClosed && !existingClosed) {
           pickCurrent = true;
-        } else if (!planOpen && existingOpen) {
-          // Mavjud ochiq reja eski yopilgan reja bilan almashtirilmaydi!
+        } else if (existingClosed && !planClosed) {
           pickCurrent = false;
         } else {
-          pickCurrent =
-            currentScore > existingScore ||
-            (currentScore === existingScore && currentTime >= existingTime);
+          const existingTime = getPlanEventTime(existing);
+          const currentTime = getPlanEventTime(plan);
+          if (currentTime > existingTime) {
+            pickCurrent = true;
+          } else if (currentTime < existingTime) {
+            pickCurrent = false;
+          } else {
+            const existingScore = scorePlan(existing);
+            const currentScore = scorePlan(plan);
+            pickCurrent = currentScore >= existingScore;
+          }
         }
 
         // Merge actionsHistory from both plans without losing any agent's actions
@@ -890,76 +1013,249 @@ class StorageService {
         );
         const latestAction = mergedActionsHistory[0];
 
-        if (pickCurrent) {
-          if (existing.id !== plan.id) duplicateIds.push(existing.id);
-          byClient.set(key, {
-            ...plan,
-            plannedAction: plan.plannedAction || existing.plannedAction,
-            plannedAmount: plan.plannedAmount ?? existing.plannedAmount,
-            planNote: plan.planNote || existing.planNote,
-            lastExecutedBy: plan.lastExecutedBy || existing.lastExecutedBy || latestAction?.author,
-            lastExecutedAt: plan.lastExecutedAt || existing.lastExecutedAt || latestAction?.timestamp,
-            actionsHistory: mergedActionsHistory.length > 0 ? mergedActionsHistory : plan.actionsHistory,
-            actionsCount: mergedActionsHistory.length > 0 ? mergedActionsHistory.length : plan.actionsCount,
-          });
-        } else {
-          if (plan.id !== existing.id) duplicateIds.push(plan.id);
-          byClient.set(key, {
-            ...existing,
-            plannedAction: existing.plannedAction || plan.plannedAction,
-            plannedAmount: existing.plannedAmount ?? plan.plannedAmount,
-            planNote: existing.planNote || plan.planNote,
-            lastExecutedBy: existing.lastExecutedBy || plan.lastExecutedBy || latestAction?.author,
-            lastExecutedAt: existing.lastExecutedAt || plan.lastExecutedAt || latestAction?.timestamp,
-            actionsHistory: mergedActionsHistory.length > 0 ? mergedActionsHistory : existing.actionsHistory,
-            actionsCount: mergedActionsHistory.length > 0 ? mergedActionsHistory.length : existing.actionsCount,
-          });
+        const winnerBase = pickCurrent ? plan : existing;
+        const loserBase = pickCurrent ? existing : plan;
+        if (loserBase.id !== winnerBase.id) {
+          duplicateIds.push(loserBase.id);
         }
+
+        byClient.set(key, {
+          ...winnerBase,
+          plannedAction: winnerBase.plannedAction || loserBase.plannedAction,
+          plannedAmount: winnerBase.plannedAmount ?? loserBase.plannedAmount,
+          planNote: winnerBase.planNote || loserBase.planNote,
+          productsDelivered: winnerBase.productsDelivered || loserBase.productsDelivered,
+          deliveryPayment: winnerBase.deliveryPayment || loserBase.deliveryPayment,
+          financialAction: winnerBase.financialAction || loserBase.financialAction,
+          productsReturned: winnerBase.productsReturned || loserBase.productsReturned,
+          lastExecutedBy: winnerBase.lastExecutedBy || loserBase.lastExecutedBy || latestAction?.author,
+          lastExecutedAt: winnerBase.lastExecutedAt || loserBase.lastExecutedAt || latestAction?.timestamp,
+          actionsHistory: mergedActionsHistory.length > 0 ? mergedActionsHistory : winnerBase.actionsHistory,
+          actionsCount: mergedActionsHistory.length > 0 ? mergedActionsHistory.length : winnerBase.actionsCount,
+        });
       }
     }
 
     const dedupedByDate = Array.from(byClient.values());
-    const openClientIds = new Set<string>(
-      dedupedByDate
-        .filter((p) => !p.isClosed && p.status !== 'yopildi')
-        .map((p) => p.clientId)
-    );
 
-    // Agar mijozning faol (ochiq yoki qayta ochilgan) rejasi bo'lsa, shu mijozning boshqa sanadagi bo'sh "bajarilmasdan yopilgan" dublikat yozuvlarini tozalaymiz
-    const filteredPlans: DailyPlanItem[] = [];
-    for (const p of dedupedByDate) {
-      const isClosed = Boolean(p.isClosed || p.status === 'yopildi');
-      if (isClosed && openClientIds.has(p.clientId) && p.closedWithoutAction) {
-        const hasProds = Boolean(p.productsDelivered && p.productsDelivered.length > 0);
-        const hasFin = Boolean(p.financialAction && p.financialAction.amount > 0);
-        const hasHistOps = Boolean(
-          p.actionsHistory &&
-            p.actionsHistory.some(
-              (a) =>
-                (a.productsDelivered && a.productsDelivered.length > 0) ||
-                (a.financialAction && a.financialAction.amount > 0)
-            )
-        );
-        if (!hasProds && !hasFin && !hasHistOps) {
-          duplicateIds.push(p.id);
-          continue;
-        }
-      }
-      filteredPlans.push(p);
-    }
-
-    // Ochiq va qayta ochilgan rejalar har doim ro'yxatning boshida turadi
-    const uniquePlans = filteredPlans.sort((a, b) => {
+    // Ochiq va qayta ochilgan rejalar har doim ro'yxatning boshida turadi, yopilganlar esa o'z holatida saqlanadi
+    const uniquePlans = dedupedByDate.sort((a, b) => {
       const aOpen = !a.isClosed && a.status !== 'yopildi';
       const bOpen = !b.isClosed && b.status !== 'yopildi';
       if (aOpen && !bOpen) return -1;
       if (!aOpen && bOpen) return 1;
-      const aTime = new Date((aOpen ? a.reopenedAt : a.closedAt) || a.createdAt || 0).getTime();
-      const bTime = new Date((bOpen ? b.reopenedAt : b.closedAt) || b.createdAt || 0).getTime();
+      const aTime = getPlanEventTime(a);
+      const bTime = getPlanEventTime(b);
       return bTime - aTime;
     });
 
     return { uniquePlans, duplicateIds };
+  }
+
+  private recoverClosedPlansFromClientLogs(plans: DailyPlanItem[]): {
+    mergedPlans: DailyPlanItem[];
+    recoveredAny: boolean;
+  } {
+    const clients = this.getClients();
+    const deletedPlanIds = getDeletedPlanIds();
+    const resultPlans = [...plans];
+    let recoveredAny = false;
+
+    const getLogWallMs = (l: ClientAuditLog): number => {
+      if (l.id) {
+        const m = l.id.match(/^log_(\d+)/);
+        if (m && m[1]) {
+          const parsed = Number(m[1]);
+          if (!isNaN(parsed) && parsed > 0) return parsed;
+        }
+      }
+      const t = l.timestamp ? new Date(l.timestamp).getTime() : 0;
+      return isNaN(t) ? 0 : t;
+    };
+
+    for (const client of clients) {
+      if (!client || !client.id || !Array.isArray(client.logs) || client.logs.length === 0) {
+        continue;
+      }
+
+      // Find all close logs for this client
+      const closeLogsByDate = new Map<string, { log: ClientAuditLog; wallMs: number }>();
+      for (const l of client.logs) {
+        if (!l) continue;
+        const isCloseLog =
+          l.id?.endsWith('_close') ||
+          l.title === 'Reja bajarilmasdan yopildi' ||
+          l.title === 'Reja yakunlandi va yopildi';
+        if (!isCloseLog) continue;
+
+        const dateKey = getPlanDateKey({ createdAt: l.timestamp } as DailyPlanItem);
+        if (!dateKey) continue;
+
+        const wallMs = getLogWallMs(l);
+        const prev = closeLogsByDate.get(dateKey);
+        if (!prev || wallMs > prev.wallMs) {
+          closeLogsByDate.set(dateKey, { log: l, wallMs });
+        }
+      }
+
+      if (closeLogsByDate.size === 0) continue;
+
+      for (const [dateKey, { log: closeLog, wallMs: closeWallMs }] of closeLogsByDate.entries()) {
+        // Check if there is a newer reopen or removal log after this closeLog
+        const hasNewerReopenOrRemove = client.logs.some((l) => {
+          if (!l || l.id === closeLog.id) return false;
+          const isReopenOrRemove =
+            l.id?.endsWith('_reopen') ||
+            l.title === 'Reja qayta ochildi' ||
+            l.id?.includes('_plan_rem_') ||
+            l.title === 'Rejadan olib tashlandi';
+          if (!isReopenOrRemove) return false;
+          return getLogWallMs(l) > closeWallMs;
+        });
+
+        if (hasNewerReopenOrRemove) continue;
+
+        const recId = `plan_rec_${client.id}_${dateKey}`;
+        if (deletedPlanIds.has(recId)) continue;
+
+        // Check if plans already has a plan for this client & dateKey (by planDate or closedAt)
+        const existingIdx = resultPlans.findIndex(
+          (p) =>
+            p.clientId === client.id &&
+            (getPlanDateKey(p) === dateKey || getClosedDateKey(p) === dateKey)
+        );
+
+        const isUnperformed =
+          closeLog.title === 'Reja bajarilmasdan yopildi' ||
+          Boolean(closeLog.details?.includes('amal bajarilmasdan'));
+
+        let extractedReason =
+          client.lastPlanCloseReason ||
+          (isUnperformed ? 'Bajarilmasdan yopildi' : 'Amallar yakunlandi');
+        if (closeLog.details) {
+          const reasonIdx = closeLog.details.indexOf('Yopilish sababi:');
+          if (reasonIdx !== -1) {
+            const r = closeLog.details.slice(reasonIdx + 'Yopilish sababi:'.length).trim();
+            if (r) extractedReason = r;
+          }
+        }
+
+        if (existingIdx !== -1) {
+          const existingPlan = resultPlans[existingIdx];
+          const existingClosed = Boolean(
+            existingPlan.isClosed || existingPlan.status === 'yopildi'
+          );
+          const existingReopenMs = existingPlan.reopenedAt
+            ? new Date(existingPlan.reopenedAt).getTime()
+            : 0;
+          if (!existingClosed && closeWallMs > existingReopenMs) {
+            resultPlans[existingIdx] = {
+              ...existingPlan,
+              isClosed: true,
+              status: 'yopildi',
+              closedWithoutAction: isUnperformed,
+              closedAt: closeLog.timestamp,
+              closedBy: closeLog.author || client.lastPlanClosedBy || existingPlan.agentUsername,
+              closeReason: extractedReason,
+            };
+            (resultPlans[existingIdx] as any).closedDisplayDate = closeLog.timestamp;
+            (resultPlans[existingIdx] as any).closedUpdatedAt = new Date(closeWallMs).toISOString();
+            delete resultPlans[existingIdx].reopenedAt;
+            delete resultPlans[existingIdx].reopenedBy;
+            delete resultPlans[existingIdx].reopenReason;
+            recoveredAny = true;
+          }
+          continue;
+        }
+
+        // Reconstruct missing closed plan from client logs & products on that date
+        let actionDone: PlanActionType | undefined = isUnperformed ? undefined : 'joyiga borildi';
+        if (closeLog.details) {
+          const actMatch = closeLog.details.match(/Amal:\s*([^)]+)\)/);
+          if (actMatch && actMatch[1]) {
+            const cand = actMatch[1].trim();
+            if (
+              cand === 'telefon qilindi' ||
+              cand === 'joyiga borildi' ||
+              cand === 'telefon qilindi + joyiga borildi'
+            ) {
+              actionDone = cand;
+            }
+          }
+        }
+
+        const sameDatePaymentLog = client.logs.find(
+          (l) =>
+            l.type === 'payment' &&
+            getPlanDateKey({ createdAt: l.timestamp } as DailyPlanItem) === dateKey &&
+            (l.amountChanged || 0) > 0
+        );
+
+        const financialAction: DailyPlanItem['financialAction'] = sameDatePaymentLog
+          ? {
+              method: 'naqd',
+              methodLabel: sameDatePaymentLog.paymentMethodLabel || 'Naqd pul',
+              amount: sameDatePaymentLog.amountChanged || 0,
+              amountUzs: sameDatePaymentLog.amountUzs,
+              exchangeRate: sameDatePaymentLog.exchangeRate,
+              note: sameDatePaymentLog.details,
+            }
+          : undefined;
+
+        const sameDateProducts = (client.products || []).filter((prod) => {
+          const prodDate = (prod as any).date || (prod as any).deliveredAt;
+          if (!prodDate) return false;
+          return getPlanDateKey({ createdAt: prodDate } as DailyPlanItem) === dateKey;
+        });
+
+        const recoveredPlan: DailyPlanItem = {
+          id: recId,
+          agentUsername: closeLog.author || client.lastPlanClosedBy || 'agentp1',
+          clientId: client.id,
+          clientName: client.name,
+          clientPhone: client.phone,
+          clientAddress: client.address,
+          clientRegion: client.region,
+          clientDistrict: client.district,
+          clientLandmark: client.landmark,
+          createdAt: closeLog.timestamp,
+          planDate: dateKey,
+          status: 'yopildi',
+          isClosed: true,
+          closedWithoutAction: isUnperformed,
+          closedAt: closeLog.timestamp,
+          closedBy: closeLog.author || client.lastPlanClosedBy || 'agentp1',
+          closeReason: extractedReason,
+          plannedAction: actionDone || 'joyiga borildi',
+          actionDone,
+          completedAt: isUnperformed ? undefined : closeLog.timestamp,
+          lastExecutedBy: closeLog.author || client.lastPlanClosedBy || 'agentp1',
+          lastExecutedAt: closeLog.timestamp,
+          financialAction,
+          productsDelivered: sameDateProducts.length > 0 ? sameDateProducts : undefined,
+          actionsCount: isUnperformed ? 0 : 1,
+          actionsHistory: isUnperformed
+            ? []
+            : [
+                {
+                  timestamp: closeLog.timestamp,
+                  author: closeLog.author || client.lastPlanClosedBy || 'agentp1',
+                  actionDone: actionDone || 'joyiga borildi',
+                  financialAction,
+                  productsDelivered: sameDateProducts.length > 0 ? sameDateProducts : undefined,
+                  reportNote: extractedReason,
+                },
+              ],
+        };
+        (recoveredPlan as any).closedDisplayDate = closeLog.timestamp;
+        (recoveredPlan as any).closedUpdatedAt = new Date(closeWallMs).toISOString();
+
+        resultPlans.push(recoveredPlan);
+        recoveredAny = true;
+      }
+    }
+
+    return { mergedPlans: resultPlans, recoveredAny };
   }
 
   public getDailyPlans(): DailyPlanItem[] {
@@ -967,21 +1263,20 @@ class StorageService {
     if (this.plansCache) return this.plansCache;
     try {
       const raw = localStorage.getItem(DAILY_PLANS_KEY);
-      if (!raw) {
-        this.plansCache = [];
-        return [];
-      }
       const deletedIds = getDeletedClientIds();
-      const parsed: DailyPlanItem[] = JSON.parse(raw);
+      const deletedPlanIds = getDeletedPlanIds();
+      const parsed: DailyPlanItem[] = raw ? JSON.parse(raw) : [];
       const filtered = parsed.filter(
         (p) =>
           p &&
           p.clientId &&
           !deletedIds.has(p.clientId) &&
+          !deletedPlanIds.has(p.id) &&
           !isClosedPlanExpired7Days(p)
       );
-      const { uniquePlans, duplicateIds } = this.deduplicatePlansByClient(filtered);
-      if (duplicateIds.length > 0 || filtered.length !== parsed.length) {
+      const { mergedPlans, recoveredAny } = this.recoverClosedPlansFromClientLogs(filtered);
+      const { uniquePlans, duplicateIds } = this.deduplicatePlansByClient(mergedPlans);
+      if (duplicateIds.length > 0 || filtered.length !== parsed.length || recoveredAny) {
         localStorage.setItem(DAILY_PLANS_KEY, JSON.stringify(uniquePlans));
       }
       this.plansCache = uniquePlans;
@@ -994,8 +1289,18 @@ class StorageService {
 
   public saveDailyPlans(plans: DailyPlanItem[]): void {
     if (typeof window === 'undefined') return;
-    const activeWithin7Days = plans.filter((p) => p && !isClosedPlanExpired7Days(p));
-    const { uniquePlans } = this.deduplicatePlansByClient(activeWithin7Days);
+    const deletedIds = getDeletedClientIds();
+    const deletedPlanIds = getDeletedPlanIds();
+    const activeWithin7Days = plans.filter(
+      (p) =>
+        p &&
+        p.clientId &&
+        !deletedIds.has(p.clientId) &&
+        !deletedPlanIds.has(p.id) &&
+        !isClosedPlanExpired7Days(p)
+    );
+    const { mergedPlans } = this.recoverClosedPlansFromClientLogs(activeWithin7Days);
+    const { uniquePlans } = this.deduplicatePlansByClient(mergedPlans);
     this.plansCache = uniquePlans;
     localStorage.setItem(DAILY_PLANS_KEY, JSON.stringify(uniquePlans));
     this.notify();
@@ -1772,16 +2077,22 @@ class StorageService {
     const planIndex = plans.findIndex((p) => p.id === planItemId);
     if (planIndex === -1) return false;
 
-    const plan = plans[planIndex];
+    const targetPlan = plans[planIndex];
+    const targetClientId = targetPlan.clientId;
+    const targetPlanDateKey = getPlanDateKey(targetPlan);
+    const targetRawDateSlice = targetPlan.planDate || (targetPlan.createdAt ? targetPlan.createdAt.slice(0, 10) : '');
+
     const now = new Date();
-    let effectiveClosedAt = now.toISOString();
+    const realWallNowStr = now.toISOString();
+    let effectiveClosedAt = realWallNowStr;
 
     if (customCloseDate && customCloseDate.trim()) {
       const cDateTrimmed = customCloseDate.trim();
       if (/^\d{4}-\d{2}-\d{2}$/.test(cDateTrimmed)) {
         const [y, m, d] = cDateTrimmed.split('-').map(Number);
         if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
-          const dt = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds());
+          // Use 12:00 local time so both UTC .slice(0, 10) and local date formatting match YYYY-MM-DD
+          const dt = new Date(y, m - 1, d, 12, now.getMinutes(), now.getSeconds());
           effectiveClosedAt = dt.toISOString();
         }
       } else if (cDateTrimmed.includes('T')) {
@@ -1789,12 +2100,17 @@ class StorageService {
       }
     }
     const nowStr = effectiveClosedAt;
+    const closedDateKey = getClosedDateKey({ closedAt: effectiveClosedAt } as DailyPlanItem);
+    unmarkPlanAsDeleted(`plan_rec_${targetClientId}_${targetPlanDateKey}`);
+    if (closedDateKey) {
+      unmarkPlanAsDeleted(`plan_rec_${targetClientId}_${closedDateKey}`);
+    }
 
     const hasCompletedAction = Boolean(
-      plan.actionDone ||
-        plan.status === 'bajarildi' ||
-        (plan.actionsHistory && plan.actionsHistory.length > 0) ||
-        (plan.actionsCount && plan.actionsCount > 0)
+      targetPlan.actionDone ||
+        targetPlan.status === 'bajarildi' ||
+        (targetPlan.actionsHistory && targetPlan.actionsHistory.length > 0) ||
+        (targetPlan.actionsCount && targetPlan.actionsCount > 0)
     );
     const isUnperformedClose =
       closedWithoutActionOverride !== undefined
@@ -1805,18 +2121,33 @@ class StorageService {
       closeReason?.trim() ||
       (isUnperformedClose ? 'Bajarilmasdan yopildi' : 'Amallar yakunlandi');
 
-    plan.isClosed = true;
-    plan.closedWithoutAction = isUnperformedClose;
-    plan.status = 'yopildi';
-    plan.closedAt = effectiveClosedAt;
-    plan.closedBy = author;
-    plan.closeReason = finalReason;
-    delete plan.reopenedAt;
-    plans[planIndex] = plan;
+    for (let i = 0; i < plans.length; i++) {
+      const p = plans[i];
+      const pDateKey = getPlanDateKey(p);
+      const pRawDateSlice = p.planDate || (p.createdAt ? p.createdAt.slice(0, 10) : '');
+      if (
+        p.id === planItemId ||
+        (p.clientId === targetClientId &&
+          (pDateKey === targetPlanDateKey || (targetRawDateSlice && pRawDateSlice === targetRawDateSlice)))
+      ) {
+        p.isClosed = true;
+        p.closedWithoutAction = isUnperformedClose;
+        p.status = 'yopildi';
+        p.closedAt = effectiveClosedAt;
+        (p as any).closedDisplayDate = effectiveClosedAt;
+        (p as any).closedUpdatedAt = realWallNowStr;
+        p.closedBy = author;
+        p.closeReason = finalReason;
+        delete p.reopenedAt;
+        delete p.reopenedBy;
+        delete p.reopenReason;
+        plans[i] = p;
+      }
+    }
     this.saveDailyPlans(plans);
 
     // Audit logga yozish
-    const client = this.getClients().find((c) => c.id === plan.clientId);
+    const client = this.getClients().find((c) => c.id === targetClientId);
     if (client) {
       const clientLogs = client.logs || [];
       clientLogs.unshift({
@@ -1831,7 +2162,7 @@ class StorageService {
         details: `${author} tomonidan ushbu mijoz bo'yicha reja ${
           isUnperformedClose
             ? 'amal bajarilmasdan'
-            : `amallar yakunlanib (Amal: ${plan.actionDone || 'joyiga borildi'})`
+            : `amallar yakunlanib (Amal: ${targetPlan.actionDone || 'joyiga borildi'})`
         } yopildi. Yopilish sababi: ${finalReason}`,
       });
       this.updateClient(client.id, {
@@ -1865,14 +2196,13 @@ class StorageService {
     const targetedClientDateKeys = new Set<string>();
     for (const p of plans) {
       if (idSet.has(p.id) && p.clientId) {
-        const pDate = p.planDate || (p.createdAt ? p.createdAt.slice(0, 10) : '');
-        targetedClientDateKeys.add(`${p.clientId}_${pDate}`);
+        targetedClientDateKeys.add(`${p.clientId}_${getPlanDateKey(p)}`);
       }
     }
 
     for (let i = 0; i < plans.length; i++) {
       const plan = plans[i];
-      const planDateKey = plan.planDate || (plan.createdAt ? plan.createdAt.slice(0, 10) : '');
+      const planDateKey = getPlanDateKey(plan);
       if (
         !idSet.has(plan.id) &&
         (!plan.clientId || !targetedClientDateKeys.has(`${plan.clientId}_${planDateKey}`))
@@ -1887,6 +2217,9 @@ class StorageService {
       plan.reopenedBy = author;
       plan.reopenReason = finalReason;
       delete plan.closedAt;
+      delete (plan as any).closedDisplayDate;
+      delete (plan as any).unperformedClose;
+      delete (plan as any).closedUpdatedAt;
       delete plan.closedBy;
       delete plan.closeReason;
 
@@ -1952,6 +2285,15 @@ class StorageService {
     const remainingPlans = plans.filter((p) => {
       if (idSet.has(p.id)) {
         removedPlans.push(p);
+        markPlanAsDeleted(p.id);
+        const dKey = getPlanDateKey(p);
+        if (p.clientId && dKey) {
+          markPlanAsDeleted(`plan_rec_${p.clientId}_${dKey}`);
+        }
+        const cKey = getClosedDateKey(p);
+        if (p.clientId && cKey) {
+          markPlanAsDeleted(`plan_rec_${p.clientId}_${cKey}`);
+        }
         return false;
       }
       return true;

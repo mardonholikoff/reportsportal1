@@ -523,6 +523,7 @@ export const ExcelClientImporter: React.FC<Props> = ({
         landmark,
         address: fullAddress,
         products: [],
+        initialDebt: currentDebt,
         currentDebt,
         currentAdvance,
         notes,

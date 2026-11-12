@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Client, ProductItem, WarehouseProduct } from '../types';
-import { formatMoney } from '../utils/format';
+import { formatMoney, getInitialDebtForClient } from '../utils/format';
 import { UZBEKISTAN_REGIONS, formatAddress, parseLegacyAddress } from '../utils/location';
 import { storageService } from '../services/storage';
 import { UsdConverterPanel } from './UsdConverterPanel';
@@ -77,6 +77,9 @@ export const ClientFormModal: React.FC<Props> = ({
   const [orderDiscountAmount, setOrderDiscountAmount] = useState<number | ''>('');
 
   // Mahsulotlar qarzga (nasiya) yoki naqdga berilganini belgilash
+  const [initialDebtAmount, setInitialDebtAmount] = useState<number | ''>('');
+  const [initialDebtDate, setInitialDebtDate] = useState<string>('');
+  const [currentDebtAmount, setCurrentDebtAmount] = useState<number | ''>('');
   const [isGivenOnCredit, setIsGivenOnCredit] = useState<boolean>(true);
   const [creditDebtAmount, setCreditDebtAmount] = useState<number | ''>('');
   const [hasManuallyEditedDebt, setHasManuallyEditedDebt] = useState<boolean>(false);
@@ -155,9 +158,18 @@ export const ClientFormModal: React.FC<Props> = ({
       setOrderDiscountPercent('');
       setOrderDiscountAmount('');
 
+      const initDebt = getInitialDebtForClient(editingClient);
+      setInitialDebtAmount(initDebt);
+
+      const rawCreatedDate = editingClient.createdAt || (editingClient.logs && editingClient.logs[0]?.timestamp) || new Date().toISOString();
+      setInitialDebtDate(rawCreatedDate.slice(0, 10));
+
+      setCurrentDebtAmount(editingClient.currentDebt !== undefined ? editingClient.currentDebt : initDebt);
+
       const hasDebt = editingClient.currentDebt > 0;
       setIsGivenOnCredit(hasDebt);
-      setCreditDebtAmount(editingClient.currentDebt || 0);
+      const productDebtDelta = Math.max(0, (editingClient.currentDebt || 0) - initDebt);
+      setCreditDebtAmount(productDebtDelta);
       setHasManuallyEditedDebt(true);
 
       setCurrentAdvance(editingClient.currentAdvance || '');
@@ -171,6 +183,9 @@ export const ClientFormModal: React.FC<Props> = ({
       setProducts([emptyProduct()]);
       setOrderDiscountPercent('');
       setOrderDiscountAmount('');
+      setInitialDebtAmount('');
+      setInitialDebtDate(new Date().toISOString().slice(0, 10));
+      setCurrentDebtAmount('');
       setIsGivenOnCredit(true);
       setCreditDebtAmount('');
       setHasManuallyEditedDebt(false);
@@ -412,19 +427,37 @@ export const ClientFormModal: React.FC<Props> = ({
     setOrderDiscountPercent(pct);
   };
 
-  // Effective debt derived from Section 2
-  const effectiveDebt = useMemo(() => {
+  const originalInitDebt = useMemo(() => {
+    return editingClient ? getInitialDebtForClient(editingClient) : 0;
+  }, [editingClient]);
+
+  // Effective Initial Debt & Product Debt
+  const effectiveInitialDebt = useMemo(() => {
+    return typeof initialDebtAmount === 'number' ? Math.max(0, initialDebtAmount) : 0;
+  }, [initialDebtAmount]);
+
+  const effectiveProductDebt = useMemo(() => {
     if (!isGivenOnCredit) return 0;
     if (creditDebtAmount === '') return totalProductsSum;
     return Math.max(0, Number(creditDebtAmount) || 0);
   }, [isGivenOnCredit, creditDebtAmount, totalProductsSum]);
+
+  const effectiveDebt = useMemo(() => {
+    if (typeof currentDebtAmount === 'number') {
+      return Math.max(0, currentDebtAmount);
+    }
+    if (editingClient) {
+      return Math.max(0, editingClient.currentDebt || 0);
+    }
+    return Math.round((effectiveInitialDebt + effectiveProductDebt) * 100) / 100;
+  }, [currentDebtAmount, editingClient, effectiveInitialDebt, effectiveProductDebt]);
 
   // Build Nakladnoy data for preview/PDF print
   const handleOpenNakladnoy = () => {
     const cleanPhones = phones.map((p) => p.trim()).filter(Boolean);
     const fullAddress = formatAddress(region, district, landmark);
     const validProducts = products.filter((p) => p.name.trim() !== '');
-    const paidPortion = Math.max(0, Math.round((totalProductsSum - effectiveDebt) * 100) / 100);
+    const paidPortion = Math.max(0, Math.round((totalProductsSum - effectiveProductDebt) * 100) / 100);
 
     setNakladnoyData({
       clientName: name.trim() || 'Yangi mijoz',
@@ -442,7 +475,7 @@ export const ClientFormModal: React.FC<Props> = ({
             : 'Nasiya (Qarzga)'
           : "To'liq to'landi (Naqd / O'tkazma)",
         paidAmount: paidPortion,
-        debtAmount: effectiveDebt,
+        debtAmount: effectiveProductDebt,
         totalClientDebt: effectiveDebt,
       },
       note: notes.trim() || undefined,
@@ -470,6 +503,10 @@ export const ClientFormModal: React.FC<Props> = ({
       });
     }
 
+    const createdIsoDate = initialDebtDate
+      ? new Date(initialDebtDate + 'T12:00:00.000Z').toISOString()
+      : (editingClient ? editingClient.createdAt : new Date().toISOString());
+
     onSave({
       name: name.trim(),
       phone: primaryPhoneStr,
@@ -479,11 +516,13 @@ export const ClientFormModal: React.FC<Props> = ({
       landmark: landmark.trim(),
       address: fullAddress,
       products: validProducts,
+      initialDebt: effectiveInitialDebt,
       currentDebt: effectiveDebt,
       currentAdvance: Number(currentAdvance) || 0,
       notes: notes.trim(),
       createdBy: editingClient ? editingClient.createdBy : currentUserUsername,
-    });
+      createdAt: createdIsoDate,
+    } as any);
   };
 
   if (!isOpen) return null;
@@ -1061,36 +1100,113 @@ export const ClientFormModal: React.FC<Props> = ({
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200/90 shadow-2xs">
-                  <span className="block text-xs font-bold text-rose-900 mb-1">
-                    Joriy qarzdorlik summasi (USD)
-                  </span>
-                  <div className="text-base sm:text-lg font-extrabold font-mono text-rose-900 tabular-nums">
-                    {formatMoney(effectiveDebt)}
+                {/* Dastlabki (boshlang'ich) qarzdorlik */}
+                <div className="p-3.5 rounded-2xl bg-amber-50/80 border border-amber-200/90 shadow-2xs space-y-1">
+                  <label className="block text-xs font-bold text-amber-900">
+                    Dastlabki (boshlang'ich) qarz (USD)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="0"
+                      value={initialDebtAmount === '' ? '' : initialDebtAmount}
+                      onChange={(e) => {
+                        setInitialDebtAmount(
+                          e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                        );
+                      }}
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-amber-300 focus:border-amber-600 focus:ring-1 focus:ring-amber-300 text-sm font-extrabold text-neutral-900 font-mono tabular-nums outline-none"
+                    />
                   </div>
-                  <p className="mt-1 text-[11px] text-rose-700">
-                    2-blokdagi mahsulotlar qarziga mos ravishda avtomatik olindi
+                  <p className="text-[10px] text-amber-800">
+                    Bazaga kiritilgandagi qarz summasi
                   </p>
                 </div>
 
-                <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200/80 shadow-2xs">
-                  <label className="block text-xs font-bold text-emerald-900 mb-1">
+                {/* Dastlabki bazaga kiritilgan sana */}
+                <div className="p-3.5 rounded-2xl bg-amber-50/80 border border-amber-200/90 shadow-2xs space-y-1">
+                  <label className="block text-xs font-bold text-amber-900">
+                    Bazaga kiritilgan sana
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="date"
+                      value={initialDebtDate}
+                      onChange={(e) => setInitialDebtDate(e.target.value)}
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-amber-300 focus:border-amber-600 focus:ring-1 focus:ring-amber-300 text-xs font-bold text-neutral-900 font-mono outline-none"
+                    />
+                  </div>
+                  <p className="text-[10px] text-amber-800">
+                    Dastlabki kiritilgan sana (loglar bilan sinxron)
+                  </p>
+                </div>
+
+                {/* Joriy (Hozirgi) qarzdorlik */}
+                <div className="p-3.5 rounded-2xl bg-rose-50/90 border border-rose-200/90 shadow-2xs space-y-1">
+                  <label className="block text-xs font-bold text-rose-900">
+                    Joriy (Hozirgi) qarzdorlik (USD)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="0"
+                      value={currentDebtAmount === '' ? '' : currentDebtAmount}
+                      onChange={(e) => {
+                        setCurrentDebtAmount(
+                          e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                        );
+                      }}
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-rose-300 focus:border-rose-600 focus:ring-1 focus:ring-rose-300 text-sm font-extrabold text-neutral-900 font-mono tabular-nums outline-none"
+                    />
+                  </div>
+                  <p className="text-[10px] text-rose-800">
+                    Mijozning amaldagi joriy qarz balansi
+                  </p>
+                </div>
+
+                {/* Joriy haqdorlik / Avans */}
+                <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200/80 shadow-2xs space-y-1">
+                  <label className="block text-xs font-bold text-emerald-900">
                     Joriy haqdorlik / Avans (USD)
                   </label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    placeholder="0"
-                    value={currentAdvance === '' ? '' : currentAdvance}
-                    onChange={(e) =>
-                      setCurrentAdvance(e.target.value === '' ? '' : parseFloat(e.target.value) || 0)
-                    }
-                    className="w-full px-3 py-2 bg-white rounded-xl border border-emerald-200 focus:border-emerald-500 text-sm font-bold text-neutral-900 font-mono tabular-nums outline-none"
-                  />
-                  <div className="mt-1 text-[11px] text-emerald-700 font-mono">
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="0"
+                      value={currentAdvance === '' ? '' : currentAdvance}
+                      onChange={(e) =>
+                        setCurrentAdvance(e.target.value === '' ? '' : parseFloat(e.target.value) || 0)
+                      }
+                      className="w-full px-3 py-2 bg-white rounded-xl border border-emerald-200 focus:border-emerald-500 text-sm font-extrabold text-neutral-900 font-mono tabular-nums outline-none"
+                    />
+                  </div>
+                  <div className="text-[11px] text-emerald-700 font-mono">
                     {formatMoney(typeof currentAdvance === 'number' ? currentAdvance : 0)}
                   </div>
+                </div>
+              </div>
+
+              {/* Jami Joriy (Hozirgi) qarzdorlik umumiy hisobi */}
+              <div className="p-3.5 rounded-2xl bg-rose-50/90 border border-rose-200/90 shadow-2xs space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-rose-900 uppercase tracking-wide">
+                    Joriy (Hozirgi) qarzdorlik summasi (USD):
+                  </span>
+                  <span className="text-base sm:text-lg font-extrabold font-mono text-rose-950 tabular-nums">
+                    {formatMoney(effectiveDebt)}
+                  </span>
+                </div>
+                <div className="text-[11px] text-rose-800 font-mono flex items-center gap-2 flex-wrap pt-0.5">
+                  <span>Dastlabki (boshlang'ich) qarz: <strong>{formatMoney(effectiveInitialDebt)}</strong></span>
+                  {initialDebtDate && (
+                    <span className="text-neutral-600">({initialDebtDate})</span>
+                  )}
                 </div>
               </div>
 

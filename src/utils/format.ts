@@ -156,3 +156,41 @@ export function calculateProfitMargin(product: {
   };
 }
 
+export function getInitialDebtForClient(client: {
+  initialDebt?: number;
+  currentDebt?: number;
+  logs?: Array<{ type?: string; title?: string; details?: string }>;
+}): number {
+  if (!client) return 0;
+
+  // 1. Check creation audit log first (primary source of truth for initial debt at creation)
+  if (Array.isArray(client.logs) && client.logs.length > 0) {
+    const createLog =
+      client.logs.find(
+        (l) =>
+          l &&
+          (l.type === 'created' ||
+            (l.title && (l.title.includes("qo'shildi") || l.title.includes("yuklandi"))))
+      ) || client.logs[client.logs.length - 1];
+
+    if (createLog && createLog.details) {
+      const match = createLog.details.match(/Qarz:\s*([\d.,]+)/i);
+      if (match && match[1]) {
+        const cleanVal = match[1].replace(/,/g, '');
+        const parsed = parseFloat(cleanVal);
+        if (!isNaN(parsed) && parsed >= 0) {
+          return Math.round(parsed * 100) / 100;
+        }
+      }
+    }
+  }
+
+  // 2. Explicit initialDebt property
+  if (typeof client.initialDebt === 'number' && client.initialDebt >= 0) {
+    return Math.round(client.initialDebt * 100) / 100;
+  }
+
+  // 3. Fallback to currentDebt
+  return client.currentDebt || 0;
+}
+

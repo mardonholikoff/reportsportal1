@@ -6,6 +6,8 @@ import {
   isClosedPlanExpired7Days,
   getPlanSoldProductsData,
   getPlanFinancialActionData,
+  getPlanDateKey,
+  getClosedDateKey,
 } from '../services/storage';
 import { getClientLastOperations } from '../utils/clientActivityDates';
 import { RejaPrintModal } from './RejaPrintModal';
@@ -205,6 +207,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
   const matchesPlanDate = (p: DailyPlanItem, targetDateStr: string): boolean => {
     if (!targetDateStr) return true;
+    if (getPlanDateKey(p) === targetDateStr) return true;
+    if (getClosedDateKey(p) === targetDateStr) return true;
     if (p.planDate && p.planDate.slice(0, 10) === targetDateStr) return true;
     if (p.createdAt && p.createdAt.slice(0, 10) === targetDateStr) return true;
     if (p.closedAt && p.closedAt.slice(0, 10) === targetDateStr) return true;
