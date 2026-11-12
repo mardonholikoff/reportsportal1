@@ -618,16 +618,22 @@ export default function App() {
         if (remotePlans) {
           const deletedIds = getDeletedClientIds();
 
-          // Purge remote plans ONLY if they belong to explicitly deleted clients
+          // Purge remote plans if they belong to explicitly deleted clients/plans or unintended synthetic plan_rec_ items
           const deletedPlanIds = getDeletedPlanIds();
+          const isUnintendedRec = (p: DailyPlanItem) =>
+            Boolean(p.id && p.id.startsWith('plan_rec_') && !p.id.endsWith('_2026-11-01'));
+
           remotePlans.forEach((rp) => {
-            if (deletedIds.has(rp.clientId) || deletedPlanIds.has(rp.id)) {
+            if (deletedIds.has(rp.clientId) || deletedPlanIds.has(rp.id) || isUnintendedRec(rp)) {
               deletePlanFromFirestore(rp.id);
             }
           });
 
           const cleanRemote = remotePlans.filter(
-            (p) => !deletedIds.has(p.clientId) && !deletedPlanIds.has(p.id)
+            (p) =>
+              !deletedIds.has(p.clientId) &&
+              !deletedPlanIds.has(p.id) &&
+              !isUnintendedRec(p)
           );
 
           // Preserve local recently reopened OR recently closed plans against in-flight snapshots

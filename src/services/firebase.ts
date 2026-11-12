@@ -584,8 +584,7 @@ function preparePlanPayloadForFirestore(plan: DailyPlanItem): any {
     // Keep raw closedAt fresh so older cached clients/PWAs never treat historical close dates as >7d expired
     payload.closedAt = new Date().toISOString();
     payload.unperformedClose = Boolean(plan.closedWithoutAction);
-    // Keep raw closedWithoutAction false so older cached clients never purge it during deduplication
-    payload.closedWithoutAction = false;
+    payload.closedWithoutAction = Boolean(plan.closedWithoutAction);
     payload.reopenedAt = null;
     payload.reopenedBy = null;
     payload.reopenReason = null;
@@ -602,6 +601,8 @@ export function normalizeIncomingPlanFromFirestore(raw: any): DailyPlanItem {
     }
     if (item.unperformedClose !== undefined && item.unperformedClose !== null) {
       item.closedWithoutAction = Boolean(item.unperformedClose);
+    } else {
+      item.closedWithoutAction = Boolean(item.closedWithoutAction);
     }
   }
   return item as DailyPlanItem;

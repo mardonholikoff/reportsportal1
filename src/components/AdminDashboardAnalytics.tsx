@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { WarehouseProduct, Client, DailyPlanItem } from '../types';
-import { storageService } from '../services/storage';
+import { storageService, getPlanDateKey, getClosedDateKey } from '../services/storage';
 import {
   formatNumber,
   formatMoney,
@@ -1079,8 +1079,14 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     const dailyClientMap = new Map<string, ActionExportItem>();
 
     internalPlans.forEach((plan) => {
-      const isClosedPlan = Boolean(plan.isClosed || plan.status === 'yopildi' || plan.status === 'bajarildi');
-      if (!isClosedPlan || plan.closedWithoutAction) return;
+      const isClosedPlan = Boolean(plan.isClosed || plan.status === 'yopildi');
+      const hasAnyRecordedAction =
+        Boolean(plan.actionDone) || Boolean(plan.actionsHistory && plan.actionsHistory.length > 0);
+      const isClosedWithoutAction =
+        plan.closedWithoutAction !== undefined
+          ? Boolean(plan.closedWithoutAction)
+          : !hasAnyRecordedAction;
+      if (!isClosedPlan || isClosedWithoutAction) return;
 
       const rawActions =
         plan.actionsHistory && plan.actionsHistory.length > 0
@@ -1102,7 +1108,6 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
       const hasAnyAction =
         Boolean(plan.actionDone) ||
-        Boolean(plan.plannedAction) ||
         rawActions.length > 0;
       if (!hasAnyAction) return;
 
@@ -1118,10 +1123,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       const locationStr = [reg, dist].filter(Boolean).join(', ') || plan.clientAddress || client?.address || '-';
 
       const opDateStr = (
+        getClosedDateKey(plan) ||
+        getPlanDateKey(plan) ||
         plan.closedAt ||
-        plan.completedAt ||
-        plan.lastExecutedAt ||
-        (plan.actionsHistory && plan.actionsHistory[0]?.timestamp) ||
         plan.planDate ||
         plan.createdAt ||
         ''
@@ -2324,18 +2328,20 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       if (agentUser) entry.agents.add(agentUser);
     };
 
-    // 1. Inspect dailyPlans: only plans that are closed as completed ("bajarildi deb yopilgan")
+    // 1. Inspect dailyPlans: only plans that are closed as completed ("bajarib yopilgan")
     internalPlans.forEach((plan) => {
-      const planDateStr = (
-        plan.planDate ||
-        plan.closedAt ||
-        plan.completedAt ||
-        plan.createdAt ||
-        ''
-      ).slice(0, 10);
+      const pDate = getPlanDateKey(plan) || (plan.planDate || plan.createdAt || '').slice(0, 10);
+      const cDate = getClosedDateKey(plan) || ((plan as any).closedDisplayDate || plan.closedAt || '').slice(0, 10);
+      const planDateStr = cDate || pDate;
 
       const isClosed = Boolean(plan.isClosed || plan.status === 'yopildi');
-      const isCompletedAndClosed = isClosed && !plan.closedWithoutAction;
+      const hasAnyAction =
+        Boolean(plan.actionDone) || Boolean(plan.actionsHistory && plan.actionsHistory.length > 0);
+      const withoutAction =
+        plan.closedWithoutAction !== undefined
+          ? Boolean(plan.closedWithoutAction)
+          : !hasAnyAction;
+      const isCompletedAndClosed = isClosed && !withoutAction;
 
       if (!isCompletedAndClosed) {
         if (planDateStr) {
@@ -2349,22 +2355,12 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
       if (plan.actionsHistory && plan.actionsHistory.length > 0) {
         plan.actionsHistory.forEach((act) => {
-          const actDate = (act.timestamp || planDateStr).slice(0, 10);
           registerAction(
             plan.clientId,
-            actDate,
+            planDateStr,
             act.actionDone || plan.actionDone || 'joyiga borildi',
             act.author || defaultAuthor
           );
-          // Also register on planDateStr if the plan was scheduled for planDateStr
-          if (planDateStr && planDateStr !== actDate) {
-            registerAction(
-              plan.clientId,
-              planDateStr,
-              act.actionDone || plan.actionDone || 'joyiga borildi',
-              act.author || defaultAuthor
-            );
-          }
         });
       } else if (plan.actionDone || plan.status === 'yopildi') {
         registerAction(
@@ -2374,41 +2370,6 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           defaultAuthor
         );
       }
-    });
-
-    // 2. Inspect client.logs for historical closed visits within the 31-day window
-    internalClients.forEach((client) => {
-      if (!client.logs || client.logs.length === 0) return;
-
-      // Group visit_action logs by date
-      const logsByDate = new Map<string, typeof client.logs>();
-      client.logs.forEach((log) => {
-        if (log.type !== 'visit_action') return;
-        const dStr = (log.timestamp || '').slice(0, 10);
-        if (!dateSet.has(dStr)) return;
-        if (!logsByDate.has(dStr)) logsByDate.set(dStr, []);
-        logsByDate.get(dStr)!.push(log);
-      });
-
-      logsByDate.forEach((dayLogs, dStr) => {
-        if (nonCompletedPlanDays.has(`${client.id}_${dStr}`)) return;
-
-        const hasCloseCompleted = dayLogs.some(
-          (l) =>
-            l.title.toLowerCase().includes('yakunlandi va yopildi') ||
-            l.details.toLowerCase().includes('amallar yakunlanib')
-        );
-        const hasUnperformedClose = dayLogs.some((l) =>
-          l.title.toLowerCase().includes('bajarilmasdan yopildi')
-        );
-
-        if (hasCloseCompleted && !hasUnperformedClose) {
-          dayLogs.forEach((l) => {
-            const combined = `${l.title || ''} ${l.details || ''}`;
-            registerAction(client.id, dStr, combined, l.author || 'agentp1');
-          });
-        }
-      });
     });
 
     // Build rows for all clients

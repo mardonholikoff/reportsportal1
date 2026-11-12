@@ -79,6 +79,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
   // Payment filter & sort: 'all' | 'paid_only' | 'last_paid' | 'most_paid'
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'paid_only' | 'last_paid' | 'most_paid'>('all');
+  const [closureTypeFilter, setClosureTypeFilter] = useState<'all' | 'done_closed' | 'undone_closed'>('all');
 
   // Selection & Removal from plan modal state (mandatory reason)
   const [selectedPlanIds, setSelectedPlanIds] = useState<string[]>([]);
@@ -162,9 +163,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
   // Yopilgan reja bajarilmasdan yopilganligini tekshirish
   const isPlanClosedWithoutAction = (p: DailyPlanItem): boolean => {
-    if (p.closedWithoutAction !== undefined) return p.closedWithoutAction;
-    const actions = getPlanActions(p);
-    return !p.actionDone && actions.length === 0;
+    if (p.closedWithoutAction !== undefined) return Boolean(p.closedWithoutAction);
+    const hasAnyAction =
+      Boolean(p.actionDone) || Boolean(p.actionsHistory && p.actionsHistory.length > 0);
+    return !hasAnyAction;
   };
 
   // Reja ichidagi jami tushumni hisoblash yordamchisi
@@ -207,21 +209,16 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
   const matchesPlanDate = (p: DailyPlanItem, targetDateStr: string): boolean => {
     if (!targetDateStr) return true;
-    if (getPlanDateKey(p) === targetDateStr) return true;
-    if (getClosedDateKey(p) === targetDateStr) return true;
-    if (p.planDate && p.planDate.slice(0, 10) === targetDateStr) return true;
-    if (p.createdAt && p.createdAt.slice(0, 10) === targetDateStr) return true;
-    if (p.closedAt && p.closedAt.slice(0, 10) === targetDateStr) return true;
-    if (p.completedAt && p.completedAt.slice(0, 10) === targetDateStr) return true;
-    if (
-      p.actionsHistory &&
-      p.actionsHistory.some(
-        (act) => act.timestamp && act.timestamp.slice(0, 10) === targetDateStr
-      )
-    ) {
-      return true;
-    }
-    return false;
+    const pDate = getPlanDateKey(p);
+    const pRawDate = (p.planDate || p.createdAt || '').slice(0, 10);
+    const pClosedDate = getClosedDateKey(p);
+    const pRawClosedDate = ((p as any).closedDisplayDate || p.closedAt || '').slice(0, 10);
+    return (
+      pDate === targetDateStr ||
+      pRawDate === targetDateStr ||
+      pClosedDate === targetDateStr ||
+      pRawClosedDate === targetDateStr
+    );
   };
 
   const dateScopeLabel = useMemo(() => {
@@ -252,11 +249,18 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
     const totalClients = dateAndAgentPlans.length;
     let completedClients = 0; // Yopilganlar / Bajarilganlar
+    let doneClosedClients = 0; // Bajarib yopilganlar
+    let undoneClosedClients = 0; // Bajarilmasdan yopilganlar
     let inProgressClients = 0; // Hali yopilmagan ochiq rejalar
 
     dateAndAgentPlans.forEach((p) => {
       if (isPlanCompleted(p)) {
         completedClients++;
+        if (isPlanClosedWithoutAction(p)) {
+          undoneClosedClients++;
+        } else {
+          doneClosedClients++;
+        }
       } else {
         inProgressClients++;
       }
@@ -393,6 +397,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     return {
       totalClients,
       completedClients,
+      doneClosedClients,
+      undoneClosedClients,
       inProgressClients,
       totalReceipts,
       receiptsByType: {
@@ -433,6 +439,12 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       const completedOrClosed = isPlanCompleted(p);
       if (statusFilter === 'bajarildi' && !completedOrClosed) return false;
       if (statusFilter === 'jarayonda' && completedOrClosed) return false;
+
+      if (closureTypeFilter === 'done_closed') {
+        if (!completedOrClosed || isPlanClosedWithoutAction(p)) return false;
+      } else if (closureTypeFilter === 'undone_closed') {
+        if (!completedOrClosed || !isPlanClosedWithoutAction(p)) return false;
+      }
 
       // 3. Date filter
       if (dateFilter !== 'all') {
@@ -494,6 +506,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     uniquePlans,
     searchTerm,
     statusFilter,
+    closureTypeFilter,
     paymentFilter,
     selectedAgent,
     dateFilter,
@@ -631,25 +644,38 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                 : `${analytics.inProgressClients} ta mijoz`}
             </div>
           </div>
-          <div className="text-[11px] text-neutral-400 flex items-center justify-between pt-2 border-t border-neutral-800">
-            {statusFilter === 'all' ? (
-              <span className="text-neutral-300 font-semibold flex items-center gap-1.5">
-                <span>● {analytics.inProgressClients} ta ochiq</span>
-                <span className="text-neutral-600">·</span>
-                <span className="text-emerald-400">● {analytics.completedClients} ta yopilgan</span>
+          <div className="text-[11px] text-neutral-400 flex flex-col gap-1 pt-2 border-t border-neutral-800">
+            <div className="flex items-center justify-between">
+              {statusFilter === 'all' ? (
+                <span className="text-neutral-300 font-semibold flex items-center gap-1.5">
+                  <span>● {analytics.inProgressClients} ta ochiq</span>
+                  <span className="text-neutral-600">·</span>
+                  <span className="text-emerald-400">● {analytics.completedClients} ta yopilgan</span>
+                </span>
+              ) : statusFilter === 'bajarildi' ? (
+                <span className="text-emerald-400 font-semibold">
+                  ● {analytics.completedClients} ta yopilgan reja
+                </span>
+              ) : (
+                <span className="text-amber-300 font-semibold">
+                  ● {analytics.inProgressClients} ta ochiq reja (Hozirgi vaqtda)
+                </span>
+              )}
+              <span className="text-[10px] text-neutral-400 bg-neutral-800 px-2 py-0.5 rounded-md font-mono">
+                {dateScopeLabel}
               </span>
-            ) : statusFilter === 'bajarildi' ? (
-              <span className="text-emerald-400 font-semibold">
-                ● {analytics.completedClients} ta yopilgan reja
-              </span>
-            ) : (
-              <span className="text-amber-300 font-semibold">
-                ● {analytics.inProgressClients} ta ochiq reja (Hozirgi vaqtda)
-              </span>
+            </div>
+            {(statusFilter === 'bajarildi' || statusFilter === 'all' || analytics.completedClients > 0) && (
+              <div className="flex items-center gap-2 text-[10px] font-semibold">
+                <span className="text-emerald-400">
+                  ✓ Bajarib yopilgan: {analytics.doneClosedClients} ta
+                </span>
+                <span className="text-neutral-600">|</span>
+                <span className="text-amber-400">
+                  ✕ Bajarilmasdan yopilgan: {analytics.undoneClosedClients} ta
+                </span>
+              </div>
             )}
-            <span className="text-[10px] text-neutral-400 bg-neutral-800 px-2 py-0.5 rounded-md font-mono">
-              {dateScopeLabel}
-            </span>
           </div>
         </div>
 
@@ -869,10 +895,13 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           )}
 
           {/* Holat filtri: adminc orqali kirganda birinchi bo'lib yopilmagan rejadagi mijozlar ko'rinadi */}
-          <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl">
+          <div className="flex items-center gap-1 bg-neutral-100 p-1 rounded-xl flex-wrap">
             <button
               type="button"
-              onClick={() => setStatusFilter('jarayonda')}
+              onClick={() => {
+                setStatusFilter('jarayonda');
+                setClosureTypeFilter('all');
+              }}
               className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
                 statusFilter === 'jarayonda'
                   ? 'bg-amber-500 text-white shadow-2xs'
@@ -883,9 +912,12 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter('bajarildi')}
+              onClick={() => {
+                setStatusFilter('bajarildi');
+                setClosureTypeFilter('all');
+              }}
               className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
-                statusFilter === 'bajarildi'
+                statusFilter === 'bajarildi' && closureTypeFilter === 'all'
                   ? 'bg-emerald-600 text-white shadow-2xs'
                   : 'text-neutral-600 hover:text-neutral-900'
               }`}
@@ -894,7 +926,38 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             </button>
             <button
               type="button"
-              onClick={() => setStatusFilter('all')}
+              onClick={() => {
+                setStatusFilter('bajarildi');
+                setClosureTypeFilter('done_closed');
+              }}
+              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
+                statusFilter === 'bajarildi' && closureTypeFilter === 'done_closed'
+                  ? 'bg-emerald-700 text-white shadow-2xs'
+                  : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+              }`}
+            >
+              Bajarib yopilgan ({analytics.doneClosedClients})
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter('bajarildi');
+                setClosureTypeFilter('undone_closed');
+              }}
+              className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
+                statusFilter === 'bajarildi' && closureTypeFilter === 'undone_closed'
+                  ? 'bg-amber-700 text-white shadow-2xs'
+                  : 'text-amber-800 bg-amber-50 hover:bg-amber-100'
+              }`}
+            >
+              Bajarilmasdan yopilgan ({analytics.undoneClosedClients})
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setStatusFilter('all');
+                setClosureTypeFilter('all');
+              }}
               className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
                 statusFilter === 'all'
                   ? 'bg-white text-neutral-900 shadow-2xs'

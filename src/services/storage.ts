@@ -1058,8 +1058,15 @@ class StorageService {
   } {
     const clients = this.getClients();
     const deletedPlanIds = getDeletedPlanIds();
-    const resultPlans = [...plans];
-    let recoveredAny = false;
+    // Remove any synthetic plan_rec_ items that were created on dates other than 2026-11-01
+    const resultPlans = plans.filter((p) => {
+      if (!p || !p.id) return false;
+      if (p.id.startsWith('plan_rec_') && !p.id.endsWith('_2026-11-01')) {
+        return false;
+      }
+      return true;
+    });
+    let recoveredAny = resultPlans.length !== plans.length;
 
     const getLogWallMs = (l: ClientAuditLog): number => {
       if (l.id) {
@@ -1165,6 +1172,11 @@ class StorageService {
             delete resultPlans[existingIdx].reopenReason;
             recoveredAny = true;
           }
+          continue;
+        }
+
+        // Only synthesize a missing plan_rec_ record for 2026-11-01 (1-November) so historical dates like 5-November are never inflated
+        if (dateKey !== '2026-11-01') {
           continue;
         }
 
