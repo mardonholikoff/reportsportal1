@@ -98,18 +98,110 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
   // Matching helper: Check if a delivered product matches the target WarehouseProduct
   const isMatchingProduct = (p: WarehouseProduct, prod: ProductItem): boolean => {
     if (!prod || !p) return false;
-    if (prod.warehouseId && prod.warehouseId === p.id) return true;
+
+    // 1. Strict ID Check: If prod has a warehouseId, IT MUST MATCH p.id EXACTLY!
+    // If prod.warehouseId exists and points to a different product, return false immediately.
+    if (prod.warehouseId) {
+      return prod.warehouseId === p.id;
+    }
+
+    // 2. If prod has an id matching p.id
+    if ((prod as any).id && (prod as any).id === p.id) {
+      return true;
+    }
+
+    // 3. Fallback for legacy records without warehouseId
     if (!prod.name) return false;
 
-    const normProd = prod.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normPName = p.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normPBrand = p.brand ? p.brand.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
-    const normPMark1 = p.mark1 ? p.mark1.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+    const cleanStr = (s?: string) => (s || '').toLowerCase().trim();
 
-    if (normProd === normPName) return true;
-    if (normPBrand && normPMark1 && normProd.includes(normPBrand) && normProd.includes(normPMark1)) return true;
-    if (normProd.includes(normPName) && (normPBrand ? normProd.includes(normPBrand) : true)) return true;
-    if (normPName.includes(normProd)) return true;
+    const prodNameClean = cleanStr(prod.name);
+    const pNameClean = cleanStr(p.name);
+    const pBrandClean = cleanStr(p.brand);
+    const prodBrandClean = cleanStr((prod as any).brand);
+    const pMark1Clean = cleanStr(p.mark1);
+    const prodMark1Clean = cleanStr((prod as any).mark1);
+    const pMark2Clean = cleanStr(p.mark2);
+    const prodMark2Clean = cleanStr((prod as any).mark2);
+
+    // Build combined full strings
+    const fullP = [pBrandClean, pNameClean, pMark1Clean, pMark2Clean, ...(p.extraMarks || []).map(cleanStr)]
+      .filter(Boolean)
+      .join(' ');
+
+    const fullProd = [prodBrandClean, prodNameClean, prodMark1Clean, prodMark2Clean]
+      .filter(Boolean)
+      .join(' ');
+
+    // Extract volume/liter/weight specifiers (e.g., '1l', '2l', '4l', '5l', '10l', '20l', '200l', '1 litr', '4 litr', '0.5l', '1kg', '5kg', '5w30')
+    const extractVolumeTokens = (str: string): string[] => {
+      const tokens: string[] = [];
+      const regex = /\b(\d+(?:\.\d+)?)\s*(l|lt|litr|liter|kg|g|ml|w\d+)?\b/gi;
+      let match;
+      while ((match = regex.exec(str)) !== null) {
+        const num = match[1];
+        const unit = (match[2] || '').toLowerCase();
+        if (unit.startsWith('l') || unit.startsWith('lit')) {
+          tokens.push(`${num}l`);
+        } else if (unit) {
+          tokens.push(`${num}${unit}`);
+        } else {
+          tokens.push(num);
+        }
+      }
+      return tokens;
+    };
+
+    const pVolTokens = extractVolumeTokens(fullP);
+    const prodVolTokens = extractVolumeTokens(fullProd);
+
+    // Check Liter/Volume specifier mismatch (e.g., 1L vs 4L or 2L)
+    const pLiters = pVolTokens.filter((t) => t.endsWith('l'));
+    const prodLiters = prodVolTokens.filter((t) => t.endsWith('l'));
+
+    if (pLiters.length > 0 && prodLiters.length > 0) {
+      const isLiterMatch = pLiters.some((pl) => prodLiters.includes(pl));
+      if (!isLiterMatch) {
+        return false; // Different sizes (e.g. 1L vs 4L or 2L)!
+      }
+    }
+
+    // Check numeric specifiers if no explicit 'l' suffix
+    const pNums = pVolTokens.filter((t) => !t.endsWith('l') && !isNaN(Number(t)));
+    const prodNums = prodVolTokens.filter((t) => !t.endsWith('l') && !isNaN(Number(t)));
+
+    if (pLiters.length === 0 && prodLiters.length === 0 && pNums.length > 0 && prodNums.length > 0) {
+      const hasMatchingNum = pNums.some((pn) => prodNums.includes(pn));
+      if (!hasMatchingNum && (pNums.length === 1 || prodNums.length === 1)) {
+        return false;
+      }
+    }
+
+    // Compare brands if both specified
+    if (pBrandClean && prodBrandClean && pBrandClean !== prodBrandClean) {
+      return false;
+    }
+
+    // Compare mark1 if both specified
+    if (pMark1Clean && prodMark1Clean && pMark1Clean !== prodMark1Clean) {
+      return false;
+    }
+
+    // Compare normalized alphanumerics of full strings
+    const normPFull = fullP.replace(/[^a-z0-9]/g, '');
+    const normProdFull = fullProd.replace(/[^a-z0-9]/g, '');
+
+    if (normPFull === normProdFull) return true;
+
+    // Exact name match
+    const normPName = pNameClean.replace(/[^a-z0-9]/g, '');
+    const normProdName = prodNameClean.replace(/[^a-z0-9]/g, '');
+
+    if (normPName === normProdName) {
+      if (pMark1Clean && !fullProd.includes(pMark1Clean)) return false;
+      if (pMark2Clean && !fullProd.includes(pMark2Clean)) return false;
+      return true;
+    }
 
     return false;
   };
