@@ -15,9 +15,11 @@ import {
   AlertTriangle,
   Eye,
   EyeOff,
+  History,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
 import { formatWarehouseStock, calculateProfitMargin, formatNumber, formatMoney } from '../utils/format';
+import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
 
 interface Props {
   isOpen: boolean;
@@ -39,6 +41,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('all');
   const [confirmDeleteProduct, setConfirmDeleteProduct] = useState<WarehouseProduct | null>(null);
+  const [selectedProductForHistory, setSelectedProductForHistory] = useState<WarehouseProduct | null>(null);
   const [showAllPrices, setShowAllPrices] = useState(false);
   const [revealedPriceIds, setRevealedPriceIds] = useState<Record<string, boolean>>({});
 
@@ -206,12 +209,17 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-neutral-100">
                     <div>
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div
+                        className="flex items-center gap-2 flex-wrap cursor-pointer group"
+                        onClick={() => setSelectedProductForHistory(p)}
+                        title="Topshirish tarixini ko'rish uchun bosing"
+                      >
                         <span className="text-xs font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200 uppercase tracking-wider">
                           {p.brand}
                         </span>
-                        <h4 className="text-base font-bold text-neutral-900 font-display">
-                          {p.name}
+                        <h4 className="text-base font-bold text-neutral-900 font-display group-hover:text-rose-700 transition flex items-center gap-1.5">
+                          <span>{p.name}</span>
+                          <History className="w-4 h-4 text-rose-600 opacity-70 group-hover:opacity-100 transition shrink-0" />
                         </h4>
                       </div>
                       <div className="flex items-center gap-1.5 mt-1.5 flex-wrap text-xs text-neutral-600">
@@ -235,7 +243,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 self-end sm:self-auto">
+                    <div className="flex items-center gap-2 self-end sm:self-auto flex-wrap">
                       {(() => {
                         const isPriceVisible = showAllPrices || Boolean(revealedPriceIds[p.id]);
                         return (
@@ -276,6 +284,15 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                           </>
                         );
                       })()}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProductForHistory(p)}
+                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition cursor-pointer"
+                        title="Mahsulot topshirilish tarixini ko'rish"
+                      >
+                        <History className="w-3.5 h-3.5" />
+                        <span>Topshirilish tarixi</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => onEditProduct(p)}
@@ -564,6 +581,13 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
             </div>
           </div>
         )}
+
+        {/* Topshirilish tarixi modali */}
+        <ProductDeliveryHistoryModal
+          isOpen={Boolean(selectedProductForHistory)}
+          onClose={() => setSelectedProductForHistory(null)}
+          product={selectedProductForHistory}
+        />
       </div>
     </div>
   );

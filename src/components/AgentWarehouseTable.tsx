@@ -14,7 +14,9 @@ import {
   AlertTriangle,
   Eye,
   EyeOff,
+  History,
 } from 'lucide-react';
+import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
 
 interface Props {
   products: WarehouseProduct[];
@@ -28,6 +30,7 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
   const [sortBy, setSortBy] = useState<'name' | 'pieces_desc' | 'pieces_asc' | 'date'>('pieces_desc');
   const [showAllMinPrices, setShowAllMinPrices] = useState(false);
   const [revealedMinPriceIds, setRevealedMinPriceIds] = useState<Record<string, boolean>>({});
+  const [selectedProductForHistory, setSelectedProductForHistory] = useState<WarehouseProduct | null>(null);
 
   const toggleMinPriceVisibility = (id: string) => {
     setRevealedMinPriceIds((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -324,11 +327,16 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
 
                         {/* Brand and Name */}
                         <td className="py-3 px-3.5">
-                          <div className="font-bold text-neutral-900 text-xs sm:text-sm flex items-center gap-2">
+                          <div
+                            className="font-bold text-neutral-900 text-xs sm:text-sm flex items-center gap-2 cursor-pointer group"
+                            onClick={() => setSelectedProductForHistory(p)}
+                            title="Topshirilish tarixini ko'rish uchun bosing"
+                          >
                             <span className="font-semibold text-rose-800 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200 text-[10px] uppercase">
                               {p.brand}
                             </span>
-                            <span>{p.name}</span>
+                            <span className="group-hover:text-rose-700 transition">{p.name}</span>
+                            <History className="w-3.5 h-3.5 text-rose-600 opacity-60 group-hover:opacity-100 transition shrink-0" />
                           </div>
                           {p.notes && (
                             <div className="text-[10px] text-neutral-400 truncate max-w-xs mt-0.5">
@@ -634,6 +642,13 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
           </>
         )}
       </div>
+
+      {/* Product Delivery History Modal */}
+      <ProductDeliveryHistoryModal
+        isOpen={Boolean(selectedProductForHistory)}
+        onClose={() => setSelectedProductForHistory(null)}
+        product={selectedProductForHistory}
+      />
     </div>
   );
 };
