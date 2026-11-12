@@ -75,9 +75,6 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
   const [customDate, setCustomDate] = useState<string>('');
 
-  // Closure type sub-filter: 'all' | 'done_closed' (Bajarib yopilgan) | 'undone_closed' (Bajarilmasdan yopilgan)
-  const [closureTypeFilter, setClosureTypeFilter] = useState<'all' | 'done_closed' | 'undone_closed'>('all');
-
   // Payment filter & sort: 'all' | 'paid_only' | 'last_paid' | 'most_paid'
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'paid_only' | 'last_paid' | 'most_paid'>('all');
 
@@ -145,43 +142,16 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     return [];
   };
 
-  // Har bir mijoz bir sanadagi rejada faqat bir marta ko'rinishini kafolatlash (dublikatlarsiz)
-  // Maxsus kun tanlanganda yoki Barchasi/Yopilganlar ko'rilganda 7 kundan oshgan yopilgan rejalar ham to'liq ko'rinadi
+  // Unique system plans deduplicated by ID
   const uniquePlans = useMemo(() => {
-    const byClientDate = new Map<string, DailyPlanItem>();
-    const sourceList = dateFilter !== 'all' || statusFilter !== 'jarayonda' ? allSystemPlans : plans;
+    const map = new Map<string, DailyPlanItem>();
+    const sourceList = allSystemPlans.length >= plans.length ? allSystemPlans : plans;
     for (const p of sourceList) {
-      if (!p || !p.clientId) continue;
-      if (dateFilter === 'all' && statusFilter === 'jarayonda' && isClosedPlanExpired7Days(p)) continue;
-      const pDateKey = p.planDate ? p.planDate.slice(0, 10) : (p.createdAt ? p.createdAt.slice(0, 10) : '');
-      const key = `${p.clientId}_${pDateKey}`;
-      const existing = byClientDate.get(key);
-      if (!existing) {
-        byClientDate.set(key, p);
-      } else {
-        const eOpen = !existing.isClosed && existing.status !== 'yopildi';
-        const cOpen = !p.isClosed && p.status !== 'yopildi';
-        const eReopenFresh = Boolean(existing.reopenedAt && eOpen);
-        const cReopenFresh = Boolean(p.reopenedAt && cOpen);
-        const eTime = new Date(existing.reopenedAt || existing.closedAt || existing.completedAt || existing.createdAt || 0).getTime();
-        const cTime = new Date(p.reopenedAt || p.closedAt || p.completedAt || p.createdAt || 0).getTime();
-
-        if (cOpen && !eOpen) {
-          // Ochiq reja har doim eski yopilgan rejadan ustun
-          byClientDate.set(key, p);
-        } else if (eOpen && !cOpen) {
-          // Mavjud ochiq reja eski yopilgan reja bilan almashtirilmaydi
-        } else if (cReopenFresh && !eReopenFresh) {
-          byClientDate.set(key, p);
-        } else if (eReopenFresh && !cReopenFresh) {
-          // keep existing
-        } else if (cTime >= eTime) {
-          byClientDate.set(key, p);
-        }
-      }
+      if (!p || !p.clientId || !p.id) continue;
+      map.set(p.id, p);
     }
-    return Array.from(byClientDate.values());
-  }, [plans, allSystemPlans, dateFilter, statusFilter]);
+    return Array.from(map.values());
+  }, [plans, allSystemPlans]);
 
   // Mijoz bo'yicha reja yopilganligini tekshirish (yopilganlar Bajarildi ichida, ochiqlari Jarayonda)
   const isPlanCompleted = (p: DailyPlanItem): boolean => {
@@ -219,29 +189,36 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     return Array.from(set).sort();
   }, [uniquePlans]);
 
-  // Reja sanasini aniqlash yordamchisi (YYYY-MM-DD)
-  const getPlanDateKey = (p: DailyPlanItem): string => {
-    if (p.planDate) return p.planDate.slice(0, 10);
-    if (p.createdAt) {
-      try {
-        const d = new Date(p.createdAt);
-        if (!isNaN(d.getTime())) {
-          return d.toLocaleDateString('en-CA');
-        }
-      } catch {
-        // fallback
-      }
-      return p.createdAt.slice(0, 10);
-    }
-    return '';
+  const formatYMD = (d: Date): string => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
 
-  const todayStr = useMemo(() => new Date().toLocaleDateString('en-CA'), []);
+  const todayStr = useMemo(() => formatYMD(new Date()), []);
   const yesterdayStr = useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toLocaleDateString('en-CA');
+    return formatYMD(d);
   }, []);
+
+  const matchesPlanDate = (p: DailyPlanItem, targetDateStr: string): boolean => {
+    if (!targetDateStr) return true;
+    if (p.planDate && p.planDate.slice(0, 10) === targetDateStr) return true;
+    if (p.createdAt && p.createdAt.slice(0, 10) === targetDateStr) return true;
+    if (p.closedAt && p.closedAt.slice(0, 10) === targetDateStr) return true;
+    if (p.completedAt && p.completedAt.slice(0, 10) === targetDateStr) return true;
+    if (
+      p.actionsHistory &&
+      p.actionsHistory.some(
+        (act) => act.timestamp && act.timestamp.slice(0, 10) === targetDateStr
+      )
+    ) {
+      return true;
+    }
+    return false;
+  };
 
   const dateScopeLabel = useMemo(() => {
     if (dateFilter === 'today') return 'Bugun';
@@ -250,7 +227,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     return 'Barcha sanalar';
   }, [dateFilter, customDate]);
 
-  // 4 ta tahliliy bloklar hisobi: sana, tanlangan agent va holat bo'yicha dinamik moslashadi
+  // 4 ta tahliliy bloklar hisobi: sana va tanlangan agent bo'yicha dinamik moslashadi
   const analytics = useMemo(() => {
     // 1. Avval sana va tanlangan agent bo'yicha saralash
     const dateAndAgentPlans = uniquePlans.filter((p) => {
@@ -258,10 +235,13 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         return false;
       }
       if (dateFilter !== 'all') {
-        const planDateStr = getPlanDateKey(p);
-        if (dateFilter === 'today' && planDateStr !== todayStr) return false;
-        if (dateFilter === 'yesterday' && planDateStr !== yesterdayStr) return false;
-        if (dateFilter === 'custom' && customDate && planDateStr !== customDate) return false;
+        const targetDate =
+          dateFilter === 'today'
+            ? todayStr
+            : dateFilter === 'yesterday'
+            ? yesterdayStr
+            : customDate;
+        if (targetDate && !matchesPlanDate(p, targetDate)) return false;
       }
       return true;
     });
@@ -278,18 +258,8 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       }
     });
 
-    // 2. Tushumlar va mahsulotlar (2, 3 va 4-bloklar) uchun nishon rejalar:
-    // Standart holatda ('jarayonda') faqat HALI YOPILMAGANLAR hisoblanadi.
-    // Agar yopilganlar ham qo'shilsa ('all'), barchasi (ochiq va yopilganlar) hisoblanadi.
-    // Agar 'bajarildi' bo'lsa, faqat yopilganlar hisoblanadi.
-    const metricTargetPlans = dateAndAgentPlans.filter((p) => {
-      const isDone = isPlanCompleted(p);
-      if (statusFilter === 'all') return true; // Yopilganlar ham qo'shilgan
-      if (statusFilter === 'bajarildi') return isDone; // Faqat yopilganlar
-      return !isDone; // Faqat yopilmagan ochiq rejalar ('jarayonda')
-    });
-
-    let totalReceipts = 0; // Jami tushumlar
+    // 2. Tushumlar va mahsulotlar tanlangan sana va agent bo'yicha to'liq hisoblanadi
+    let totalReceipts = 0;
     const receiptsByType = {
       naqd: { amount: 0, count: 0, label: 'Naqd pul' },
       bank: { amount: 0, count: 0, label: "Bank o'tkazmasi" },
@@ -297,15 +267,15 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       qr: { amount: 0, count: 0, label: "QR to'lov" },
     };
 
-    let totalDeliveredSum = 0; // Mahsulot berilishi jami summasi
-    let totalDeliveredPieces = 0; // Mahsulot berilishi jami soni
-    let totalReturnedSum = 0; // Mahsulot qaytishi jami summasi
-    let totalReturnedPieces = 0; // Mahsulot qaytishi jami soni
+    let totalDeliveredSum = 0;
+    let totalDeliveredPieces = 0;
+    let totalReturnedSum = 0;
+    let totalReturnedPieces = 0;
 
-    metricTargetPlans.forEach((p) => {
+    dateAndAgentPlans.forEach((p) => {
       const actions = getPlanActions(p);
       actions.forEach((act) => {
-        // 1. Direct financial action from Section 2 (supports single or multi-method splits)
+        // Direct financial action
         if (act.financialAction && act.financialAction.amount > 0) {
           const splits = act.financialAction.splits;
           if (splits && splits.length > 0) {
@@ -348,7 +318,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           }
         }
 
-        // 2. Delivery payment from Section 3
+        // Delivery payment
         if (act.deliveryPayment && act.deliveryPayment.paidAmount > 0) {
           if (act.deliveryPayment.splits && act.deliveryPayment.splits.length > 0) {
             act.deliveryPayment.splits.forEach((sp) => {
@@ -391,7 +361,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           }
         }
 
-        // 3. Delivered products sum and count
+        // Delivered products
         if (act.productsDelivered && act.productsDelivered.length > 0) {
           act.productsDelivered.forEach((prod) => {
             const lineVal = prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0);
@@ -400,7 +370,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           });
         }
 
-        // 4. Returned products sum and count
+        // Returned products
         if (act.productsReturned && act.productsReturned.length > 0) {
           act.productsReturned.forEach((ret) => {
             const lineVal = (ret.quantity || 0) * (ret.unitPrice || 0);
@@ -420,7 +390,6 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       totalClients,
       completedClients,
       inProgressClients,
-      metricTargetCount: metricTargetPlans.length,
       totalReceipts,
       receiptsByType: {
         naqd: { ...receiptsByType.naqd, percent: getPct(receiptsByType.naqd.amount) },
@@ -433,7 +402,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       totalReturnedSum,
       totalReturnedPieces,
     };
-  }, [uniquePlans, selectedAgent, dateFilter, customDate, statusFilter, todayStr, yesterdayStr]);
+  }, [uniquePlans, selectedAgent, dateFilter, customDate, todayStr, yesterdayStr]);
 
   // Filtered plans list
   const filteredPlans = useMemo(() => {
@@ -456,25 +425,20 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         }
       }
 
-      // 2. Status filter: Yopilgan va bajarilganlar faqat 'bajarildi' tabida turadi, 'jarayonda'da faqat hali bajarilib yopilmaganlar ko'rinadi
+      // 2. Status filter: Yopilganlar 'bajarildi' tabida, yopilmaganlar 'jarayonda' tabida
       const completedOrClosed = isPlanCompleted(p);
       if (statusFilter === 'bajarildi' && !completedOrClosed) return false;
       if (statusFilter === 'jarayonda' && completedOrClosed) return false;
 
-      // 2.5. Closure sub-filter: Bajarib yopilgan / Bajarilmasdan yopilgan
-      if (closureTypeFilter !== 'all') {
-        if (!completedOrClosed) return false;
-        const withoutAction = isPlanClosedWithoutAction(p);
-        if (closureTypeFilter === 'done_closed' && withoutAction) return false;
-        if (closureTypeFilter === 'undone_closed' && !withoutAction) return false;
-      }
-
-      // 3. Date filter: 'all' | 'today' | 'yesterday' | 'custom'
+      // 3. Date filter
       if (dateFilter !== 'all') {
-        const planDateStr = getPlanDateKey(p);
-        if (dateFilter === 'today' && planDateStr !== todayStr) return false;
-        if (dateFilter === 'yesterday' && planDateStr !== yesterdayStr) return false;
-        if (dateFilter === 'custom' && customDate && planDateStr !== customDate) return false;
+        const targetDate =
+          dateFilter === 'today'
+            ? todayStr
+            : dateFilter === 'yesterday'
+            ? yesterdayStr
+            : customDate;
+        if (targetDate && !matchesPlanDate(p, targetDate)) return false;
       }
 
       // 4. Agent filter
@@ -517,7 +481,6 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     }
 
     return baseFiltered.sort((a, b) => {
-      // Hali bajarilib yopilmaganlar har doim birinchi turadi
       const aDone = isPlanCompleted(a) ? 1 : 0;
       const bDone = isPlanCompleted(b) ? 1 : 0;
       if (aDone !== bDone) return aDone - bDone;
@@ -527,7 +490,6 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     uniquePlans,
     searchTerm,
     statusFilter,
-    closureTypeFilter,
     paymentFilter,
     selectedAgent,
     dateFilter,
@@ -981,7 +943,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Sana bo'yicha filtr paneli */}
+      {/* Sana bo'yicha va To'lov bo'yicha filtr paneli */}
       <div className="px-4 py-2.5 rounded-2xl bg-rose-50/40 border border-rose-100 flex flex-wrap items-center justify-between gap-2.5 text-xs">
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="font-bold text-neutral-700 flex items-center gap-1">
@@ -1001,10 +963,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setDateFilter('today');
-              setStatusFilter('all');
-            }}
+            onClick={() => setDateFilter('today')}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               dateFilter === 'today'
                 ? 'bg-rose-700 text-white shadow-2xs'
@@ -1015,10 +974,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setDateFilter('yesterday');
-              setStatusFilter('all');
-            }}
+            onClick={() => setDateFilter('yesterday')}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               dateFilter === 'yesterday'
                 ? 'bg-rose-700 text-white shadow-2xs'
@@ -1029,10 +985,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setDateFilter('custom');
-              setStatusFilter('all');
-            }}
+            onClick={() => setDateFilter('custom')}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               dateFilter === 'custom'
                 ? 'bg-rose-700 text-white shadow-2xs'
@@ -1045,62 +998,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             <input
               type="date"
               value={customDate}
-              onChange={(e) => {
-                setCustomDate(e.target.value);
-                setStatusFilter('all');
-              }}
+              onChange={(e) => setCustomDate(e.target.value)}
               className="px-2 py-1 rounded-lg border border-neutral-300 text-xs font-mono font-medium outline-none focus:border-rose-500 bg-white"
             />
           )}
-        </div>
-        <div className="text-[11px] font-medium text-neutral-500">
-          Ko'rsatilmoqda: <strong className="text-neutral-800">{filteredPlans.length} ta</strong> rejadagi mijoz
-        </div>
-      </div>
-
-      {/* Yopilish holati (Bajarib / Bajarilmasdan yopilgan) va To'lov bo'yicha saralash / filtr paneli */}
-      <div className="px-4 py-2.5 rounded-2xl bg-white border border-rose-100 flex flex-wrap items-center justify-between gap-3 text-xs">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="font-bold text-neutral-700">Yopilish holati:</span>
-          <button
-            type="button"
-            onClick={() => setClosureTypeFilter('all')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              closureTypeFilter === 'all'
-                ? 'bg-neutral-800 text-white shadow-2xs'
-                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-            }`}
-          >
-            Barchasi
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (statusFilter === 'jarayonda') setStatusFilter('bajarildi');
-              setClosureTypeFilter('done_closed');
-            }}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              closureTypeFilter === 'done_closed'
-                ? 'bg-emerald-700 text-white shadow-2xs'
-                : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-            }`}
-          >
-            Bajarib yopilgan ({uniquePlans.filter((p) => isPlanCompleted(p) && !isPlanClosedWithoutAction(p)).length})
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (statusFilter === 'jarayonda') setStatusFilter('bajarildi');
-              setClosureTypeFilter('undone_closed');
-            }}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              closureTypeFilter === 'undone_closed'
-                ? 'bg-amber-600 text-white shadow-2xs'
-                : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
-            }`}
-          >
-            Bajarilmasdan yopilgan ({uniquePlans.filter((p) => isPlanCompleted(p) && isPlanClosedWithoutAction(p)).length})
-          </button>
         </div>
 
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -1111,7 +1012,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               paymentFilter === 'all'
                 ? 'bg-rose-700 text-white shadow-2xs'
-                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
             }`}
           >
             Barchasi
