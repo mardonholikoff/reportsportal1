@@ -207,6 +207,30 @@ export interface DailyPlanItem {
   }>;
 }
 
+export interface WarehouseStockChangeLog {
+  id: string;
+  timestamp: string; // ISO string
+  dateStr: string; // YYYY-MM-DD
+  author: string; // 'adminc' | 'agentp1'
+  changeType:
+    | 'initial_intake' // Baza yaratilganda dastlabki kiritilgan qoldiq
+    | 'initial_edit' // Dastlabki kirim miqdori tahrirlandi
+    | 'manual_adjustment' // Ombordagi joriy qoldiq qo'lda o'zgartirildi
+    | 'sale' // Mijozga sotildi
+    | 'sale_edit' // Sotilgan mahsulot tahrirlandi
+    | 'return'; // Mijozdan omborga qaytarildi
+  previousPieces: number;
+  newPieces: number;
+  deltaPieces: number; // + yoki - dona farqi
+  previousInitialPieces?: number;
+  newInitialPieces?: number;
+  unit?: string;
+  quantityInUnit?: number;
+  clientId?: string;
+  clientName?: string;
+  note?: string;
+}
+
 export interface WarehouseProduct {
   id: string;
   // 1-BLOK: Mahsulot
@@ -237,6 +261,15 @@ export interface WarehouseProduct {
   totalSum: number; // Avtomatik umumiy summa
   totalPieces: number; // Avtomatik umumiy dona
   totalVolume: number; // Avtomatik umumiy hajm
+
+  // Dastlabki (baza yaratilgandagi) qoldiq va o'zgarishlar xronologiyasi
+  initialIntakeDate?: string;
+  initialIntakeUnitType?: 'package' | 'piece';
+  initialIntakeQuantity?: number;
+  initialTotalPieces?: number;
+  initialTotalVolume?: number;
+  initialEditCount?: number;
+  stockHistory?: WarehouseStockChangeLog[];
 
   // 5-BLOK: Eng kam sotilish narxi (Agentlar mijozga sotayotganda ko'rinadigan narx)
   minSellingPricingUnitType?: 'piece' | 'package'; // Eng kam sotilish narxi birligi

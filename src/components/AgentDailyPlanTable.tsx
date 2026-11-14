@@ -247,14 +247,10 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
     return validPlans.filter((p) => {
       const pDate = getPlanDateKey(p);
-      const pRawDate = (p.planDate || p.createdAt || '').slice(0, 10);
       const pClosedDate = getClosedDateKey(p);
-      const pRawClosedDate = ((p as any).closedDisplayDate || p.closedAt || '').slice(0, 10);
+      const effectiveDate = pClosedDate || pDate || (p.planDate || p.createdAt || '').slice(0, 10);
       const matchesTarget = (target: string) =>
-        pDate === target ||
-        pRawDate === target ||
-        pClosedDate === target ||
-        pRawClosedDate === target;
+        effectiveDate === target || pDate === target || pClosedDate === target;
 
       if (dateFilter === 'today') return matchesTarget(todayStr);
       if (dateFilter === 'yesterday') return matchesTarget(yesterdayStr);
@@ -378,8 +374,26 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     if (!reopenModalTargetIds || reopenModalTargetIds.length === 0) return;
     const trimmed = reopenReason.trim();
     if (!trimmed) return;
+    const firstReopenedTarget = validPlans.find((p) => reopenModalTargetIds.includes(p.id));
+    const reopenedTargetDate = firstReopenedTarget
+      ? getClosedDateKey(firstReopenedTarget) ||
+        (firstReopenedTarget as any).lastClosedDateKey ||
+        getPlanDateKey(firstReopenedTarget)
+      : '';
     if (onReopenPlanItems) {
       onReopenPlanItems(reopenModalTargetIds, trimmed);
+    }
+    if (reopenedTargetDate && /^\d{4}-\d{2}-\d{2}$/.test(reopenedTargetDate) && dateFilter !== 'all') {
+      const todayStr = getTodayDateStr();
+      const yesterdayStr = getYesterdayDateStr();
+      if (reopenedTargetDate === todayStr) {
+        setDateFilter('today');
+      } else if (reopenedTargetDate === yesterdayStr) {
+        setDateFilter('yesterday');
+      } else {
+        setDateFilter('custom');
+        setCustomDate(reopenedTargetDate);
+      }
     }
     setSelectedPlanIds((prev) => prev.filter((id) => !reopenModalTargetIds.includes(id)));
     setReopenModalTargetIds(null);
@@ -440,7 +454,12 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
   const handleOpenConfirmClose = (item: DailyPlanItem) => {
     setConfirmCloseItem(item);
-    setConfirmCloseDate(getTodayDateStr());
+    setConfirmCloseDate(
+      getClosedDateKey(item) ||
+        (item as any).lastClosedDateKey ||
+        getPlanDateKey(item) ||
+        getTodayDateStr()
+    );
     const hasActions =
       Boolean(item.actionDone) || Boolean(item.actionsHistory && item.actionsHistory.length > 0);
     setCloseWithoutActionFlag(!hasActions);

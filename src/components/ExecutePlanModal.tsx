@@ -11,7 +11,13 @@ import {
   DeliveryPaymentType,
 } from '../types';
 import { formatMoney, formatDateDMY } from '../utils/format';
-import { storageService, getPlanSoldProductsData, getPlanFinancialActionData } from '../services/storage';
+import {
+  storageService,
+  getPlanSoldProductsData,
+  getPlanFinancialActionData,
+  getPlanDateKey,
+  getClosedDateKey,
+} from '../services/storage';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import {
   X,
@@ -769,7 +775,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       setActionDone(planItem.actionDone || planItem.plannedAction || 'joyiga borildi');
       setIsPlannedActionConfirmed(false);
       setShowExtraActionSelector(false);
-      setCloseDate(getTodayDateStr());
+      setCloseDate(getClosedDateKey(planItem) || getPlanDateKey(planItem) || getTodayDateStr());
       setHasPayment(false);
       setIsEditingFinancialAction(false);
       setIsPaymentUzsMode(false);
@@ -1836,10 +1842,15 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     // Agar moliyaviy amaliyotga (2-bo'lim) yoki sotilgan mahsulotlarga (3-bo'lim) o'zgartirish kiritish rejimi yoqilgan bo'lsa:
     const isUpdatingSold = Boolean(
-      isEditingSoldProducts && onUpdateSoldProducts && validProducts.length > 0 && deliveryPayData
+      (isEditingSoldProducts || hasExistingSoldProducts) &&
+        onUpdateSoldProducts &&
+        validProducts.length > 0 &&
+        deliveryPayData
     );
     const isUpdatingFinancial = Boolean(
-      isEditingFinancialAction && onUpdateFinancialAction && financialData
+      (isEditingFinancialAction || hasExistingFinancialAction) &&
+        onUpdateFinancialAction &&
+        financialData
     );
 
     if (isUpdatingSold || isUpdatingFinancial) {
@@ -2402,7 +2413,9 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     onChange={(e) => {
                       const checked = e.target.checked;
                       setHasPayment(checked);
-                      if (!checked && isEditingFinancialAction) {
+                      if (checked && hasExistingFinancialAction) {
+                        loadFinancialActionIntoForm(existingFinancialData);
+                      } else if (!checked && isEditingFinancialAction) {
                         setIsEditingFinancialAction(false);
                       }
                       syncConfirmationWithBlocks(checked, hasProducts, hasReturns);
@@ -2435,19 +2448,6 @@ export const ExecutePlanModal: React.FC<Props> = ({
                       <Edit3 className="w-3.5 h-3.5" />
                       <span>To&apos;lovni tahrirlash</span>
                     </button>
-                    {!isClosed && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setHasPayment(true);
-                          syncConfirmationWithBlocks(true, hasProducts, hasReturns);
-                        }}
-                        className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-800 border border-rose-200 text-xs font-bold transition cursor-pointer flex items-center gap-1"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Qo&apos;shimcha yangi to&apos;lov qo&apos;shish</span>
-                      </button>
-                    )}
                   </div>
                 </div>
               )}
@@ -2884,7 +2884,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   </label>
                 </div>
                 <div className="flex items-center gap-2">
-                  {!isClosed && hasExistingSoldProducts && !isEditingSoldProducts && (
+                  {hasExistingSoldProducts && !isEditingSoldProducts && (
                     <button
                       type="button"
                       onClick={() => loadSoldProductsIntoForm(existingSoldData)}
@@ -2892,6 +2892,21 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     >
                       <Edit3 className="w-3 h-3" />
                       <span>Sotilgan mahsulotlarga o'zgartirish kiritish</span>
+                    </button>
+                  )}
+                  {isClosed && !hasExistingSoldProducts && !isEditingSoldProducts && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingSoldProducts(true);
+                        setHasProducts(true);
+                        setIsPlannedActionConfirmed(true);
+                        syncConfirmationWithBlocks(hasPayment, true, hasReturns);
+                      }}
+                      className="px-3 py-1 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-[11px] font-bold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Sotilgan mahsulot qo'shish</span>
                     </button>
                   )}
                   {isEditingSoldProducts && (
@@ -2911,13 +2926,15 @@ export const ExecutePlanModal: React.FC<Props> = ({
                   <input
                     type="checkbox"
                     id="hasProductsCheck"
-                    disabled={isClosed}
                     checked={hasProducts}
                     onChange={(e) => {
                       const checked = e.target.checked;
                       setHasProducts(checked);
                       if (checked && hasExistingSoldProducts) {
                         loadSoldProductsIntoForm(existingSoldData);
+                      } else if (checked && isClosed) {
+                        setIsEditingSoldProducts(true);
+                        setIsPlannedActionConfirmed(true);
                       } else if (!checked && isEditingSoldProducts) {
                         setIsEditingSoldProducts(false);
                       }
@@ -2928,7 +2945,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
                 </div>
               </div>
 
-              {!isClosed && hasExistingSoldProducts && !hasProducts && !isEditingSoldProducts && (
+              {hasExistingSoldProducts && !hasProducts && !isEditingSoldProducts && (
                 <div className="p-3 rounded-2xl bg-indigo-50/80 border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                   <div className="text-xs text-indigo-950">
                     <span className="font-bold block">
@@ -2952,13 +2969,13 @@ export const ExecutePlanModal: React.FC<Props> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        setHasProducts(true);
-                        syncConfirmationWithBlocks(hasPayment, true, hasReturns);
+                        loadSoldProductsIntoForm(existingSoldData);
+                        setProducts((prev) => [createEmptyProductRow(), ...prev]);
                       }}
                       className="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-800 border border-rose-200 text-xs font-bold transition cursor-pointer flex items-center gap-1"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Yangi mahsulot qo&apos;shish</span>
+                      <span>Qo&apos;shimcha yangi mahsulot qo&apos;shish</span>
                     </button>
                   </div>
                 </div>

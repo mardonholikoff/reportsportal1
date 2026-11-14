@@ -484,7 +484,7 @@ export default function App() {
       return;
     }
 
-    const updated = storageService.updateWarehouseProduct(id, data);
+    const updated = storageService.updateWarehouseProduct(id, data, currentUsername);
     if (!updated) return;
 
     setWarehouseProducts(storageService.getWarehouseProducts());
@@ -620,8 +620,21 @@ export default function App() {
 
           // Purge remote plans if they belong to explicitly deleted clients/plans or unintended synthetic plan_rec_ items
           const deletedPlanIds = getDeletedPlanIds();
+          const hasPlanDeliveredProducts = (p: DailyPlanItem) =>
+            Boolean(
+              (p.productsDelivered && p.productsDelivered.length > 0) ||
+                (p.actionsHistory &&
+                  p.actionsHistory.some(
+                    (a) => a.productsDelivered && a.productsDelivered.length > 0
+                  ))
+            );
           const isUnintendedRec = (p: DailyPlanItem) =>
-            Boolean(p.id && p.id.startsWith('plan_rec_') && !p.id.endsWith('_2026-11-01'));
+            Boolean(
+              p.id &&
+                p.id.startsWith('plan_rec_') &&
+                !p.id.endsWith('_2026-11-01') &&
+                !hasPlanDeliveredProducts(p)
+            );
 
           remotePlans.forEach((rp) => {
             if (deletedIds.has(rp.clientId) || deletedPlanIds.has(rp.id) || isUnintendedRec(rp)) {
@@ -636,7 +649,7 @@ export default function App() {
               !isUnintendedRec(p)
           );
 
-          // Preserve local recently reopened OR recently closed plans against in-flight snapshots
+          // Preserve local recently reopened, recently closed, or recently executed/edited plans against in-flight snapshots
           const localPlans = storageService.getDailyPlans();
           const localPlansById = new Map(localPlans.map((lp) => [lp.id, lp]));
           const localPlansByDateKey = new Map(
@@ -648,6 +661,11 @@ export default function App() {
             const wallMs = wallStr ? new Date(wallStr).getTime() : 0;
             const closedMs = p.closedAt ? new Date(p.closedAt).getTime() : 0;
             return Math.max(isNaN(wallMs) ? 0 : wallMs, isNaN(closedMs) ? 0 : closedMs);
+          };
+
+          const getExecMs = (p: DailyPlanItem): number => {
+            const execMs = p.lastExecutedAt ? new Date(p.lastExecutedAt).getTime() : 0;
+            return isNaN(execMs) ? 0 : execMs;
           };
 
           const reconciledRemote: DailyPlanItem[] = cleanRemote.map((rp) => {
@@ -664,16 +682,23 @@ export default function App() {
               const localReopenMs = new Date(lp.reopenedAt).getTime();
               const remoteClosedMs = getCloseMs(rp) || new Date(rp.completedAt || 0).getTime();
               if (localReopenMs > remoteClosedMs) {
+                const preservedClosedDate =
+                  lp.planDate ||
+                  (lp as any).lastClosedDateKey ||
+                  getClosedDateKey(rp) ||
+                  rp.planDate;
                 return lp.id === rp.id
                   ? lp
-                  : {
+                  : ({
                       ...rp,
                       isClosed: false,
                       status: 'rejalashtirilgan' as const,
+                      planDate: preservedClosedDate,
+                      lastClosedDateKey: preservedClosedDate,
                       reopenedAt: lp.reopenedAt,
                       reopenedBy: lp.reopenedBy,
                       reopenReason: lp.reopenReason,
-                    };
+                    } as DailyPlanItem);
               }
             }
 
@@ -693,6 +718,15 @@ export default function App() {
                         closedAt: lp.closedAt,
                         closedBy: lp.closedBy,
                         closeReason: lp.closeReason,
+                        productsDelivered: lp.productsDelivered || rp.productsDelivered,
+                        deliveryPayment: lp.deliveryPayment || rp.deliveryPayment,
+                        financialAction: lp.financialAction || rp.financialAction,
+                        actionsHistory:
+                          lp.actionsHistory && lp.actionsHistory.length > 0
+                            ? lp.actionsHistory
+                            : rp.actionsHistory,
+                        lastExecutedAt: lp.lastExecutedAt || rp.lastExecutedAt,
+                        lastExecutedBy: lp.lastExecutedBy || rp.lastExecutedBy,
                       };
                 delete closedSynced.reopenedAt;
                 delete closedSynced.reopenedBy;
@@ -704,6 +738,25 @@ export default function App() {
                 syncPlanToFirestore(closedSynced);
                 return closedSynced;
               }
+            }
+
+            // 3. Local has newer execution/product edits than remote (or local has delivered products missing from remote)
+            const lpExecMs = getExecMs(lp);
+            const rpExecMs = getExecMs(rp);
+            if (
+              lpExecMs > rpExecMs ||
+              (hasPlanDeliveredProducts(lp) && !hasPlanDeliveredProducts(rp))
+            ) {
+              const mergedExec: DailyPlanItem =
+                lp.id === rp.id
+                  ? lp
+                  : {
+                      ...rp,
+                      ...lp,
+                      id: rp.id,
+                    };
+              syncPlanToFirestore(mergedExec);
+              return mergedExec;
             }
 
             return rp;
@@ -796,9 +849,30 @@ export default function App() {
       onWarehouseChange: (remoteProducts: WarehouseProduct[]) => {
         if (remoteProducts) {
           const deletedWhIds = getDeletedWarehouseIds();
-          const cleanRemote = remoteProducts.filter((w) => !deletedWhIds.has(w.id));
+          const localWhMap = new Map(
+            storageService.getWarehouseProducts().map((lw) => [lw.id, lw])
+          );
+          const cleanRemote = remoteProducts
+            .filter((w) => !deletedWhIds.has(w.id))
+            .map((rw) => {
+              const lw = localWhMap.get(rw.id);
+              if (!lw) return rw;
+              const lwHist = Array.isArray(lw.stockHistory) ? lw.stockHistory : [];
+              const rwHist = Array.isArray(rw.stockHistory) ? rw.stockHistory : [];
+              const mergedHist = lwHist.length >= rwHist.length ? lwHist : rwHist;
+              return {
+                ...rw,
+                initialIntakeDate: rw.initialIntakeDate || lw.initialIntakeDate,
+                initialIntakeUnitType: rw.initialIntakeUnitType || lw.initialIntakeUnitType,
+                initialIntakeQuantity: rw.initialIntakeQuantity ?? lw.initialIntakeQuantity,
+                initialTotalPieces: rw.initialTotalPieces ?? lw.initialTotalPieces,
+                initialTotalVolume: rw.initialTotalVolume ?? lw.initialTotalVolume,
+                initialEditCount: Math.max(rw.initialEditCount || 0, lw.initialEditCount || 0),
+                stockHistory: mergedHist,
+              };
+            });
           storageService.saveWarehouseProducts(cleanRemote);
-          setWarehouseProducts([...cleanRemote]);
+          setWarehouseProducts([...storageService.getWarehouseProducts()]);
         }
       },
       onLogsChange: (remoteLogs: SystemLog[]) => {
@@ -1365,7 +1439,12 @@ export default function App() {
   ) => {
     const currentUsername = user?.username || 'agentp1';
     const targetPlan = dailyPlans.find((p) => p.id === planItemId);
-    const result = storageService.executeDailyPlanItem(planItemId, currentUsername, report);
+    const result = storageService.executeDailyPlanItem(
+      planItemId,
+      currentUsername,
+      report,
+      closeDate
+    );
     if (result.success) {
       if (closeAfterSave) {
         const autoCloseReason =
@@ -1450,11 +1529,16 @@ export default function App() {
       debtAmount: totalSalesUsd,
       totalAmount: totalSalesUsd,
     };
-    const result = storageService.updateSoldProductsOnPlanItem(planItemId, currentUsername, {
-      productsDelivered: data.productsDelivered,
-      deliveryPayment: resolvedDeliveryPayment,
-      reportNote: data.reportNote,
-    });
+    const result = storageService.updateSoldProductsOnPlanItem(
+      planItemId,
+      currentUsername,
+      {
+        productsDelivered: data.productsDelivered,
+        deliveryPayment: resolvedDeliveryPayment,
+        reportNote: data.reportNote,
+      },
+      closeDate
+    );
     if (result.success) {
       if (closeAfterSave && result.plan) {
         const autoCloseReason =

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   Calendar,
@@ -15,10 +15,16 @@ import {
   MapPin,
   Phone,
   Coins,
+  History,
+  ArrowRight,
+  Edit3,
+  Layers,
+  RotateCcw,
 } from 'lucide-react';
 import { WarehouseProduct, DailyPlanItem, Client, ProductItem } from '../types';
-import { storageService } from '../services/storage';
+import { storageService, getPlanDateKey, getClosedDateKey } from '../services/storage';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
+import { buildWarehouseProductChronology } from '../utils/warehouseChronology';
 import { StickyTableWrapper } from './StickyTableWrapper';
 
 export interface ProductDeliveryRecord {
@@ -62,19 +68,8 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'this_month' | 'custom'>('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-
-  // Resolved plans & clients from props or storageService
-  const resolvedPlans = useMemo(() => {
-    return propDailyPlans && propDailyPlans.length > 0
-      ? propDailyPlans
-      : storageService.getDailyPlans();
-  }, [propDailyPlans, isOpen]);
-
-  const resolvedClients = useMemo(() => {
-    return propClients && propClients.length > 0
-      ? propClients
-      : storageService.getClients();
-  }, [propClients, isOpen]);
+  const [storageTick, setStorageTick] = useState(0);
+  const [activeTab, setActiveTab] = useState<'all_chronology' | 'initial_changes' | 'sales_only'>('all_chronology');
 
   // Today & Yesterday YYYY-MM-DD
   const formatYMD = (d: Date): string => {
@@ -95,25 +90,88 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
   }, []);
 
+  const [snapshotDate, setSnapshotDate] = useState<string>(() => formatYMD(new Date()));
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setStorageTick((t) => t + 1);
+    const unsubscribe = storageService.subscribe(() => {
+      setStorageTick((t) => t + 1);
+    });
+    return unsubscribe;
+  }, [isOpen]);
+
+  // Always combine latest storage plans & clients with any prop overrides so new edits appear immediately
+  const resolvedPlans = useMemo(() => {
+    const fresh = storageService.getDailyPlans();
+    if (fresh && fresh.length > 0) return fresh;
+    return propDailyPlans || [];
+  }, [propDailyPlans, isOpen, storageTick]);
+
+  const resolvedClients = useMemo(() => {
+    const fresh = storageService.getClients();
+    if (fresh && fresh.length > 0) return fresh;
+    return propClients || [];
+  }, [propClients, isOpen, storageTick]);
+
+  const allWarehouseProducts = useMemo(() => {
+    return storageService.getWarehouseProducts() || [];
+  }, [isOpen, storageTick]);
+
+  // Resolve latest version of product from storage so live updates reflect immediately
+  const activeProduct = useMemo(() => {
+    if (!product) return null;
+    return allWarehouseProducts.find((w) => w.id === product.id) || product;
+  }, [product, allWarehouseProducts]);
+
+  // Build full product chronology (initial stock, edits, running balance, and date snapshot)
+  const chronology = useMemo(() => {
+    if (!activeProduct) return null;
+    return buildWarehouseProductChronology(
+      activeProduct,
+      resolvedPlans,
+      resolvedClients,
+      undefined,
+      allWarehouseProducts
+    );
+  }, [activeProduct, resolvedPlans, resolvedClients, allWarehouseProducts, storageTick]);
+
+  const snapshotAtDate = useMemo(() => {
+    if (!chronology) return null;
+    return chronology.getStockAtDate(snapshotDate || todayYmd);
+  }, [chronology, snapshotDate, todayYmd]);
+
   // Matching helper: Check if a delivered product matches the target WarehouseProduct
   const isMatchingProduct = (p: WarehouseProduct, prod: ProductItem): boolean => {
     if (!prod || !p) return false;
 
-    // 1. Strict ID Check: If prod has a warehouseId, IT MUST MATCH p.id EXACTLY!
-    // If prod.warehouseId exists and points to a different product, return false immediately.
-    if (prod.warehouseId) {
-      return prod.warehouseId === p.id;
-    }
+    const cleanStr = (s?: string) => (s || '').toLowerCase().trim();
+    const normAlnum = (s?: string) => cleanStr(s).replace(/[^a-z0-9]/g, '');
 
-    // 2. If prod has an id matching p.id
+    // 1. Direct ID match
+    if (prod.warehouseId && prod.warehouseId === p.id) {
+      return true;
+    }
     if ((prod as any).id && (prod as any).id === p.id) {
       return true;
     }
 
-    // 3. Fallback for legacy records without warehouseId
-    if (!prod.name) return false;
+    // 2. If prod.warehouseId points to a different warehouse item that still exists and has a different name/mark, reject
+    if (prod.warehouseId && prod.warehouseId !== p.id) {
+      const otherWh = allWarehouseProducts.find((w) => w.id === prod.warehouseId);
+      if (otherWh) {
+        const sameIdentity =
+          normAlnum(otherWh.name) === normAlnum(p.name) &&
+          normAlnum(otherWh.brand) === normAlnum(p.brand) &&
+          normAlnum(otherWh.mark1) === normAlnum(p.mark1);
+        if (!sameIdentity) {
+          return false;
+        }
+      }
+    }
 
-    const cleanStr = (s?: string) => (s || '').toLowerCase().trim();
+    // 3. Fallback matching by product name, brand, mark, and volume/liter tokens
+    if (!prod.name) return false;
 
     const prodNameClean = cleanStr(prod.name);
     const pNameClean = cleanStr(p.name);
@@ -128,6 +186,8 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     const fullP = [pBrandClean, pNameClean, pMark1Clean, pMark2Clean, ...(p.extraMarks || []).map(cleanStr)]
       .filter(Boolean)
       .join(' ');
+    const pPrimary = [pBrandClean, pNameClean, pMark1Clean].filter(Boolean).join(' ');
+    const pNameAndMark1 = [pNameClean, pMark1Clean].filter(Boolean).join(' ');
 
     const fullProd = [prodBrandClean, prodNameClean, prodMark1Clean, prodMark2Clean]
       .filter(Boolean)
@@ -164,6 +224,8 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
       if (!isLiterMatch) {
         return false; // Different sizes (e.g. 1L vs 4L or 2L)!
       }
+    } else if (pLiters.length > 0 && prodLiters.length === 0) {
+      return false;
     }
 
     // Check numeric specifiers if no explicit 'l' suffix
@@ -187,19 +249,40 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
       return false;
     }
 
-    // Compare normalized alphanumerics of full strings
-    const normPFull = fullP.replace(/[^a-z0-9]/g, '');
-    const normProdFull = fullProd.replace(/[^a-z0-9]/g, '');
+    // Compare normalized alphanumerics of full & primary strings (ExecutePlanModal formats as `${brand} - ${name} [${mark1}]`)
+    const normPFull = normAlnum(fullP);
+    const normPPrimary = normAlnum(pPrimary);
+    const normPNameMark1 = normAlnum(pNameAndMark1);
+    const normPName = normAlnum(pNameClean);
+    const normProdFull = normAlnum(fullProd);
+    const normProdName = normAlnum(prodNameClean);
+    const normPMark1 = normAlnum(pMark1Clean);
+    const normPBrand = normAlnum(pBrandClean);
 
-    if (normPFull === normProdFull) return true;
+    if (
+      normProdFull === normPFull ||
+      normProdFull === normPPrimary ||
+      normProdFull === normPNameMark1 ||
+      normProdName === normPPrimary ||
+      normProdName === normPNameMark1 ||
+      normProdName === normPName
+    ) {
+      if (normPMark1 && !normProdFull.includes(normPMark1)) {
+        const hasLiterEquiv = pLiters.length > 0 && prodLiters.some((pl) => pLiters.includes(pl));
+        if (!hasLiterEquiv) return false;
+      }
+      return true;
+    }
 
-    // Exact name match
-    const normPName = pNameClean.replace(/[^a-z0-9]/g, '');
-    const normProdName = prodNameClean.replace(/[^a-z0-9]/g, '');
-
-    if (normPName === normProdName) {
-      if (pMark1Clean && !fullProd.includes(pMark1Clean)) return false;
-      if (pMark2Clean && !fullProd.includes(pMark2Clean)) return false;
+    if (normPName.length >= 2 && normProdFull.includes(normPName)) {
+      if (normPMark1 && !normProdFull.includes(normPMark1)) {
+        const hasLiterEquiv = pLiters.length > 0 && prodLiters.some((pl) => pLiters.includes(pl));
+        if (!hasLiterEquiv) return false;
+      }
+      if (normPBrand && !normProdFull.includes(normPBrand)) {
+        // Allow if prod didn't include brand prefix (e.g., "ATF 4L" directly)
+        if (prodBrandClean) return false;
+      }
       return true;
     }
 
@@ -245,6 +328,31 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     const clientsMap = new Map<string, Client>();
     resolvedClients.forEach((c) => clientsMap.set(c.id, c));
 
+    const resolveEffectiveDeliveryDate = (
+      dp: DailyPlanItem,
+      prod: ProductItem,
+      fallbackTime?: string
+    ): { timestamp: string; dateStr: string } => {
+      const prodDateRaw = (prod as any).date || (prod as any).deliveredAt;
+      const prodDateKey = prodDateRaw
+        ? getPlanDateKey({ createdAt: prodDateRaw } as DailyPlanItem)
+        : '';
+      const planTargetDate = getClosedDateKey(dp) || getPlanDateKey(dp);
+      const rawTime = prodDateRaw || fallbackTime || dp.completedAt || dp.closedAt || dp.createdAt || '';
+      const rawDateKey = rawTime ? getPlanDateKey({ createdAt: rawTime } as DailyPlanItem) : '';
+
+      // Prefer the plan's closed/target date when the plan belongs to a specific date (e.g. 2026-11-04)
+      const effectiveDateStr = planTargetDate || prodDateKey || rawDateKey || todayYmd;
+      const timeSuffix =
+        rawTime && rawTime.includes('T') ? rawTime.slice(10) : 'T12:00:00.000Z';
+      const effectiveTimestamp =
+        rawTime && rawTime.startsWith(effectiveDateStr)
+          ? rawTime
+          : `${effectiveDateStr}${timeSuffix}`;
+
+      return { timestamp: effectiveTimestamp, dateStr: effectiveDateStr };
+    };
+
     // 1. Daily plans deliveries
     resolvedPlans.forEach((dp) => {
       if (!dp) return;
@@ -255,13 +363,22 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
       const cReg = dp.clientRegion || clientObj?.region;
       const cDist = dp.clientDistrict || clientObj?.district;
 
+      const seenInPlan = new Set<string>();
+
       if (dp.actionsHistory && dp.actionsHistory.length > 0) {
         dp.actionsHistory.forEach((act, actIdx) => {
           if (act && act.productsDelivered && act.productsDelivered.length > 0) {
             act.productsDelivered.forEach((prod, pIdx) => {
               if (isMatchingProduct(product, prod)) {
-                const timeStr = act.timestamp || dp.completedAt || dp.createdAt;
-                const dStr = timeStr ? timeStr.slice(0, 10) : todayYmd;
+                const dedupKey = `${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
+                if (seenInPlan.has(dedupKey)) return;
+                seenInPlan.add(dedupKey);
+
+                const { timestamp: timeStr, dateStr: dStr } = resolveEffectiveDeliveryDate(
+                  dp,
+                  prod,
+                  act.timestamp
+                );
                 const author = act.author || dp.lastExecutedBy || dp.agentUsername || 'adminc';
 
                 list.push({
@@ -280,19 +397,24 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                   totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
                   author,
                   paymentType: act.deliveryPayment?.paymentType || dp.deliveryPayment?.paymentType || 'qarz',
-                  paidAmount: act.deliveryPayment?.paidAmount || dp.deliveryPayment?.paidAmount,
-                  debtAmount: act.deliveryPayment?.debtAmount || dp.deliveryPayment?.debtAmount,
+                  paidAmount: act.deliveryPayment?.paidAmount ?? dp.deliveryPayment?.paidAmount,
+                  debtAmount: act.deliveryPayment?.debtAmount ?? dp.deliveryPayment?.debtAmount,
                   reportNote: act.reportNote || dp.reportNote || dp.planNote,
                 });
               }
             });
           }
         });
-      } else if (dp.productsDelivered && dp.productsDelivered.length > 0) {
+      }
+
+      if (dp.productsDelivered && dp.productsDelivered.length > 0) {
         dp.productsDelivered.forEach((prod, pIdx) => {
           if (isMatchingProduct(product, prod)) {
-            const timeStr = dp.completedAt || dp.createdAt;
-            const dStr = timeStr ? timeStr.slice(0, 10) : todayYmd;
+            const dedupKey = `${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
+            if (seenInPlan.has(dedupKey)) return;
+            seenInPlan.add(dedupKey);
+
+            const { timestamp: timeStr, dateStr: dStr } = resolveEffectiveDeliveryDate(dp, prod);
             const author = dp.lastExecutedBy || dp.agentUsername || 'adminc';
 
             list.push({
@@ -320,9 +442,158 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
       }
     });
 
+    // 2. Fallback from client.products & client.logs (for products added via client edit or whose plan was modified/deduplicated)
+    const clientsWithDelivery = new Set<string>(list.map((r) => r.clientId));
+
+    resolvedClients.forEach((client) => {
+      if (!client || !client.id) return;
+      if (clientsWithDelivery.has(client.id)) return;
+
+      const clientLogs = Array.isArray(client.logs) ? client.logs : [];
+      const prodAddLog = clientLogs.find(
+        (l) =>
+          l &&
+          l.type === 'product_added' &&
+          l.title !== 'Mahsulot omborga qaytarildi'
+      );
+      const latestCloseLog = clientLogs.find(
+        (l) =>
+          l &&
+          (l.id?.endsWith('_close') ||
+            l.title === 'Reja yakunlandi va yopildi' ||
+            l.title === 'Reja bajarilmasdan yopildi')
+      );
+
+      const inferClientDeliveryDate = (prod?: ProductItem): { timestamp: string; dateStr: string } => {
+        const prodDateRaw = prod ? (prod as any).date || (prod as any).deliveredAt : '';
+        if (prodDateRaw) {
+          const dKey = getPlanDateKey({ createdAt: prodDateRaw } as DailyPlanItem) || todayYmd;
+          return {
+            timestamp: prodDateRaw.includes('T') ? prodDateRaw : `${dKey}T12:00:00.000Z`,
+            dateStr: dKey,
+          };
+        }
+        // If client has a close log (e.g. 2026-11-04) or lastPlanClosedAt, prefer that plan date
+        const closeTime = latestCloseLog?.timestamp || client.lastPlanClosedAt || '';
+        if (closeTime) {
+          const closeKey = getPlanDateKey({ createdAt: closeTime } as DailyPlanItem);
+          if (closeKey) {
+            return {
+              timestamp: closeTime.includes('T') ? closeTime : `${closeKey}T12:00:00.000Z`,
+              dateStr: closeKey,
+            };
+          }
+        }
+        const logTime = prodAddLog?.timestamp || client.updatedAt || client.createdAt || '';
+        const logKey = logTime
+          ? getPlanDateKey({ createdAt: logTime } as DailyPlanItem) || todayYmd
+          : todayYmd;
+        return {
+          timestamp: logTime && logTime.includes('T') ? logTime : `${logKey}T12:00:00.000Z`,
+          dateStr: logKey,
+        };
+      };
+
+      const inferPaymentFromLog = () => {
+        if (!prodAddLog) return { paymentType: 'qarz' };
+        const label = (prodAddLog.paymentMethodLabel || prodAddLog.details || '').toLowerCase();
+        if (label.includes('naqd')) return { paymentType: 'naqd', paidAmount: prodAddLog.amountChanged };
+        if (label.includes('bank')) return { paymentType: 'bank', paidAmount: prodAddLog.amountChanged };
+        if (label.includes('karta')) return { paymentType: 'karta', paidAmount: prodAddLog.amountChanged };
+        if (label.includes('qr')) return { paymentType: 'qr', paidAmount: prodAddLog.amountChanged };
+        return { paymentType: 'qarz', debtAmount: prodAddLog.amountChanged };
+      };
+
+      const matchingClientProducts = (client.products || []).filter((prod) =>
+        isMatchingProduct(product, prod)
+      );
+
+      if (matchingClientProducts.length > 0) {
+        matchingClientProducts.forEach((prod, idx) => {
+          const { timestamp: timeStr, dateStr: dStr } = inferClientDeliveryDate(prod);
+          const payInfo = inferPaymentFromLog();
+          const author =
+            prodAddLog?.author ||
+            latestCloseLog?.author ||
+            client.lastPlanClosedBy ||
+            client.createdBy ||
+            'adminc';
+
+          list.push({
+            id: `client_prod_${client.id}_${prod.id || idx}`,
+            timestamp: timeStr,
+            dateStr: dStr,
+            clientId: client.id,
+            clientName: client.name || 'Mijoz',
+            clientPhone: client.phone || '',
+            clientAddress: client.address || '',
+            clientRegion: client.region,
+            clientDistrict: client.district,
+            quantity: prod.quantity || 0,
+            unit: prod.unit || product.pieceUnitName || 'dona',
+            unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
+            totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
+            author,
+            paymentType: payInfo.paymentType,
+            paidAmount: payInfo.paidAmount,
+            debtAmount: payInfo.debtAmount,
+            reportNote: prodAddLog?.details,
+          });
+        });
+        clientsWithDelivery.add(client.id);
+      } else if (prodAddLog && prodAddLog.details) {
+        // Parse product_added log details if client.products was later modified
+        const m = prodAddLog.details.match(/(?:topshirildi|tahrirlandi):\s*(.+?)\.\s*(?:Qiymati|Jami):/i);
+        if (m && m[1]) {
+          const itemsRaw = m[1].split(',').map((s) => s.trim());
+          itemsRaw.forEach((itemStr, idx) => {
+            const itemMatch = itemStr.match(/^(.+?)\s*\(([\d.]+)\s*([^)]+)\)$/);
+            const parsedName = itemMatch ? itemMatch[1].trim() : itemStr;
+            const parsedQty = itemMatch ? parseFloat(itemMatch[2]) || 1 : 1;
+            const parsedUnit = itemMatch ? itemMatch[3].trim() : product.pieceUnitName || 'dona';
+            if (
+              isMatchingProduct(product, {
+                id: '',
+                name: parsedName,
+                quantity: parsedQty,
+                unit: parsedUnit,
+                unitPrice: 0,
+                totalPrice: 0,
+              })
+            ) {
+              const { timestamp: timeStr, dateStr: dStr } = inferClientDeliveryDate();
+              const payInfo = inferPaymentFromLog();
+              const unitPrice = product.minSellingPrice || product.price || 0;
+              list.push({
+                id: `client_log_${client.id}_${prodAddLog.id}_${idx}`,
+                timestamp: timeStr,
+                dateStr: dStr,
+                clientId: client.id,
+                clientName: client.name || 'Mijoz',
+                clientPhone: client.phone || '',
+                clientAddress: client.address || '',
+                clientRegion: client.region,
+                clientDistrict: client.district,
+                quantity: parsedQty,
+                unit: parsedUnit,
+                unitPrice,
+                totalPrice: Math.round(parsedQty * unitPrice * 100) / 100,
+                author: prodAddLog.author || client.lastPlanClosedBy || 'adminc',
+                paymentType: payInfo.paymentType,
+                paidAmount: payInfo.paidAmount,
+                debtAmount: payInfo.debtAmount,
+                reportNote: prodAddLog.details,
+              });
+              clientsWithDelivery.add(client.id);
+            }
+          });
+        }
+      }
+    });
+
     // Sort by timestamp descending
     return list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [product, resolvedPlans, resolvedClients, todayYmd]);
+  }, [product, resolvedPlans, resolvedClients, allWarehouseProducts, todayYmd]);
 
   // Filter records by date range and search query
   const filteredRecords = useMemo(() => {
@@ -533,41 +804,188 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* 4 KPI Summary Cards */}
-        <div className="p-4 bg-neutral-50 border-b border-neutral-200 grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0">
-          <div className="p-3.5 rounded-2xl bg-white border border-neutral-200 shadow-2xs">
-            <div className="text-[11px] text-neutral-500 font-medium">Jami topshirilgan:</div>
-            <div className="text-base sm:text-lg font-extrabold font-mono text-neutral-900 mt-0.5 tabular-nums">
-              {summary.formattedPieces}
-            </div>
-            {summary.subtext && (
-              <div className="text-[10px] text-emerald-800 font-semibold font-mono mt-0.5">
-                {summary.subtext}
+        {/* Dastlabki qoldiq, Tanlangan sanadagi qoldiq va Joriy holat panellari */}
+        {chronology && (
+          <div className="p-4 bg-gradient-to-r from-slate-50 via-neutral-50 to-rose-50/40 border-b border-neutral-200 space-y-3 shrink-0">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* 1. Baza yaratilganda kiritilgan dastlabki qoldiq */}
+              <div className="p-3.5 rounded-2xl bg-white border border-indigo-200/80 shadow-2xs">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[11px] font-bold text-indigo-800 uppercase tracking-wide">
+                    1. Baza yaratilganda (Dastlabki):
+                  </span>
+                  <span className="text-[10px] font-mono font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200">
+                    {formatDateDMY(chronology.initialDate)}
+                  </span>
+                </div>
+                <div className="text-base sm:text-lg font-extrabold font-mono text-indigo-950 mt-1 tabular-nums">
+                  {chronology.initialFormatted.primary}
+                </div>
+                <div className="text-[10.5px] text-neutral-600 font-mono mt-0.5">
+                  {chronology.initialFormatted.secondary}
+                </div>
               </div>
-            )}
-          </div>
 
-          <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 shadow-2xs">
-            <div className="text-[11px] text-emerald-700 font-medium">Jami qiymati / tushum:</div>
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-emerald-900 mt-0.5 tabular-nums">
-              {formatMoney(summary.totalSumUsd)}
+              {/* 2. Dastlabki qoldiq necha marta va qanday o'zgargani */}
+              <div
+                onClick={() => setActiveTab('initial_changes')}
+                className="p-3.5 rounded-2xl bg-amber-50/70 hover:bg-amber-50 border border-amber-200 shadow-2xs cursor-pointer transition"
+                title="Dastlabki qoldiq o'zgarishlari xronologiyasini ko'rish uchun bosing"
+              >
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wide">
+                    2. Dastlabki qoldiq tahriri:
+                  </span>
+                  <History className="w-3.5 h-3.5 text-amber-700" />
+                </div>
+                <div className="text-base sm:text-lg font-extrabold font-mono text-amber-950 mt-1 tabular-nums">
+                  {chronology.initialEditCount > 0
+                    ? `${chronology.initialEditCount} marta o'zgartirilgan`
+                    : "O'zgartirilmagan (Asl)"}
+                </div>
+                <div className="text-[10.5px] text-amber-800 font-semibold mt-0.5 flex items-center gap-1">
+                  <span>Jami yozuvlar: {chronology.initialAndEditLogs.length} ta</span>
+                  <span className="underline ml-auto">Batafsil ko'rish &rarr;</span>
+                </div>
+              </div>
+
+              {/* 3. Tanlangan sanadagi ombor qoldig'i */}
+              <div className="p-3.5 rounded-2xl bg-teal-50/80 border border-teal-300 shadow-2xs">
+                <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                  <span className="text-[11px] font-bold text-teal-900 uppercase tracking-wide flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-teal-700" />
+                    <span>3. Sanadagi qoldiq:</span>
+                  </span>
+                  <input
+                    type="date"
+                    value={snapshotDate}
+                    onChange={(e) => setSnapshotDate(e.target.value || todayYmd)}
+                    className="px-2 py-0.5 rounded-lg border border-teal-400 bg-white font-mono font-bold text-[11px] text-teal-950 outline-none focus:border-teal-700"
+                  />
+                </div>
+                {snapshotAtDate && (
+                  <>
+                    <div className="text-base sm:text-lg font-extrabold font-mono text-teal-950 mt-1 tabular-nums">
+                      {snapshotAtDate.primaryFormatted}
+                    </div>
+                    <div className="text-[10px] text-teal-800 font-mono mt-0.5">
+                      {snapshotAtDate.secondaryFormatted}
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-teal-900 font-semibold mt-1 pt-1 border-t border-teal-200/70">
+                      <span>Shu sanagacha sotilgan: {snapshotAtDate.soldUpToDatePieces} dona</span>
+                      {snapshotAtDate.soldOnDatePieces > 0 && (
+                        <span className="bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded font-mono font-bold">
+                          Shu kuni: -{snapshotAtDate.soldOnDatePieces}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* 4. Hozirgi joriy qoldiq va Jami sotilgan */}
+              <div className="p-3.5 rounded-2xl bg-emerald-50/80 border border-emerald-200 shadow-2xs">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wide">
+                    4. Hozirgi joriy qoldiq:
+                  </span>
+                  <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded-md">
+                    Sotilgan: {summary.formattedPieces}
+                  </span>
+                </div>
+                <div className="text-base sm:text-lg font-extrabold font-mono text-emerald-950 mt-1 tabular-nums">
+                  {chronology.currentFormatted.primary}
+                </div>
+                <div className="text-[10.5px] text-emerald-800 font-mono mt-0.5 flex items-center justify-between">
+                  <span>{chronology.currentFormatted.secondary}</span>
+                  <strong className="text-emerald-950">{formatMoney(summary.totalSumUsd)}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Bo'limlar tab tugmalari */}
+            <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
+              <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('all_chronology')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === 'all_chronology'
+                      ? 'bg-neutral-900 text-white shadow-2xs'
+                      : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5 text-rose-400" />
+                  <span>To'liq xronologiya va sotuvlar ({chronology.timelineEvents.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('initial_changes')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === 'initial_changes'
+                      ? 'bg-amber-700 text-white shadow-2xs'
+                      : 'bg-white text-amber-900 border border-amber-200 hover:bg-amber-50'
+                  }`}
+                >
+                  <History className="w-3.5 h-3.5" />
+                  <span>
+                    Dastlabki qoldiq va o'zgarishlar xronologiyasi ({chronology.initialAndEditLogs.length})
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('sales_only')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === 'sales_only'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  <Receipt className="w-3.5 h-3.5" />
+                  <span>Faqat mijozlarga sotuvlar ({filteredRecords.length})</span>
+                </button>
+              </div>
+
+              {/* Tezkor sana tanlash tugmalari (Sanadagi qoldiq uchun) */}
+              <div className="flex items-center gap-1 text-[11px]">
+                <span className="text-neutral-500 font-medium mr-1">Sanadagi qoldiq:</span>
+                <button
+                  type="button"
+                  onClick={() => setSnapshotDate(todayYmd)}
+                  className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
+                    snapshotDate === todayYmd
+                      ? 'bg-teal-700 text-white'
+                      : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  Bugun
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSnapshotDate(yesterdayYmd)}
+                  className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
+                    snapshotDate === yesterdayYmd
+                      ? 'bg-teal-700 text-white'
+                      : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  Kecha
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSnapshotDate(firstDayOfMonthYmd)}
+                  className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
+                    snapshotDate === firstDayOfMonthYmd
+                      ? 'bg-teal-700 text-white'
+                      : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  Oy boshi
+                </button>
+              </div>
             </div>
           </div>
-
-          <div className="p-3.5 rounded-2xl bg-white border border-neutral-200 shadow-2xs">
-            <div className="text-[11px] text-neutral-500 font-medium">Topshirishlar soni:</div>
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-neutral-900 mt-0.5 tabular-nums">
-              {summary.deliveryCount} marta
-            </div>
-          </div>
-
-          <div className="p-3.5 rounded-2xl bg-purple-50/70 border border-purple-200 shadow-2xs">
-            <div className="text-[11px] text-purple-700 font-medium">Topshirilgan mijozlar:</div>
-            <div className="text-lg sm:text-xl font-extrabold font-mono text-purple-900 mt-0.5 tabular-nums">
-              {summary.clientsCount} ta mijoz
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Filters and Date Range Picker Bar */}
         <div className="p-4 bg-white border-b border-neutral-200 space-y-3 shrink-0">
@@ -692,23 +1110,217 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
         </div>
 
         {/* Content Table / Mobile Cards */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          {filteredRecords.length === 0 ? (
-            <div className="text-center py-16 text-neutral-500 space-y-3">
-              <Package className="w-12 h-12 text-neutral-300 mx-auto" />
-              <div className="text-sm font-bold text-neutral-800">
-                Topshirilgan mahsulotlar ma'lumoti topilmadi
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {/* 1-BO'LIM: BAZA YARATILGANDA KIRITILGAN DASTLABKI QOLDIQ VA UNING O'ZGARISHLARI XRONOLOGIYASI */}
+          {chronology && (activeTab === 'all_chronology' || activeTab === 'initial_changes') && (
+            <div className="space-y-4">
+              {/* Dastlabki qoldiq va tahrirlar tarixi */}
+              <div className="rounded-2xl border border-amber-200 bg-amber-50/30 overflow-hidden shadow-2xs">
+                <div className="px-4 py-3 bg-amber-100/80 border-b border-amber-200 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <History className="w-4 h-4 text-amber-800" />
+                    <h3 className="text-xs sm:text-sm font-bold text-amber-950">
+                      Baza yaratilganda kiritilgan dastlabki qoldiq va tahrirlar tarixi
+                    </h3>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] font-bold">
+                    <span className="px-2.5 py-0.5 rounded-lg bg-white border border-amber-300 text-amber-950 font-mono">
+                      Dastlabki kiritilgan: {chronology.initialFormatted.primary} ({chronology.initialPieces} dona)
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-lg bg-amber-800 text-white font-mono">
+                      {chronology.initialEditCount > 0
+                        ? `${chronology.initialEditCount} marta o'zgartirilgan`
+                        : "O'zgartirilmagan"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto bg-white">
+                  <table className="w-full text-left text-xs text-neutral-900 border-collapse">
+                    <thead>
+                      <tr className="bg-amber-50/60 border-b border-amber-100 text-amber-950 font-bold uppercase tracking-wider text-[10.5px]">
+                        <th className="py-2.5 px-3 w-10 text-center">#</th>
+                        <th className="py-2.5 px-3">Sana va vaqt</th>
+                        <th className="py-2.5 px-3">Amal turi</th>
+                        <th className="py-2.5 px-3 text-center">Oldingi qoldiq</th>
+                        <th className="py-2.5 px-3 text-center">O'zgarish</th>
+                        <th className="py-2.5 px-3 text-center">Keyingi qoldiq</th>
+                        <th className="py-2.5 px-3 text-center">Kim tomonidan</th>
+                        <th className="py-2.5 px-3">Tafsilot / Izoh</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {chronology.initialAndEditLogs.map((log, idx) => {
+                        const isInitial = log.changeType === 'initial_intake';
+                        return (
+                          <tr key={log.id || idx} className="hover:bg-amber-50/20">
+                            <td className="py-2.5 px-3 text-center font-mono text-neutral-400">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono whitespace-nowrap font-bold text-neutral-800">
+                              {formatDateDMY(log.timestamp)}{' '}
+                              <span className="text-[10px] text-neutral-400">
+                                {log.timestamp.length > 10 ? log.timestamp.slice(11, 16) : ''}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10.5px] font-bold border ${
+                                  isInitial
+                                    ? 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                                    : 'bg-amber-50 text-amber-900 border-amber-200'
+                                }`}
+                              >
+                                {isInitial
+                                  ? 'Baza yaratilganda dastlabki kiritish'
+                                  : log.changeType === 'initial_edit'
+                                  ? "Dastlabki kirim miqdori o'zgartirildi"
+                                  : "Ombor qoldig'i qo'lda tahrirlandi"}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-mono text-neutral-600">
+                              {log.previousPieces.toLocaleString()} dona
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-mono font-extrabold">
+                              <span
+                                className={
+                                  log.deltaPieces > 0
+                                    ? 'text-emerald-700'
+                                    : log.deltaPieces < 0
+                                    ? 'text-rose-700'
+                                    : 'text-neutral-600'
+                                }
+                              >
+                                {log.deltaPieces > 0 ? `+${log.deltaPieces.toLocaleString()}` : log.deltaPieces.toLocaleString()} dona
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-mono font-extrabold text-indigo-950">
+                              {log.newPieces.toLocaleString()} dona
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              <span className="px-2 py-0.5 rounded-lg bg-neutral-100 border border-neutral-200 font-bold text-[11px]">
+                                {getAgentDisplayName(log.author || 'adminc')}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-neutral-600 text-[11px]">
+                              {log.note}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-              <p className="text-xs text-neutral-400 max-w-md mx-auto">
-                {dateFilter !== 'all' || searchQuery.trim()
-                  ? "Tanlangan sana yoki qidiruv bo'yicha hech qanday topshirilish qayd etilmagan. Filtrlarni o'zgartirib ko'ring."
-                  : "Ushbu mahsulot bo'yicha hali hech qanday topshirilish amaliyoti bajarilmagan."}
-              </p>
+
+              {/* Qadam-baqadam barcha qoldiq o'zgarishlari zanjiri (Dastlabki -> Tahrir -> Sotuv -> Qaytarish -> Joriy) */}
+              <div className="rounded-2xl border border-indigo-200 bg-white overflow-hidden shadow-2xs">
+                <div className="px-4 py-3 bg-indigo-50/80 border-b border-indigo-200 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-indigo-700" />
+                    <h3 className="text-xs sm:text-sm font-bold text-indigo-950">
+                      Qadam-baqadam qoldiq harakati xronologiyasi (Oldingi qoldiq &rarr; O'zgarish &rarr; Keyingi qoldiq)
+                    </h3>
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-indigo-800">
+                    Jami {chronology.timelineEvents.length} ta harakat
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto max-h-80">
+                  <table className="w-full text-left text-xs text-neutral-900 border-collapse">
+                    <thead className="sticky top-0 z-10 bg-indigo-50/95 border-b border-indigo-100 text-indigo-950 font-bold uppercase tracking-wider text-[10.5px]">
+                      <tr>
+                        <th className="py-2.5 px-3 w-10 text-center">#</th>
+                        <th className="py-2.5 px-3">Sana</th>
+                        <th className="py-2.5 px-3">Harakat / Mijoz</th>
+                        <th className="py-2.5 px-3 text-center">Oldingi qoldiq</th>
+                        <th className="py-2.5 px-3 text-center">O'zgarish</th>
+                        <th className="py-2.5 px-3 text-center">Keyingi qoldiq</th>
+                        <th className="py-2.5 px-3 text-center">Xodim</th>
+                        <th className="py-2.5 px-3">Tafsilot</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {chronology.timelineEvents.map((ev, idx) => (
+                        <tr key={ev.id || idx} className="hover:bg-indigo-50/20">
+                          <td className="py-2 px-3 text-center font-mono text-neutral-400">
+                            {idx + 1}
+                          </td>
+                          <td className="py-2 px-3 font-mono whitespace-nowrap font-bold text-neutral-800">
+                            {formatDateDMY(ev.timestamp)}
+                          </td>
+                          <td className="py-2 px-3 font-bold text-neutral-900">
+                            {ev.title}
+                          </td>
+                          <td className="py-2 px-3 text-center font-mono text-neutral-600">
+                            {ev.beforePieces.toLocaleString()} dona
+                          </td>
+                          <td className="py-2 px-3 text-center font-mono font-extrabold">
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded-md ${
+                                ev.deltaPieces > 0
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : ev.deltaPieces < 0
+                                  ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                  : 'bg-neutral-100 text-neutral-600'
+                              }`}
+                            >
+                              {ev.deltaPieces > 0
+                                ? `+${ev.deltaPieces.toLocaleString()}`
+                                : ev.deltaPieces.toLocaleString()}{' '}
+                              dona
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-center font-mono font-extrabold text-indigo-950">
+                            <div>{ev.afterPieces.toLocaleString()} dona</div>
+                            <div className="text-[10px] text-neutral-500 font-normal">
+                              ({ev.formattedAfter})
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 text-center">
+                            <span className="px-2 py-0.5 rounded-lg bg-neutral-100 text-[11px] font-bold">
+                              {getAgentDisplayName(ev.author || 'adminc')}
+                            </span>
+                          </td>
+                          <td className="py-2 px-3 text-[11px] text-neutral-600 max-w-xs">
+                            {ev.description}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
-          ) : (
-            <>
-              {/* Desktop Table View (>= 768px) */}
-              <div className="hidden md:block rounded-2xl border border-neutral-200 overflow-hidden shadow-2xs bg-white">
+          )}
+
+          {/* 2-BO'LIM: MIJOZLARGA TOPSHIRILGAN (SOTILGAN) MAHSULOTLAR JADVALI */}
+          {(activeTab === 'all_chronology' || activeTab === 'sales_only') && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs sm:text-sm font-bold text-neutral-900 flex items-center gap-2">
+                  <Receipt className="w-4 h-4 text-rose-600" />
+                  <span>Mijozlarga topshirilgan (sotilgan) mahsulotlar ro'yxati ({filteredRecords.length} ta)</span>
+                </h3>
+              </div>
+
+              {filteredRecords.length === 0 ? (
+                <div className="text-center py-12 text-neutral-500 space-y-3 bg-neutral-50 rounded-2xl border border-neutral-200">
+                  <Package className="w-10 h-10 text-neutral-300 mx-auto" />
+                  <div className="text-sm font-bold text-neutral-800">
+                    Topshirilgan mahsulotlar ma'lumoti topilmadi
+                  </div>
+                  <p className="text-xs text-neutral-400 max-w-md mx-auto">
+                    {dateFilter !== 'all' || searchQuery.trim()
+                      ? "Tanlangan sana yoki qidiruv bo'yicha hech qanday topshirilish qayd etilmagan. Filtrlarni o'zgartirib ko'ring."
+                      : "Ushbu mahsulot bo'yicha hali hech qanday topshirilish amaliyoti bajarilmagan."}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* Desktop Table View (>= 768px) */}
+                  <div className="hidden md:block rounded-2xl border border-neutral-200 overflow-hidden shadow-2xs bg-white">
                 <StickyTableWrapper>
                   <table className="w-full text-left text-xs text-neutral-900 border-collapse">
                     <thead className="sticky top-0 z-20">
@@ -915,6 +1527,8 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                 })}
               </div>
             </>
+          )}
+            </div>
           )}
         </div>
 

@@ -16,9 +16,12 @@ import {
   Eye,
   EyeOff,
   History,
+  RotateCcw,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
+import { storageService } from '../services/storage';
 import { formatWarehouseStock, calculateProfitMargin, formatNumber, formatMoney } from '../utils/format';
+import { buildWarehouseProductChronology, ProductChronologyResult } from '../utils/warehouseChronology';
 import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
 
 interface Props {
@@ -40,14 +43,44 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('all');
+  const [snapshotDate, setSnapshotDate] = useState<string>('');
   const [confirmDeleteProduct, setConfirmDeleteProduct] = useState<WarehouseProduct | null>(null);
   const [selectedProductForHistory, setSelectedProductForHistory] = useState<WarehouseProduct | null>(null);
   const [showAllPrices, setShowAllPrices] = useState(false);
   const [revealedPriceIds, setRevealedPriceIds] = useState<Record<string, boolean>>({});
 
+  const formatYMD = (d: Date): string => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  const todayYmd = useMemo(() => formatYMD(new Date()), []);
+  const yesterdayYmd = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return formatYMD(d);
+  }, []);
+  const firstDayOfMonthYmd = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  }, []);
+
   const toggleProductPriceVisibility = (id: string) => {
     setRevealedPriceIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
+
+  const chronologyMap = useMemo(() => {
+    const map = new Map<string, ProductChronologyResult>();
+    if (!isOpen) return map;
+    const plans = storageService.getDailyPlans() || [];
+    const clients = storageService.getClients() || [];
+    products.forEach((p) => {
+      map.set(p.id, buildWarehouseProductChronology(p, plans, clients, undefined, products));
+    });
+    return map;
+  }, [isOpen, products]);
 
   const uniqueBrands = useMemo(() => {
     const set = new Set<string>();
@@ -73,12 +106,34 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
   }, [products, searchQuery, selectedBrand]);
 
   const totalInventorySum = useMemo(() => {
-    return filteredProducts.reduce((acc, p) => acc + (p.totalSum || 0), 0);
-  }, [filteredProducts]);
+    return filteredProducts.reduce((acc, p) => {
+      if (!snapshotDate) return acc + (p.totalSum || 0);
+      const chron = chronologyMap.get(p.id);
+      const snap = chron ? chron.getStockAtDate(snapshotDate) : null;
+      const pieces = snap ? snap.pieces : p.totalPieces || 0;
+      const costPerPiece =
+        p.pricingUnitType === 'package' && (p.piecesPerPackage || 1) > 1
+          ? (p.price || 0) / (p.piecesPerPackage || 1)
+          : p.price || 0;
+      return acc + Math.round(pieces * costPerPiece * 100) / 100;
+    }, 0);
+  }, [filteredProducts, snapshotDate, chronologyMap]);
 
   const totalInventoryPieces = useMemo(() => {
-    return filteredProducts.reduce((acc, p) => acc + (p.totalPieces || 0), 0);
-  }, [filteredProducts]);
+    return filteredProducts.reduce((acc, p) => {
+      if (!snapshotDate) return acc + (p.totalPieces || 0);
+      const chron = chronologyMap.get(p.id);
+      const snap = chron ? chron.getStockAtDate(snapshotDate) : null;
+      return acc + (snap ? snap.pieces : p.totalPieces || 0);
+    }, 0);
+  }, [filteredProducts, snapshotDate, chronologyMap]);
+
+  const totalInitialPieces = useMemo(() => {
+    return filteredProducts.reduce((acc, p) => {
+      const chron = chronologyMap.get(p.id);
+      return acc + (chron ? chron.initialPieces : p.initialTotalPieces || p.totalPieces || 0);
+    }, 0);
+  }, [filteredProducts, chronologyMap]);
 
   if (!isOpen) return null;
 
@@ -102,7 +157,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                 </span>
               </h2>
               <p className="text-xs text-neutral-300">
-                Omborga kiritilgan barcha mahsulotlar va ularning hisob-kitoblari
+                Omborga kiritilgan barcha mahsulotlar, dastlabki qoldiq va sana bo'yicha zaxira tahlili
               </p>
             </div>
           </div>
@@ -129,62 +184,125 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
         </div>
 
         {/* Filter and KPI bar */}
-        <div className="p-4 bg-neutral-50 border-b border-neutral-200 flex flex-col sm:flex-row gap-3 items-center justify-between shrink-0">
-          <div className="flex flex-1 items-center gap-2 w-full sm:w-auto">
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Mahsulot nomi yoki brend bo'yicha qidirish..."
-                className="w-full pl-9 pr-3 py-2 bg-white rounded-xl border border-neutral-300 text-xs sm:text-sm focus:outline-neutral-800"
-              />
+        <div className="p-4 bg-neutral-50 border-b border-neutral-200 space-y-3 shrink-0">
+          <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
+            <div className="flex flex-1 items-center gap-2 w-full sm:w-auto">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Mahsulot nomi yoki brend bo'yicha qidirish..."
+                  className="w-full pl-9 pr-3 py-2 bg-white rounded-xl border border-neutral-300 text-xs sm:text-sm focus:outline-neutral-800"
+                />
+              </div>
+
+              {uniqueBrands.length > 0 && (
+                <select
+                  value={selectedBrand}
+                  onChange={(e) => setSelectedBrand(e.target.value)}
+                  className="px-3 py-2 bg-white rounded-xl border border-neutral-300 text-xs font-medium focus:outline-neutral-800"
+                >
+                  <option value="all">Barcha brendlar ({uniqueBrands.length})</option>
+                  {uniqueBrands.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
-            {uniqueBrands.length > 0 && (
-              <select
-                value={selectedBrand}
-                onChange={(e) => setSelectedBrand(e.target.value)}
-                className="px-3 py-2 bg-white rounded-xl border border-neutral-300 text-xs font-medium focus:outline-neutral-800"
+            <div className="flex items-center gap-2 flex-wrap shrink-0 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setShowAllPrices((prev) => !prev)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold transition cursor-pointer shadow-2xs ${
+                  showAllPrices
+                    ? 'bg-indigo-700 text-white border-indigo-700'
+                    : 'bg-white hover:bg-indigo-50 text-indigo-900 border-indigo-200'
+                }`}
+                title={
+                  showAllPrices
+                    ? 'Kirim va minimal sotilish narxlarini yashirish'
+                    : "Kirim va minimal sotilish narxlarini ko'rsatish"
+                }
               >
-                <option value="all">Barcha brendlar ({uniqueBrands.length})</option>
-                {uniqueBrands.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            )}
+                {showAllPrices ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                <span>{showAllPrices ? 'Narxlarni yashirish' : "Narxlarni ko'rish"}</span>
+              </button>
+
+              <div className="px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 shadow-2xs">
+                <span className="text-indigo-700 mr-1.5">Dastlabki jami:</span>
+                <span className="text-indigo-950 font-bold font-mono">{totalInitialPieces.toLocaleString()} dona</span>
+              </div>
+
+              <div className="px-3 py-1.5 rounded-xl bg-white border border-neutral-200 shadow-2xs">
+                <span className="text-neutral-500 mr-1.5">
+                  {snapshotDate ? `${snapshotDate} dagi qoldiq:` : 'Joriy qoldiq:'}
+                </span>
+                <span className="text-emerald-900 font-bold font-mono">{totalInventoryPieces.toLocaleString()} dona</span>
+              </div>
+              {showAllPrices && (
+                <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 shadow-2xs">
+                  <span className="text-emerald-700 mr-1.5">Jami qiymat:</span>
+                  <span className="font-bold font-mono">{totalInventorySum.toLocaleString()} USD</span>
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="flex items-center gap-2.5 flex-wrap shrink-0 text-xs font-semibold">
-            <button
-              type="button"
-              onClick={() => setShowAllPrices((prev) => !prev)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold transition cursor-pointer shadow-2xs ${
-                showAllPrices
-                  ? 'bg-indigo-700 text-white border-indigo-700'
-                  : 'bg-white hover:bg-indigo-50 text-indigo-900 border-indigo-200'
-              }`}
-              title={
-                showAllPrices
-                  ? 'Kirim va minimal sotilish narxlarini yashirish'
-                  : "Kirim va minimal sotilish narxlarini ko'rsatish"
-              }
-            >
-              {showAllPrices ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              <span>{showAllPrices ? 'Narxlarni yashirish' : "Narxlarni ko'rish"}</span>
-            </button>
-
-            <div className="px-3 py-1.5 rounded-xl bg-white border border-neutral-200 shadow-2xs">
-              <span className="text-neutral-500 mr-1.5">Jami dona:</span>
-              <span className="text-neutral-900 font-bold">{totalInventoryPieces.toLocaleString()}</span>
+          {/* Sana bo'yicha ombor qoldig'ini ko'rish paneli */}
+          <div className="p-2.5 rounded-2xl bg-teal-50/70 border border-teal-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-teal-950 flex items-center gap-1.5">
+                <Calendar className="w-4 h-4 text-teal-700" />
+                <span>Ma'lum bir sanadagi ombor qoldig'ini ko'rish:</span>
+              </span>
+              <input
+                type="date"
+                value={snapshotDate}
+                onChange={(e) => setSnapshotDate(e.target.value)}
+                className="px-2.5 py-1 rounded-xl border border-teal-300 bg-white font-mono font-bold text-teal-950 outline-none focus:border-teal-600"
+              />
+              <button
+                type="button"
+                onClick={() => setSnapshotDate('')}
+                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                  !snapshotDate
+                    ? 'bg-teal-800 text-white shadow-2xs'
+                    : 'bg-white text-teal-900 border border-teal-200 hover:bg-teal-100'
+                }`}
+              >
+                Hozirgi (Joriy)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSnapshotDate(yesterdayYmd)}
+                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                  snapshotDate === yesterdayYmd
+                    ? 'bg-teal-800 text-white shadow-2xs'
+                    : 'bg-white text-teal-900 border border-teal-200 hover:bg-teal-100'
+                }`}
+              >
+                Kecha
+              </button>
+              <button
+                type="button"
+                onClick={() => setSnapshotDate(firstDayOfMonthYmd)}
+                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                  snapshotDate === firstDayOfMonthYmd
+                    ? 'bg-teal-800 text-white shadow-2xs'
+                    : 'bg-white text-teal-900 border border-teal-200 hover:bg-teal-100'
+                }`}
+              >
+                Oy boshi ({firstDayOfMonthYmd})
+              </button>
             </div>
-            {showAllPrices && (
-              <div className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 shadow-2xs">
-                <span className="text-emerald-700 mr-1.5">Jami qiymat:</span>
-                <span className="font-bold font-mono">{totalInventorySum.toLocaleString()} USD</span>
+            {snapshotDate && (
+              <div className="text-[11px] font-bold text-teal-900 bg-white px-2.5 py-1 rounded-xl border border-teal-200">
+                Tanlangan sana: <span className="font-mono text-teal-800">{snapshotDate}</span> yakunidagi qoldiq ko'rsatilmoqda
               </div>
             )}
           </div>
@@ -288,10 +406,10 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                         type="button"
                         onClick={() => setSelectedProductForHistory(p)}
                         className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition cursor-pointer"
-                        title="Mahsulot topshirilish tarixini ko'rish"
+                        title="Mahsulot topshirilish va dastlabki qoldiq xronologiyasini ko'rish"
                       >
                         <History className="w-3.5 h-3.5" />
-                        <span>Topshirilish tarixi</span>
+                        <span>Xronologiya va tarix</span>
                       </button>
                       <button
                         type="button"
@@ -313,176 +431,212 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                     </div>
                   </div>
 
-                  {/* Details grid with all dimensions & profit margin */}
+                  {/* Details grid with all dimensions, initial stock, date snapshot & profit margin */}
                   {(() => {
-                    const stockInfo = formatWarehouseStock(p);
+                    const chron = chronologyMap.get(p.id);
+                    const snap = snapshotDate && chron ? chron.getStockAtDate(snapshotDate) : null;
+                    const stockInfo = snap
+                      ? { primary: snap.primaryFormatted, secondary: snap.secondaryFormatted }
+                      : formatWarehouseStock(p);
                     const marginInfo = calculateProfitMargin(p);
                     const isPriceVisible = showAllPrices || Boolean(revealedPriceIds[p.id]);
 
                     return (
-                      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 pt-3 text-xs">
-                        {/* 1. Birlamchi o'lcham */}
-                        <div>
-                          <span className="text-neutral-500 block text-[11px]">Birlamchi o'lcham:</span>
-                          <span className="font-semibold text-neutral-800">
-                            1 ta {p.pieceUnitName} = {p.volumePerPiece} {p.baseUnit}
-                          </span>
-                        </div>
-
-                        {/* 2. Katta o'lcham */}
-                        <div>
-                          <span className="text-neutral-500 block text-[11px]">Katta o'lcham:</span>
-                          <span className="font-semibold text-neutral-800">
-                            {p.packageUnitName
-                              ? `1 ${p.packageUnitName} = ${p.piecesPerPackage} dona`
-                              : "Donalab"}
-                          </span>
-                        </div>
-
-                        {/* 3. Ombordagi qoldiq (Barcha o'lchamlarda: korobka va dona, hajm) */}
-                        <div className="col-span-2 sm:col-span-1">
-                          <span className="text-neutral-500 block text-[11px] font-bold">
-                            Ombordagi qoldiq:
-                          </span>
-                          <span className="font-extrabold text-emerald-800 text-xs sm:text-sm block">
-                            {stockInfo.primary}
-                          </span>
-                          <span className="text-[10px] text-neutral-500 font-medium block">
-                            {stockInfo.secondary}
-                          </span>
-                        </div>
-
-                        {/* 4. Sotib olish (kirim) narxi */}
-                        <div>
-                          <div className="flex items-center gap-1">
-                            <span className="text-neutral-500 block text-[11px]">
-                              Sotib olish (kirim):
+                      <div className="space-y-2.5 pt-3">
+                        <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 text-xs">
+                          {/* 1. Birlamchi o'lcham */}
+                          <div>
+                            <span className="text-neutral-500 block text-[11px]">Birlamchi o'lcham:</span>
+                            <span className="font-semibold text-neutral-800">
+                              1 ta {p.pieceUnitName} = {p.volumePerPiece} {p.baseUnit}
                             </span>
-                            <button
-                              type="button"
-                              onClick={() => toggleProductPriceVisibility(p.id)}
-                              className="text-neutral-400 hover:text-neutral-800 p-0.5 rounded cursor-pointer"
-                              title="Ko'rish / Yashirish"
-                            >
-                              {isPriceVisible ? (
-                                <EyeOff className="w-3 h-3" />
-                              ) : (
-                                <Eye className="w-3 h-3" />
-                              )}
-                            </button>
                           </div>
-                          {isPriceVisible ? (
-                            p.price > 0 ? (
-                              <div>
-                                <span className="font-bold font-mono text-neutral-900">
-                                  {p.price.toLocaleString()} USD
+
+                          {/* 2. Baza yaratilganda dastlabki qoldiq */}
+                          <div>
+                            <span className="text-indigo-700 font-bold block text-[11px]">
+                              Dastlabki kiritilgan:
+                            </span>
+                            <span className="font-extrabold text-indigo-950 font-mono text-xs sm:text-sm block">
+                              {chron ? chron.initialFormatted.primary : `${p.initialTotalPieces || p.totalPieces} dona`}
+                            </span>
+                            <span className="text-[10px] text-neutral-500 font-mono block">
+                              {chron ? chron.initialFormatted.secondary : ''}
+                            </span>
+                            {chron && chron.initialEditCount > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedProductForHistory(p)}
+                                className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold cursor-pointer hover:bg-amber-200"
+                              >
+                                <History className="w-2.5 h-2.5" />
+                                <span>{chron.initialEditCount} marta o'zgargan</span>
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-emerald-700 font-semibold block">
+                                O'zgartirilmagan (Asl)
+                              </span>
+                            )}
+                          </div>
+
+                          {/* 3. Ombordagi qoldiq (Hozirgi yoki tanlangan sanadagi) */}
+                          <div className="col-span-2 sm:col-span-1">
+                            <span
+                              className={`block text-[11px] font-bold ${
+                                snapshotDate ? 'text-teal-800' : 'text-neutral-600'
+                              }`}
+                            >
+                              {snapshotDate ? `${snapshotDate} dagi qoldiq:` : 'Hozirgi qoldiq:'}
+                            </span>
+                            <span
+                              className={`font-extrabold text-xs sm:text-sm font-mono block ${
+                                snapshotDate ? 'text-teal-900' : 'text-emerald-800'
+                              }`}
+                            >
+                              {stockInfo.primary}
+                            </span>
+                            <span className="text-[10px] text-neutral-500 font-medium block">
+                              {stockInfo.secondary}
+                            </span>
+                            {snap && (
+                              <span className="text-[10px] text-teal-800 font-semibold block mt-0.5">
+                                Shu sanagacha sotilgan: {snap.soldUpToDatePieces} dona
+                              </span>
+                            )}
+                          </div>
+
+                          {/* 4. Sotib olish (kirim) narxi */}
+                          <div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-neutral-500 block text-[11px]">
+                                Sotib olish (kirim):
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleProductPriceVisibility(p.id)}
+                                className="text-neutral-400 hover:text-neutral-800 p-0.5 rounded cursor-pointer"
+                                title="Ko'rish / Yashirish"
+                              >
+                                {isPriceVisible ? (
+                                  <EyeOff className="w-3 h-3" />
+                                ) : (
+                                  <Eye className="w-3 h-3" />
+                                )}
+                              </button>
+                            </div>
+                            {isPriceVisible ? (
+                              p.price > 0 ? (
+                                <div>
+                                  <span className="font-bold font-mono text-neutral-900">
+                                    {p.price.toLocaleString()} USD
+                                  </span>
+                                  <span className="text-[10px] text-neutral-500 block">
+                                    (1{' '}
+                                    {p.pricingUnitType === 'package' && p.packageUnitName
+                                      ? p.packageUnitName
+                                      : p.pieceUnitName || 'dona'}
+                                    )
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-[10px] font-medium text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block">
+                                  Narxsiz (o'tkazilgan)
+                                </span>
+                              )
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => toggleProductPriceVisibility(p.id)}
+                                className="mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-semibold text-[11px] border border-neutral-200 cursor-pointer"
+                              >
+                                <Eye className="w-3 h-3 text-neutral-600" />
+                                <span>Ko'rish</span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* 5. Eng kam sotilish narxi */}
+                          <div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-indigo-700 font-semibold block text-[11px]">
+                                Eng kam sotilish:
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => toggleProductPriceVisibility(p.id)}
+                                className="text-indigo-400 hover:text-indigo-800 p-0.5 rounded cursor-pointer"
+                                title="Ko'rish / Yashirish"
+                              >
+                                {isPriceVisible ? (
+                                  <EyeOff className="w-3 h-3" />
+                                ) : (
+                                  <Eye className="w-3 h-3" />
+                                )}
+                              </button>
+                            </div>
+                            {isPriceVisible ? (
+                              <>
+                                <span className="font-bold font-mono text-indigo-900">
+                                  {(p.minSellingPrice !== undefined
+                                    ? p.minSellingPrice
+                                    : p.price || 0
+                                  ).toLocaleString()}{' '}
+                                  USD
                                 </span>
                                 <span className="text-[10px] text-neutral-500 block">
                                   (1{' '}
-                                  {p.pricingUnitType === 'package' && p.packageUnitName
+                                  {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' &&
+                                  p.packageUnitName
                                     ? p.packageUnitName
                                     : p.pieceUnitName || 'dona'}
                                   )
                                 </span>
-                              </div>
+                              </>
                             ) : (
-                              <span className="text-[10px] font-medium text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 inline-block">
-                                Narxsiz (o'tkazilgan)
-                              </span>
-                            )
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => toggleProductPriceVisibility(p.id)}
-                              className="mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-semibold text-[11px] border border-neutral-200 cursor-pointer"
-                            >
-                              <Eye className="w-3 h-3 text-neutral-600" />
-                              <span>Ko'rish</span>
-                            </button>
-                          )}
-                        </div>
-
-                        {/* 5. Eng kam sotilish narxi */}
-                        <div>
-                          <div className="flex items-center gap-1">
-                            <span className="text-indigo-700 font-semibold block text-[11px]">
-                              Eng kam sotilish:
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => toggleProductPriceVisibility(p.id)}
-                              className="text-indigo-400 hover:text-indigo-800 p-0.5 rounded cursor-pointer"
-                              title="Ko'rish / Yashirish"
-                            >
-                              {isPriceVisible ? (
-                                <EyeOff className="w-3 h-3" />
-                              ) : (
-                                <Eye className="w-3 h-3" />
-                              )}
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() => toggleProductPriceVisibility(p.id)}
+                                className="mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 font-semibold text-[11px] border border-indigo-200 cursor-pointer"
+                              >
+                                <Eye className="w-3 h-3 text-indigo-700" />
+                                <span>Ko'rish</span>
+                              </button>
+                            )}
                           </div>
-                          {isPriceVisible ? (
-                            <>
-                              <span className="font-bold font-mono text-indigo-900">
-                                {(p.minSellingPrice !== undefined
-                                  ? p.minSellingPrice
-                                  : p.price || 0
-                                ).toLocaleString()}{' '}
-                                USD
-                              </span>
-                              <span className="text-[10px] text-neutral-500 block">
-                                (1{' '}
-                                {(p.minSellingPricingUnitType || p.pricingUnitType) === 'package' &&
-                                p.packageUnitName
-                                  ? p.packageUnitName
-                                  : p.pieceUnitName || 'dona'}
-                                )
-                              </span>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => toggleProductPriceVisibility(p.id)}
-                              className="mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 font-semibold text-[11px] border border-indigo-200 cursor-pointer"
-                            >
-                              <Eye className="w-3 h-3 text-indigo-700" />
-                              <span>Ko'rish</span>
-                            </button>
-                          )}
-                        </div>
 
-                        {/* 6. Foyda marjasi */}
-                        <div>
-                          <span className="text-neutral-500 block text-[11px]">Foyda marjasi:</span>
-                          {isPriceVisible ? (
-                            marginInfo.hasCost ? (
-                              <div className="mt-0.5">
-                                <span
-                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10.5px] border ${
-                                    marginInfo.marginPercent >= 0
-                                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                      : 'bg-rose-100 text-rose-800 border-rose-300'
-                                  }`}
-                                >
-                                  <TrendingUp className="w-3 h-3" />
-                                  <span>
-                                    {marginInfo.marginPercent >= 0 ? `+` : ``}
-                                    {marginInfo.marginPercent.toFixed(1)}%
+                          {/* 6. Foyda marjasi */}
+                          <div>
+                            <span className="text-neutral-500 block text-[11px]">Foyda marjasi:</span>
+                            {isPriceVisible ? (
+                              marginInfo.hasCost ? (
+                                <div className="mt-0.5">
+                                  <span
+                                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10.5px] border ${
+                                      marginInfo.marginPercent >= 0
+                                        ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                        : 'bg-rose-100 text-rose-800 border-rose-300'
+                                    }`}
+                                  >
+                                    <TrendingUp className="w-3 h-3" />
+                                    <span>
+                                      {marginInfo.marginPercent >= 0 ? `+` : ``}
+                                      {marginInfo.marginPercent.toFixed(1)}%
+                                    </span>
                                   </span>
+                                  <span className="text-[10px] font-mono text-emerald-800 block mt-0.5">
+                                    {marginInfo.profitPerPiece >= 0 ? `+` : ``}
+                                    {marginInfo.profitPerPiece.toFixed(2)} USD/dona
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="text-[10.5px] text-neutral-400 italic">
+                                  Tannarxsiz
                                 </span>
-                                <span className="text-[10px] font-mono text-emerald-800 block mt-0.5">
-                                  {marginInfo.profitPerPiece >= 0 ? `+` : ``}
-                                  {marginInfo.profitPerPiece.toFixed(2)} USD/dona
-                                </span>
-                              </div>
+                              )
                             ) : (
-                              <span className="text-[10.5px] text-neutral-400 italic">
-                                Tannarxsiz
-                              </span>
-                            )
-                          ) : (
-                            <span className="text-[11px] text-neutral-400 font-mono">•••</span>
-                          )}
+                              <span className="text-[11px] text-neutral-400 font-mono">•••</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );

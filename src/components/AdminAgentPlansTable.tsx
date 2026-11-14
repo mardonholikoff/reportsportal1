@@ -210,14 +210,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
   const matchesPlanDate = (p: DailyPlanItem, targetDateStr: string): boolean => {
     if (!targetDateStr) return true;
     const pDate = getPlanDateKey(p);
-    const pRawDate = (p.planDate || p.createdAt || '').slice(0, 10);
     const pClosedDate = getClosedDateKey(p);
-    const pRawClosedDate = ((p as any).closedDisplayDate || p.closedAt || '').slice(0, 10);
+    const effectiveDate = pClosedDate || pDate || (p.planDate || p.createdAt || '').slice(0, 10);
     return (
-      pDate === targetDateStr ||
-      pRawDate === targetDateStr ||
-      pClosedDate === targetDateStr ||
-      pRawClosedDate === targetDateStr
+      effectiveDate === targetDateStr || pDate === targetDateStr || pClosedDate === targetDateStr
     );
   };
 

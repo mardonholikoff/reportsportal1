@@ -34,8 +34,11 @@ import {
   ClientDailyMatrixRow,
 } from '../utils/exportClientDailyActionsMatrixExcel';
 import { StickyTableWrapper } from './StickyTableWrapper';
+import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
+import { buildWarehouseProductChronology, ProductChronologyResult } from '../utils/warehouseChronology';
 import {
   Package,
+  History,
   Search,
   ArrowUpDown,
   ArrowUp,
@@ -147,6 +150,27 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [block1Page, setBlock1Page] = useState<number>(1);
   const [block1PageSize, setBlock1PageSize] = useState<number | 'all'>(50);
   const [confirmDeleteWarehouseProduct, setConfirmDeleteWarehouseProduct] = useState<WarehouseProduct | null>(null);
+  const [historyProduct, setHistoryProduct] = useState<WarehouseProduct | null>(null);
+  const [block1SnapshotDate, setBlock1SnapshotDate] = useState<string>('');
+
+  const block1ChronologyMap = useMemo(() => {
+    const map = new Map<string, ProductChronologyResult>();
+    const plansForChron = propPlans !== undefined ? propPlans : storageService.getDailyPlans();
+    const clientsForChron = propClients !== undefined ? propClients : storageService.getClients();
+    internalProducts.forEach((p) => {
+      map.set(
+        p.id,
+        buildWarehouseProductChronology(p, plansForChron, clientsForChron, undefined, internalProducts)
+      );
+    });
+    return map;
+  }, [internalProducts, propPlans, propClients]);
+
+  const getBlock1EffectivePieces = (p: WarehouseProduct): number => {
+    if (!block1SnapshotDate) return p.totalPieces || 0;
+    const chron = block1ChronologyMap.get(p.id);
+    return chron ? chron.getStockAtDate(block1SnapshotDate).pieces : p.totalPieces || 0;
+  };
 
   const uniqueBrands = useMemo(() => {
     const set = new Set<string>();
@@ -196,7 +220,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         if (!matchesType) return false;
       }
 
-      const pieces = p.totalPieces || 0;
+      const pieces = getBlock1EffectivePieces(p);
       if (stockStatusFilter === 'in_stock' && pieces <= 0) return false;
       if (stockStatusFilter === 'low_stock' && (pieces <= 0 || pieces > 10)) return false;
       if (stockStatusFilter === 'out_of_stock' && pieces > 0) return false;
@@ -205,17 +229,26 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     });
 
     if (stockSortMode === 'desc') {
-      list.sort((a, b) => (b.totalPieces || 0) - (a.totalPieces || 0));
+      list.sort((a, b) => getBlock1EffectivePieces(b) - getBlock1EffectivePieces(a));
     } else if (stockSortMode === 'asc') {
-      list.sort((a, b) => (a.totalPieces || 0) - (b.totalPieces || 0));
+      list.sort((a, b) => getBlock1EffectivePieces(a) - getBlock1EffectivePieces(b));
     }
 
     return list;
-  }, [internalProducts, deferredStockSearch, selectedBrand, selectedType, stockStatusFilter, stockSortMode]);
+  }, [
+    internalProducts,
+    deferredStockSearch,
+    selectedBrand,
+    selectedType,
+    stockStatusFilter,
+    stockSortMode,
+    block1SnapshotDate,
+    block1ChronologyMap,
+  ]);
 
   useEffect(() => {
     setBlock1Page(1);
-  }, [deferredStockSearch, selectedBrand, selectedType, stockStatusFilter, stockSortMode, block1PageSize]);
+  }, [deferredStockSearch, selectedBrand, selectedType, stockStatusFilter, stockSortMode, block1PageSize, block1SnapshotDate]);
 
   const block1TotalPages = block1PageSize === 'all' ? 1 : Math.max(1, Math.ceil(filteredProducts.length / block1PageSize));
   const safeBlock1Page = Math.min(block1Page, block1TotalPages);
@@ -227,12 +260,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
   const stockStats = useMemo(() => {
     let totalPieces = 0;
+    let totalInitialPieces = 0;
     let lowStockCount = 0;
     let outOfStockCount = 0;
 
     internalProducts.forEach((p) => {
-      const pcs = p.totalPieces || 0;
+      const pcs = getBlock1EffectivePieces(p);
+      const chron = block1ChronologyMap.get(p.id);
       totalPieces += pcs;
+      totalInitialPieces += chron ? chron.initialPieces : p.initialTotalPieces || p.totalPieces || 0;
       if (pcs <= 0) {
         outOfStockCount++;
       } else if (pcs <= 10) {
@@ -243,10 +279,11 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     return {
       totalProducts: internalProducts.length,
       totalPieces,
+      totalInitialPieces,
       lowStockCount,
       outOfStockCount,
     };
-  }, [internalProducts]);
+  }, [internalProducts, block1SnapshotDate, block1ChronologyMap]);
 
   const handleExportStockExcel = async () => {
     try {
@@ -2016,7 +2053,13 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     internalClients.forEach((client) => {
       if (!client.logs || client.logs.length === 0) return;
       client.logs.forEach((log) => {
-        if (log.type === 'visit_action' || log.type === 'product_added') return;
+        if (
+          log.type === 'visit_action' ||
+          log.type === 'product_added' ||
+          String(log.id || '').endsWith('_fin')
+        ) {
+          return;
+        }
         const isConverted = Boolean(log.amountUzs && log.amountUzs > 0);
         const isPaymentLog =
           isConverted ||
@@ -2623,7 +2666,16 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
               </div>
 
               <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
-                <div className="text-[10px] text-neutral-300 uppercase font-semibold">Jami qoldiq</div>
+                <div className="text-[10px] text-indigo-300 uppercase font-semibold">Dastlabki kiritilgan</div>
+                <div className="text-sm sm:text-base font-bold font-mono text-indigo-200">
+                  {formatNumber(stockStats.totalInitialPieces)} dona
+                </div>
+              </div>
+
+              <div className="bg-white/10 backdrop-blur-xs px-3 py-1.5 rounded-xl border border-white/10">
+                <div className="text-[10px] text-neutral-300 uppercase font-semibold">
+                  {block1SnapshotDate ? `${block1SnapshotDate} dagi qoldiq` : 'Joriy qoldiq'}
+                </div>
                 <div className="text-sm sm:text-base font-bold font-mono text-emerald-300">
                   {formatNumber(stockStats.totalPieces)} dona
                 </div>
@@ -2694,70 +2746,175 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                 </select>
               </div>
             </div>
+
+            {/* Sana bo'yicha ombor qoldig'ini ko'rish paneli */}
+            <div className="p-2.5 rounded-2xl bg-teal-50/80 border border-teal-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-teal-950 flex items-center gap-1.5">
+                  <Calendar className="w-4 h-4 text-teal-700" />
+                  <span>Ma'lum bir sanani tanlab shu vaqtdagi qoldiqni ko'rish:</span>
+                </span>
+                <input
+                  type="date"
+                  value={block1SnapshotDate}
+                  onChange={(e) => setBlock1SnapshotDate(e.target.value)}
+                  className="px-2.5 py-1 rounded-xl border border-teal-300 bg-white font-mono font-bold text-teal-950 outline-none focus:border-teal-600"
+                />
+                <button
+                  type="button"
+                  onClick={() => setBlock1SnapshotDate('')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    !block1SnapshotDate
+                      ? 'bg-teal-800 text-white shadow-2xs'
+                      : 'bg-white text-teal-900 border border-teal-200 hover:bg-teal-100'
+                  }`}
+                >
+                  Hozirgi (Joriy holat)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const d = new Date();
+                    d.setDate(d.getDate() - 1);
+                    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+                      d.getDate()
+                    ).padStart(2, '0')}`;
+                    setBlock1SnapshotDate(ymd);
+                  }}
+                  className="px-2.5 py-1 rounded-lg font-bold bg-white text-teal-900 border border-teal-200 hover:bg-teal-100 transition cursor-pointer"
+                >
+                  Kecha
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const d = new Date();
+                    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+                    setBlock1SnapshotDate(ymd);
+                  }}
+                  className="px-2.5 py-1 rounded-lg font-bold bg-white text-teal-900 border border-teal-200 hover:bg-teal-100 transition cursor-pointer"
+                >
+                  Oy boshi
+                </button>
+              </div>
+              {block1SnapshotDate && (
+                <div className="text-[11px] font-bold text-teal-950 bg-white px-2.5 py-1 rounded-xl border border-teal-200">
+                  Tanlangan sana: <strong className="font-mono text-teal-800">{block1SnapshotDate}</strong> yakunidagi ombor qoldig'i
+                </div>
+              )}
+            </div>
           </div>
 
           {filteredProducts.length > 0 && (
             <div>
               <StickyTableWrapper>
-                <table className="w-full min-w-[900px] text-left text-xs">
+                <table className="w-full min-w-[980px] text-left text-xs">
                   <thead className="bg-rose-50 border-b border-rose-100 text-neutral-800 font-bold uppercase tracking-wider text-[11px] sticky top-0 z-20">
                     <tr>
-                    <th className="py-3 px-3 w-10 text-center">#</th>
-                    <th className="py-3 px-3">Mahsulot nomi</th>
-                    <th className="py-3 px-3">Brendi</th>
-                    <th className="py-3 px-3 text-center">O'lchamlari</th>
-                    <th className="py-3 px-3.5 text-right font-bold text-emerald-950">
-                      Ombordagi qoldiq (Barcha o'lchamlar)
-                    </th>
-                    {showBlock1Prices && (
-                      <>
-                        <th className="py-3 px-3 text-right">Sotib olish (kirim)</th>
-                        <th className="py-3 px-3 text-right">Minimal sotish</th>
-                      </>
-                    )}
-                    <th className="py-3 px-3 text-right">Kiritilgan sana</th>
-                    {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
-                      <th className="py-3 px-3 text-center w-20">Amal</th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-150">
-                  {visibleBlock1Products.map((p, index) => {
-                    const globalIndex =
-                      block1PageSize === 'all' ? index : (safeBlock1Page - 1) * block1PageSize + index;
-                    const stockInfo = formatWarehouseStock(p);
+                      <th className="py-3 px-3 w-10 text-center">#</th>
+                      <th className="py-3 px-3">Mahsulot nomi</th>
+                      <th className="py-3 px-3">Brendi</th>
+                      <th className="py-3 px-3 text-center">O'lchamlari</th>
+                      <th className="py-3 px-3.5 text-right font-bold text-indigo-950">
+                        Dastlabki kiritilgan qoldiq (Baza yaratilganda)
+                      </th>
+                      <th className="py-3 px-3.5 text-right font-bold text-emerald-950">
+                        {block1SnapshotDate
+                          ? `${block1SnapshotDate} sanadagi qoldiq`
+                          : "Ombordagi joriy qoldiq (Barcha o'lchamlar)"}
+                      </th>
+                      {showBlock1Prices && (
+                        <>
+                          <th className="py-3 px-3 text-right">Sotib olish (kirim)</th>
+                          <th className="py-3 px-3 text-right">Minimal sotish</th>
+                        </>
+                      )}
+                      <th className="py-3 px-3 text-right">Kiritilgan sana</th>
+                      {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
+                        <th className="py-3 px-3 text-center w-20">Amal</th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-150">
+                    {visibleBlock1Products.map((p, index) => {
+                      const globalIndex =
+                        block1PageSize === 'all' ? index : (safeBlock1Page - 1) * block1PageSize + index;
+                      const chron = block1ChronologyMap.get(p.id);
+                      const snap = block1SnapshotDate && chron ? chron.getStockAtDate(block1SnapshotDate) : null;
+                      const stockInfo = snap
+                        ? { primary: snap.primaryFormatted, secondary: snap.secondaryFormatted }
+                        : formatWarehouseStock(p);
 
-                    return (
-                      <tr key={p.id} className={index % 2 === 1 ? 'bg-neutral-50/50 hover:bg-rose-50/20' : 'bg-white hover:bg-rose-50/20'}>
-                        <td className="py-3 px-3 text-center font-mono text-neutral-400">{globalIndex + 1}</td>
-                        <td className="py-3 px-3 font-bold text-neutral-900">{p.name}</td>
-                        <td className="py-3 px-3 font-semibold text-neutral-700">{p.brand}</td>
-                        <td className="py-3 px-3 text-center text-[11px]">
-                          {p.packageUnitName && (p.piecesPerPackage || 1) > 1 ? (
-                            <div>
-                              <span className="font-semibold text-neutral-800">
-                                1 {p.packageUnitName} = {p.piecesPerPackage} dona
-                              </span>
-                              <div className="text-[10px] text-neutral-500">
-                                (1 dona = {p.volumePerPiece} {p.baseUnit})
+                      return (
+                        <tr
+                          key={p.id}
+                          onClick={() => setHistoryProduct(p)}
+                          className={`cursor-pointer transition-colors ${
+                            index % 2 === 1 ? 'bg-neutral-50/50 hover:bg-rose-50/40' : 'bg-white hover:bg-rose-50/40'
+                          }`}
+                          title="Ushbu mahsulot bo'yicha dastlabki qoldiq o'zgarishlari va sotuv xronologiyasini ko'rish uchun bosing"
+                        >
+                          <td className="py-3 px-3 text-center font-mono text-neutral-400">{globalIndex + 1}</td>
+                          <td className="py-3 px-3 font-bold text-neutral-900 hover:text-rose-800 underline decoration-rose-200 underline-offset-2">
+                            {p.name}
+                            {p.mark1 ? <span className="ml-1 text-[11px] font-semibold text-rose-700">[{p.mark1}]</span> : null}
+                          </td>
+                          <td className="py-3 px-3 font-semibold text-neutral-700">{p.brand}</td>
+                          <td className="py-3 px-3 text-center text-[11px]">
+                            {p.packageUnitName && (p.piecesPerPackage || 1) > 1 ? (
+                              <div>
+                                <span className="font-semibold text-neutral-800">
+                                  1 {p.packageUnitName} = {p.piecesPerPackage} dona
+                                </span>
+                                <div className="text-[10px] text-neutral-500">
+                                  (1 dona = {p.volumePerPiece} {p.baseUnit})
+                                </div>
                               </div>
-                            </div>
-                          ) : (
-                            <span className="text-neutral-700">
-                              1 {p.pieceUnitName || 'dona'} = {p.volumePerPiece} {p.baseUnit}
-                            </span>
-                          )}
-                        </td>
+                            ) : (
+                              <span className="text-neutral-700">
+                                1 {p.pieceUnitName || 'dona'} = {p.volumePerPiece} {p.baseUnit}
+                              </span>
+                            )}
+                          </td>
 
-                        {/* Ombordagi qoldiq - barcha o'lchamlarda (korobka, dona, litr/kg) */}
-                        <td className="py-3 px-3.5 text-right font-mono">
-                          <span className="text-xs sm:text-sm font-extrabold text-emerald-800 block">
-                            {stockInfo.primary}
-                          </span>
-                          <span className="text-[10.5px] font-medium text-neutral-500 block">
-                            {stockInfo.secondary}
-                          </span>
-                        </td>
+                          {/* Baza yaratilganda dastlabki kiritilgan qoldiq va necha marta o'zgargani */}
+                          <td className="py-3 px-3.5 text-right font-mono">
+                            <span className="text-xs sm:text-sm font-extrabold text-indigo-950 block">
+                              {chron ? chron.initialFormatted.primary : `${p.initialTotalPieces || p.totalPieces} dona`}
+                            </span>
+                            <span className="text-[10px] font-medium text-neutral-500 block">
+                              {chron ? chron.initialFormatted.secondary : ''}
+                            </span>
+                            {chron && chron.initialEditCount > 0 ? (
+                              <span className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[9.5px] font-sans font-bold">
+                                <History className="w-2.5 h-2.5" />
+                                <span>{chron.initialEditCount} marta o'zgargan</span>
+                              </span>
+                            ) : (
+                              <span className="text-[9.5px] font-sans font-semibold text-emerald-700 block">
+                                O'zgartirilmagan (Asl)
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Ombordagi qoldiq - barcha o'lchamlarda (korobka, dona, litr/kg) */}
+                          <td className="py-3 px-3.5 text-right font-mono">
+                            <span
+                              className={`text-xs sm:text-sm font-extrabold block ${
+                                block1SnapshotDate ? 'text-teal-900' : 'text-emerald-800'
+                              }`}
+                            >
+                              {stockInfo.primary}
+                            </span>
+                            <span className="text-[10.5px] font-medium text-neutral-500 block">
+                              {stockInfo.secondary}
+                            </span>
+                            {snap && (
+                              <span className="text-[10px] font-sans font-semibold text-teal-800 block mt-0.5">
+                                Shu sanagacha sotilgan: {snap.soldUpToDatePieces} dona
+                              </span>
+                            )}
+                          </td>
 
                         {showBlock1Prices && (
                           <>
@@ -2793,7 +2950,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
                         <td className="py-3 px-3 text-right font-mono text-neutral-500 text-[11px]">{p.intakeDate || '-'}</td>
                         {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
-                          <td className="py-3 px-3 text-center">
+                          <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                             <div className="inline-flex items-center justify-center gap-1">
                               {onEditWarehouseProduct && (
                                 <button
@@ -5698,6 +5855,14 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
           </div>
         </div>
       )}
+
+      <ProductDeliveryHistoryModal
+        isOpen={!!historyProduct}
+        onClose={() => setHistoryProduct(null)}
+        product={historyProduct}
+        dailyPlans={internalPlans}
+        clients={internalClients}
+      />
     </div>
   );
 };

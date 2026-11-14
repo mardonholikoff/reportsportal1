@@ -572,6 +572,12 @@ function preparePlanPayloadForFirestore(plan: DailyPlanItem): any {
     payload.closedUpdatedAt = null;
     payload.closedBy = null;
     payload.closeReason = null;
+    if (plan.planDate) {
+      payload.planDate = plan.planDate;
+    }
+    if ((plan as any).lastClosedDateKey) {
+      payload.lastClosedDateKey = (plan as any).lastClosedDateKey;
+    }
     if (!payload.status || payload.status === 'yopildi') {
       payload.status = 'rejalashtirilgan';
     }
@@ -581,8 +587,12 @@ function preparePlanPayloadForFirestore(plan: DailyPlanItem): any {
     payload.isClosed = true;
     payload.status = 'yopildi';
     payload.closedDisplayDate = displayClosedAt;
-    // Keep raw closedAt fresh so older cached clients/PWAs never treat historical close dates as >7d expired
-    payload.closedAt = new Date().toISOString();
+    payload.closedAt = displayClosedAt;
+    const dKey = String(displayClosedAt).slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dKey)) {
+      payload.planDate = dKey;
+      payload.lastClosedDateKey = dKey;
+    }
     payload.unperformedClose = Boolean(plan.closedWithoutAction);
     payload.closedWithoutAction = Boolean(plan.closedWithoutAction);
     payload.reopenedAt = null;
@@ -598,12 +608,22 @@ export function normalizeIncomingPlanFromFirestore(raw: any): DailyPlanItem {
   if (item.isClosed || item.status === 'yopildi') {
     if (item.closedDisplayDate) {
       item.closedAt = item.closedDisplayDate;
+      const dKey = String(item.closedDisplayDate).slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dKey)) {
+        item.planDate = dKey;
+        item.lastClosedDateKey = dKey;
+      }
     }
     if (item.unperformedClose !== undefined && item.unperformedClose !== null) {
       item.closedWithoutAction = Boolean(item.unperformedClose);
     } else {
       item.closedWithoutAction = Boolean(item.closedWithoutAction);
     }
+  } else if (
+    item.lastClosedDateKey &&
+    /^\d{4}-\d{2}-\d{2}/.test(String(item.lastClosedDateKey).trim())
+  ) {
+    item.planDate = String(item.lastClosedDateKey).trim().slice(0, 10);
   }
   return item as DailyPlanItem;
 }

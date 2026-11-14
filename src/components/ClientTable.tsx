@@ -296,11 +296,21 @@ export const ClientTable: React.FC<Props> = ({
           });
         });
 
-        // Also check direct balance logs in range not already covered by visit_action
+        // Also check direct balance logs in range not already covered by clientPlans or visit_action
         logs.forEach((l) => {
           const dStr = (l.timestamp || '').slice(0, 10);
           if (!dStr || dStr < startStr || dStr > endStr) return;
           if (l.type === 'visit_action') return;
+          const logId = String(l.id || '');
+          if (
+            cPlans.length > 0 &&
+            (logId.endsWith('_fin') ||
+              logId.endsWith('_prod') ||
+              logId.endsWith('_prod_edit') ||
+              logId.endsWith('_ret'))
+          ) {
+            return;
+          }
           const amt = Number(l.amountChanged) || 0;
           if (amt > 0) {
             if (l.type === 'product_added') {
