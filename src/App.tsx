@@ -596,33 +596,41 @@ export default function App() {
           const deletedIds = getDeletedClientIds();
           const cleanRemote = remoteClients.filter((c) => !deletedIds.has(c.id));
 
-          // Pending offline creates (hali Firestore'ga chiqmagan oflayn yaratilganlar)
+          // Pending offline creates
           const pendingSyncQueue = storageService.getSyncQueue();
           const pendingLocalCreates = pendingSyncQueue
             .filter((q) => q.action === 'create' && q.client)
             .map((q) => q.client as Client);
 
-          const localClientsById = new Map(
-            storageService.getClients().map((lc) => [lc.id, lc])
-          );
           const clientsMap = new Map<string, Client>();
-          // 1. Bulutdagi Firestore bazasi va lokal eng so'nggi tahrirlangan holatni solishtiramiz
+          // 1. Start with existing valid local clients so quota-limited empty Firestore snapshots never wipe local data
+          storageService.getClients().forEach((lc) => {
+            if (lc && lc.id && !deletedIds.has(lc.id)) {
+              clientsMap.set(lc.id, lc);
+            }
+          });
+
+          // 2. Merge remote clients (newest updatedAt / most complete logs wins)
           cleanRemote.forEach((rc) => {
-            const lc = localClientsById.get(rc.id);
+            const lc = clientsMap.get(rc.id);
             if (lc && lc.updatedAt && rc.updatedAt) {
               const lcMs = new Date(lc.updatedAt).getTime();
               const rcMs = new Date(rc.updatedAt).getTime();
-              if (!isNaN(lcMs) && !isNaN(rcMs) && lcMs > rcMs) {
+              const lcLogs = Array.isArray(lc.logs) ? lc.logs.length : 0;
+              const rcLogs = Array.isArray(rc.logs) ? rc.logs.length : 0;
+              if (!isNaN(lcMs) && !isNaN(rcMs) && (lcMs > rcMs || (lcMs === rcMs && lcLogs > rcLogs))) {
                 clientsMap.set(rc.id, lc);
-                syncClientToFirestore(lc);
                 return;
               }
             }
             clientsMap.set(rc.id, rc);
           });
-          // 2. Faqat haqiqiy oflayn yangi qo'shilganlar saqlab qolinadi
+
+          // 3. Ensure any pending offline creates are included
           pendingLocalCreates.forEach((lc) => {
-            if (!clientsMap.has(lc.id)) clientsMap.set(lc.id, lc);
+            if (lc && lc.id && !deletedIds.has(lc.id) && !clientsMap.has(lc.id)) {
+              clientsMap.set(lc.id, lc);
+            }
           });
 
           const mergedList = Array.from(clientsMap.values()).filter(
@@ -670,12 +678,6 @@ export default function App() {
                 !(p.reopenHistory && p.reopenHistory.length > 0)
             );
 
-          remotePlans.forEach((rp) => {
-            if (deletedIds.has(rp.clientId) || deletedPlanIds.has(rp.id) || isUnintendedRec(rp)) {
-              deletePlanFromFirestore(rp.id);
-            }
-          });
-
           const cleanRemote = remotePlans.filter(
             (p) =>
               !deletedIds.has(p.clientId) &&
@@ -722,7 +724,6 @@ export default function App() {
                   getClosedDateKey(rp) ||
                   rp.planDate;
                 if (lp.id === rp.id) {
-                  syncPlanToFirestore(lp);
                   return lp;
                 }
                 const reopenedSynced: DailyPlanItem = {
@@ -758,7 +759,6 @@ export default function App() {
                 delete reopenedSynced.closedAt;
                 delete reopenedSynced.closedBy;
                 delete reopenedSynced.closeReason;
-                syncPlanToFirestore(reopenedSynced);
                 return reopenedSynced;
               }
             }
@@ -800,7 +800,6 @@ export default function App() {
                   (lp as any).closedDisplayDate || lp.closedAt;
                 (closedSynced as any).closedUpdatedAt =
                   (lp as any).closedUpdatedAt || lp.closedAt;
-                syncPlanToFirestore(closedSynced);
                 return closedSynced;
               }
             }
@@ -828,12 +827,28 @@ export default function App() {
               if (!lp.financialAction || !(lp.financialAction.amount > 0)) {
                 delete mergedExec.financialAction;
               }
-              syncPlanToFirestore(mergedExec);
               return mergedExec;
             }
 
             return rp;
           });
+
+          // Retain valid local plans whose client exists locally
+          const activeClientIds = new Set(storageService.getClients().map((c) => c.id));
+          const remoteIdsSet = new Set(reconciledRemote.map((rp) => rp.id));
+          const remoteDateKeysSet = new Set(
+            reconciledRemote.map((rp) => `${rp.clientId}_${getPlanDateKey(rp)}`)
+          );
+          for (const lp of localPlans) {
+            if (!lp || !lp.clientId || !activeClientIds.has(lp.clientId)) continue;
+            if (deletedIds.has(lp.clientId) || deletedPlanIds.has(lp.id)) continue;
+            const lpDateKey = `${lp.clientId}_${getPlanDateKey(lp)}`;
+            if (!remoteIdsSet.has(lp.id) && !remoteDateKeysSet.has(lpDateKey)) {
+              reconciledRemote.push(lp);
+              remoteIdsSet.add(lp.id);
+              remoteDateKeysSet.add(lpDateKey);
+            }
+          }
 
           // Deduplicate by clientId+planDate so each client appears once per date
           const { uniquePlans } =
@@ -889,14 +904,24 @@ export default function App() {
       onWarehouseChange: (remoteProducts: WarehouseProduct[]) => {
         if (remoteProducts) {
           const deletedWhIds = getDeletedWarehouseIds();
-          const localWhMap = new Map(
-            storageService.getWarehouseProducts().map((lw) => [lw.id, lw])
-          );
-          const cleanRemote = remoteProducts
-            .filter((w) => !deletedWhIds.has(w.id))
-            .map((rw) => {
-              const lw = localWhMap.get(rw.id);
-              if (!lw) return rw;
+          const whMap = new Map<string, WarehouseProduct>();
+
+          // 1. Start with existing valid local warehouse products so empty Firestore snapshots never wipe local data
+          storageService.getWarehouseProducts().forEach((lw) => {
+            if (lw && lw.id && !deletedWhIds.has(lw.id)) {
+              whMap.set(lw.id, lw);
+            }
+          });
+
+          // 2. Merge remote warehouse products
+          remoteProducts
+            .filter((w) => w && w.id && !deletedWhIds.has(w.id))
+            .forEach((rw) => {
+              const lw = whMap.get(rw.id);
+              if (!lw) {
+                whMap.set(rw.id, rw);
+                return;
+              }
               const lwEditCount = lw.initialEditCount || 0;
               const rwEditCount = rw.initialEditCount || 0;
               const lwUpdatedTime = (lw as any).updatedAt
@@ -905,15 +930,14 @@ export default function App() {
               const rwUpdatedTime = (rw as any).updatedAt
                 ? new Date((rw as any).updatedAt).getTime()
                 : 0;
-              // If local has more initial edits or a newer updatedAt timestamp, keep local and sync up
               if (lwEditCount > rwEditCount || (lwUpdatedTime > 0 && lwUpdatedTime > rwUpdatedTime)) {
-                syncWarehouseProductToFirestore(lw);
-                return lw;
+                whMap.set(rw.id, lw);
+                return;
               }
               const lwHist = Array.isArray(lw.stockHistory) ? lw.stockHistory : [];
               const rwHist = Array.isArray(rw.stockHistory) ? rw.stockHistory : [];
               const mergedHist = lwHist.length >= rwHist.length ? lwHist : rwHist;
-              return {
+              whMap.set(rw.id, {
                 ...rw,
                 initialIntakeDate: rw.initialIntakeDate || lw.initialIntakeDate,
                 initialIntakeUnitType: rw.initialIntakeUnitType || lw.initialIntakeUnitType,
@@ -922,9 +946,11 @@ export default function App() {
                 initialTotalVolume: rw.initialTotalVolume ?? lw.initialTotalVolume,
                 initialEditCount: Math.max(rwEditCount, lwEditCount),
                 stockHistory: mergedHist,
-              };
+              });
             });
-          storageService.saveWarehouseProducts(cleanRemote);
+
+          const mergedWh = Array.from(whMap.values()).filter((w) => !deletedWhIds.has(w.id));
+          storageService.saveWarehouseProducts(mergedWh);
           setWarehouseProducts([...storageService.getWarehouseProducts()]);
         }
       },
