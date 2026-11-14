@@ -323,14 +323,19 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
               {filteredProducts.map((p) => (
                 <div
                   key={p.id}
-                  className="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-2xs hover:border-neutral-300 transition"
+                  onClick={() => setSelectedProductForHistory(p)}
+                  className="bg-white rounded-2xl border border-neutral-200/90 p-4 shadow-2xs hover:border-rose-300 hover:shadow-xs transition cursor-pointer"
+                  title="Mahsulotning bazaga kiritilgandagi sonini (Bosh qoldiqni) o'zgartirish va xronologiyasini ko'rish uchun bosing"
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-neutral-100">
                     <div>
                       <div
                         className="flex items-center gap-2 flex-wrap cursor-pointer group"
-                        onClick={() => setSelectedProductForHistory(p)}
-                        title="Topshirish tarixini ko'rish uchun bosing"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedProductForHistory(p);
+                        }}
+                        title="Topshirish tarixini va bosh qoldiqni ko'rish / o'zgartirish uchun bosing"
                       >
                         <span className="text-xs font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200 uppercase tracking-wider">
                           {p.brand}
@@ -361,7 +366,10 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 self-end sm:self-auto flex-wrap">
+                    <div
+                      className="flex items-center gap-2 self-end sm:self-auto flex-wrap"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {(() => {
                         const isPriceVisible = showAllPrices || Boolean(revealedPriceIds[p.id]);
                         return (
@@ -406,10 +414,10 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                         type="button"
                         onClick={() => setSelectedProductForHistory(p)}
                         className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition cursor-pointer"
-                        title="Mahsulot topshirilish va dastlabki qoldiq xronologiyasini ko'rish"
+                        title="Mahsulot topshirilish va dastlabki qoldiqni ko'rish / o'zgartirish"
                       >
                         <History className="w-3.5 h-3.5" />
-                        <span>Xronologiya va tarix</span>
+                        <span>Bosh qoldiq va tarix</span>
                       </button>
                       <button
                         type="button"
@@ -437,6 +445,8 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                     const snap = snapshotDate && chron ? chron.getStockAtDate(snapshotDate) : null;
                     const stockInfo = snap
                       ? { primary: snap.primaryFormatted, secondary: snap.secondaryFormatted }
+                      : chron
+                      ? chron.currentFormatted
                       : formatWarehouseStock(p);
                     const marginInfo = calculateProfitMargin(p);
                     const isPriceVisible = showAllPrices || Boolean(revealedPriceIds[p.id]);
@@ -455,7 +465,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                           {/* 2. Baza yaratilganda dastlabki qoldiq */}
                           <div>
                             <span className="text-indigo-700 font-bold block text-[11px]">
-                              Dastlabki kiritilgan:
+                              Bazaga kiritilgandagi soni:
                             </span>
                             <span className="font-extrabold text-indigo-950 font-mono text-xs sm:text-sm block">
                               {chron ? chron.initialFormatted.primary : `${p.initialTotalPieces || p.totalPieces} dona`}
@@ -463,20 +473,37 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
                             <span className="text-[10px] text-neutral-500 font-mono block">
                               {chron ? chron.initialFormatted.secondary : ''}
                             </span>
-                            {chron && chron.initialEditCount > 0 ? (
+                            <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                              {chron && chron.initialEditCount > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedProductForHistory(p);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold cursor-pointer hover:bg-amber-200"
+                                >
+                                  <History className="w-2.5 h-2.5" />
+                                  <span>{chron.initialEditCount} marta o'zgargan</span>
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-emerald-700 font-semibold">
+                                  O'zgartirilmagan
+                                </span>
+                              )}
                               <button
                                 type="button"
-                                onClick={() => setSelectedProductForHistory(p)}
-                                className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold cursor-pointer hover:bg-amber-200"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedProductForHistory(p);
+                                }}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800 border border-indigo-300 text-[10px] font-bold cursor-pointer hover:bg-indigo-200"
+                                title="Bazaga kiritilgandagi bosh qoldiqni o'zgartirish"
                               >
-                                <History className="w-2.5 h-2.5" />
-                                <span>{chron.initialEditCount} marta o'zgargan</span>
+                                <Edit3 className="w-2.5 h-2.5" />
+                                <span>O'zgartirish</span>
                               </button>
-                            ) : (
-                              <span className="text-[10px] text-emerald-700 font-semibold block">
-                                O'zgartirilmagan (Asl)
-                              </span>
-                            )}
+                            </div>
                           </div>
 
                           {/* 3. Ombordagi qoldiq (Hozirgi yoki tanlangan sanadagi) */}

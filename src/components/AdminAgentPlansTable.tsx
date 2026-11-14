@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Client, DailyPlanItem } from '../types';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
 import {
@@ -52,6 +52,14 @@ interface Props {
     editSoldProducts?: boolean,
     editFinancialAction?: boolean
   ) => void;
+  onReopenPlanItems?: (planItemIds: string[], reopenReason: string) => void;
+  navigationTarget?: {
+    clientId: string;
+    clientName: string;
+    planId?: string;
+    planDate: string;
+    timestamp: number;
+  } | null;
 }
 
 const PRESET_REMOVE_REASONS = [
@@ -67,8 +75,11 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
   clients,
   onRemovePlanItems,
   onOpenExecuteModal,
+  onReopenPlanItems,
+  navigationTarget,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [highlightedPlanId, setHighlightedPlanId] = useState<string | null>(null);
   // Admin kirganda birinchi bo'lib hali bajarilib yopilmaganlar ('jarayonda') ko'rinadi, yopilganlar faqat 'bajarildi'da turadi
   const [statusFilter, setStatusFilter] = useState<'jarayonda' | 'bajarildi' | 'all'>('jarayonda');
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
@@ -98,6 +109,58 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
     const stored = storageService.getDailyPlans();
     return stored.length >= plans.length ? stored : plans;
   }, [plans]);
+
+  useEffect(() => {
+    if (!navigationTarget) return;
+    const targetDate = navigationTarget.planDate;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+    if (targetDate === todayStr) {
+      setDateFilter('today');
+    } else if (targetDate === yesterdayStr) {
+      setDateFilter('yesterday');
+    } else if (targetDate) {
+      setDateFilter('custom');
+      setCustomDate(targetDate);
+    } else {
+      setDateFilter('all');
+    }
+
+    setStatusFilter('all');
+    setSelectedAgent('all');
+    setClosureTypeFilter('all');
+    setPaymentFilter('all');
+    setSearchTerm(navigationTarget.clientName || '');
+
+    const stored = storageService.getDailyPlans();
+    const matchedPlan =
+      (navigationTarget.planId
+        ? stored.find((p) => p.id === navigationTarget.planId)
+        : undefined) ||
+      stored.find((p) => {
+        if (p.clientId !== navigationTarget.clientId) return false;
+        const effectiveDate =
+          getClosedDateKey(p) ||
+          (p as any).lastClosedDateKey ||
+          getPlanDateKey(p);
+        return effectiveDate === targetDate || getPlanDateKey(p) === targetDate;
+      });
+
+    if (matchedPlan) {
+      setHighlightedPlanId(matchedPlan.id);
+      setTimeout(() => {
+        const el =
+          document.getElementById(`admin-plan-row-${matchedPlan.id}`) ||
+          document.getElementById(`admin-plan-card-${matchedPlan.id}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 150);
+    } else {
+      setHighlightedPlanId(null);
+    }
+  }, [navigationTarget?.timestamp]);
 
   const formatActionLabel = (action?: string) => {
     if (action === 'telefon qilindi') return 'Telefon qilish / qilindi';
@@ -1217,12 +1280,18 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
               });
 
               const lastOps = getClientLastOperations(item.clientId, resolvedClients, plans);
+              const isHighlighted =
+                highlightedPlanId === item.id ||
+                (navigationTarget?.clientId === item.clientId && !highlightedPlanId);
 
               return (
                 <div
+                  id={`admin-plan-card-${item.id}`}
                   key={item.id}
                   className={`p-3.5 rounded-2xl border transition-all ${
-                    isClosed
+                    isHighlighted
+                      ? 'bg-indigo-50/90 border-indigo-500 ring-2 ring-indigo-400 shadow-sm'
+                      : isClosed
                       ? 'bg-neutral-50/80 border-neutral-200'
                       : 'bg-white border-rose-100 shadow-xs hover:border-rose-300'
                   }`}
@@ -1408,6 +1477,22 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     </span>
 
                     <div className="flex items-center gap-1.5 flex-wrap">
+                      {isClosed && onReopenPlanItems && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onReopenPlanItems(
+                              [item.id],
+                              'Mijoz xronologiyasi / admin orqali tahrirlash uchun qayta ochildi'
+                            )
+                          }
+                          className="px-2.5 py-1 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                          title="Yopilgan rejani qayta ochish"
+                        >
+                          <Unlock className="w-3.5 h-3.5" />
+                          <span>Qayta ochish</span>
+                        </button>
+                      )}
                       {onOpenExecuteModal &&
                         !isClosed &&
                         getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
@@ -1549,11 +1634,20 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                   allSystemPlans
                 );
 
+                const isHighlighted =
+                  highlightedPlanId === item.id ||
+                  (navigationTarget?.clientId === item.clientId && !highlightedPlanId);
+
                 return (
                   <tr
+                    id={`admin-plan-row-${item.id}`}
                     key={item.id}
                     className={`transition-colors ${
-                      isSelected ? 'bg-rose-50/60' : 'hover:bg-rose-50/30'
+                      isHighlighted
+                        ? 'bg-indigo-50/90 ring-2 ring-inset ring-indigo-500'
+                        : isSelected
+                        ? 'bg-rose-50/60'
+                        : 'hover:bg-rose-50/30'
                     }`}
                   >
                     {/* Index + Selection Checkbox */}
@@ -1933,6 +2027,22 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     {/* Amallar: Batafsil ko'rish + Mahsulot tahrirlash + Rejadan olib tashlash */}
                     <td className="py-3 px-3.5 text-center whitespace-nowrap">
                       <div className="flex items-center justify-center gap-1.5">
+                        {isClosed && onReopenPlanItems && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onReopenPlanItems(
+                                [item.id],
+                                'Mijoz xronologiyasi / admin orqali tahrirlash uchun qayta ochildi'
+                              )
+                            }
+                            className="px-2 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-[10.5px] font-bold transition cursor-pointer flex items-center gap-1 shadow-2xs"
+                            title="Yopilgan rejani qayta ochish"
+                          >
+                            <Unlock className="w-3.5 h-3.5" />
+                            <span>Qayta ochish</span>
+                          </button>
+                        )}
                         {onOpenExecuteModal &&
                           getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
                             <button

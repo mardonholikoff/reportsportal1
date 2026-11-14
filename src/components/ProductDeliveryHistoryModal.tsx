@@ -20,11 +20,19 @@ import {
   Edit3,
   Layers,
   RotateCcw,
+  CheckCircle2,
+  Save,
+  Plus,
+  Minus,
 } from 'lucide-react';
 import { WarehouseProduct, DailyPlanItem, Client, ProductItem } from '../types';
 import { storageService, getPlanDateKey, getClosedDateKey } from '../services/storage';
+import { syncWarehouseProductToFirestore, addSystemLog } from '../services/firebase';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
-import { buildWarehouseProductChronology } from '../utils/warehouseChronology';
+import {
+  buildWarehouseProductChronology,
+  formatPiecesForWarehouseProduct,
+} from '../utils/warehouseChronology';
 import { StickyTableWrapper } from './StickyTableWrapper';
 
 export interface ProductDeliveryRecord {
@@ -140,6 +148,104 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     if (!chronology) return null;
     return chronology.getStockAtDate(snapshotDate || todayYmd);
   }, [chronology, snapshotDate, todayYmd]);
+
+  // Bazaga kiritilgandagi dastlabki soni (Bosh qoldiq) tahrirlash holatlari
+  const [editInitUnitType, setEditInitUnitType] = useState<'package' | 'piece'>('piece');
+  const [editInitQtyStr, setEditInitQtyStr] = useState<string>('');
+  const [editInitNote, setEditInitNote] = useState<string>('');
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
+
+  const hasPackageForInit = Boolean(
+    activeProduct &&
+      activeProduct.packageUnitName &&
+      activeProduct.packageUnitName.trim() &&
+      (activeProduct.piecesPerPackage || 1) > 1
+  );
+  const piecesPerPkgForInit =
+    hasPackageForInit && activeProduct?.piecesPerPackage ? activeProduct.piecesPerPackage : 1;
+
+  useEffect(() => {
+    if (!isOpen || !activeProduct || !chronology) return;
+    const initPieces = chronology.initialPieces;
+    const preferredUnit: 'package' | 'piece' =
+      hasPackageForInit &&
+      (activeProduct.initialIntakeUnitType === 'package' ||
+        activeProduct.intakeUnitType === 'package') &&
+      initPieces % piecesPerPkgForInit === 0
+        ? 'package'
+        : 'piece';
+    setEditInitUnitType(preferredUnit);
+    setEditInitQtyStr(
+      preferredUnit === 'package'
+        ? String(Math.round((initPieces / piecesPerPkgForInit) * 100) / 100)
+        : String(initPieces)
+    );
+    setEditInitNote('');
+    setSaveSuccessMsg(null);
+  }, [isOpen, activeProduct?.id, chronology?.initialPieces, hasPackageForInit, piecesPerPkgForInit]);
+
+  const parsedNewInitQty = Math.max(0, parseFloat(editInitQtyStr) || 0);
+  const previewNewInitialPieces = useMemo(() => {
+    if (!activeProduct) return 0;
+    if (editInitUnitType === 'package' && hasPackageForInit) {
+      return Math.max(0, Math.round(parsedNewInitQty * piecesPerPkgForInit * 100) / 100);
+    }
+    return Math.max(0, Math.round(parsedNewInitQty * 100) / 100);
+  }, [activeProduct, editInitUnitType, hasPackageForInit, parsedNewInitQty, piecesPerPkgForInit]);
+
+  const netSoldUpToTodayPieces = useMemo(() => {
+    if (!chronology) return 0;
+    return Math.round((chronology.totalSoldPieces - chronology.totalReturnedPieces) * 100) / 100;
+  }, [chronology]);
+
+  const previewNewCurrentPieces = useMemo(() => {
+    return Math.max(0, Math.round((previewNewInitialPieces - netSoldUpToTodayPieces) * 100) / 100);
+  }, [previewNewInitialPieces, netSoldUpToTodayPieces]);
+
+  const previewNewInitialFormatted = useMemo(() => {
+    if (!activeProduct) return { primary: '0 dona', secondary: '', pieces: 0, volume: 0 };
+    return formatPiecesForWarehouseProduct(activeProduct, previewNewInitialPieces);
+  }, [activeProduct, previewNewInitialPieces]);
+
+  const previewNewCurrentFormatted = useMemo(() => {
+    if (!activeProduct) return { primary: '0 dona', secondary: '', pieces: 0, volume: 0 };
+    return formatPiecesForWarehouseProduct(activeProduct, previewNewCurrentPieces);
+  }, [activeProduct, previewNewCurrentPieces]);
+
+  const handleSaveInitialStockChange = () => {
+    if (!activeProduct || !chronology) return;
+    const oldInitPieces = chronology.initialPieces;
+    const updated = storageService.updateWarehouseInitialStock(
+      activeProduct.id,
+      {
+        newInitialQuantity: parsedNewInitQty,
+        newInitialUnitType: hasPackageForInit ? editInitUnitType : 'piece',
+        note: editInitNote.trim() || undefined,
+        oldInitialPiecesOverride: oldInitPieces,
+        netSoldPiecesUpToToday: netSoldUpToTodayPieces,
+      },
+      'adminc'
+    );
+    if (!updated) return;
+
+    syncWarehouseProductToFirestore(updated);
+    addSystemLog({
+      userId: 'adminc',
+      userRole: 'admin',
+      actionType: 'ombor_kirimi',
+      actionTitle: `Ombor mahsuloti bosh qoldig'i tahrirlandi: ${updated.brand} - ${updated.name}`,
+      details: `Bazaga kiritilgandagi soni (bosh qoldiq): ${oldInitPieces} donadan ${updated.initialTotalPieces} donaga o'zgartirildi. Bugungi kungacha amallar: -${netSoldUpToTodayPieces} dona. Yangi hozirgi qoldiq: ${updated.totalPieces} dona (${updated.totalVolume} ${updated.baseUnit}).`,
+      metadata: {
+        productId: updated.id,
+      },
+    });
+
+    setStorageTick((t) => t + 1);
+    setEditInitNote('');
+    setSaveSuccessMsg(
+      `Bosh qoldiq ${previewNewInitialFormatted.primary} (${previewNewInitialPieces} dona) qilib saqlandi! Shu bosh qoldiqqa asosan hozirgi qoldiq: ${previewNewCurrentFormatted.primary} (${previewNewCurrentPieces} dona).`
+    );
+  };
 
   // Matching helper: Check if a delivered product matches the target WarehouseProduct
   const isMatchingProduct = (p: WarehouseProduct, prod: ProductItem): boolean => {
@@ -804,313 +910,485 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Dastlabki qoldiq, Tanlangan sanadagi qoldiq va Joriy holat panellari */}
-        {chronology && (
-          <div className="p-4 bg-gradient-to-r from-slate-50 via-neutral-50 to-rose-50/40 border-b border-neutral-200 space-y-3 shrink-0">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* 1. Baza yaratilganda kiritilgan dastlabki qoldiq */}
-              <div className="p-3.5 rounded-2xl bg-white border border-indigo-200/80 shadow-2xs">
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-[11px] font-bold text-indigo-800 uppercase tracking-wide">
-                    1. Baza yaratilganda (Dastlabki):
-                  </span>
-                  <span className="text-[10px] font-mono font-bold bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md border border-indigo-200">
-                    {formatDateDMY(chronology.initialDate)}
-                  </span>
-                </div>
-                <div className="text-base sm:text-lg font-extrabold font-mono text-indigo-950 mt-1 tabular-nums">
-                  {chronology.initialFormatted.primary}
-                </div>
-                <div className="text-[10.5px] text-neutral-600 font-mono mt-0.5">
-                  {chronology.initialFormatted.secondary}
-                </div>
-              </div>
+        {/* Scrollable Modal Body (No sticky giant top panels blocking chronology) */}
+        <div className="flex-1 overflow-y-auto">
+          {/* Dastlabki qoldiq, Tanlangan sanadagi qoldiq va Joriy holat panellari */}
+          {chronology && activeProduct && (
+            <div className="p-3.5 sm:p-4 bg-gradient-to-r from-slate-50 via-neutral-50 to-rose-50/40 border-b border-neutral-200 space-y-2.5">
+              {/* BAZAGA KIRITILGANDAGI SONI (BOSH QOLDIQ) VA UNI O'ZGARTIRISH PANELI — IXCHAM KO'RINISHDA */}
+              <div className="p-2.5 sm:p-3 rounded-2xl bg-indigo-50/90 border border-indigo-300 shadow-2xs space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-2 py-0.5 rounded-md bg-indigo-700 text-white text-[10px] font-bold uppercase tracking-wider">
+                      Bosh qoldiq
+                    </span>
+                    <span className="text-xs font-bold text-indigo-950">
+                      Bazaga kiritilgandagi soni:{' '}
+                      <strong className="font-mono text-indigo-900 underline">
+                        {chronology.initialFormatted.primary} ({chronology.initialPieces}{' '}
+                        {activeProduct.pieceUnitName || 'dona'})
+                      </strong>
+                    </span>
+                  </div>
 
-              {/* 2. Dastlabki qoldiq necha marta va qanday o'zgargani */}
-              <div
-                onClick={() => setActiveTab('initial_changes')}
-                className="p-3.5 rounded-2xl bg-amber-50/70 hover:bg-amber-50 border border-amber-200 shadow-2xs cursor-pointer transition"
-                title="Dastlabki qoldiq o'zgarishlari xronologiyasini ko'rish uchun bosing"
-              >
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wide">
-                    2. Dastlabki qoldiq tahriri:
-                  </span>
-                  <History className="w-3.5 h-3.5 text-amber-700" />
+                  <div className="flex items-center gap-1 text-[10.5px] font-mono font-bold flex-wrap">
+                    <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-indigo-950">
+                      Bosh: {chronology.initialPieces}
+                    </span>
+                    <span className="text-indigo-700">&minus;</span>
+                    <span className="px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800">
+                      Amallar: {netSoldUpToTodayPieces}
+                    </span>
+                    <span className="text-indigo-700">=</span>
+                    <span className="px-2 py-0.5 rounded-lg bg-emerald-100 border border-emerald-300 text-emerald-950">
+                      Hozirgi: {chronology.currentPieces} dona
+                    </span>
+                  </div>
                 </div>
-                <div className="text-base sm:text-lg font-extrabold font-mono text-amber-950 mt-1 tabular-nums">
-                  {chronology.initialEditCount > 0
-                    ? `${chronology.initialEditCount} marta o'zgartirilgan`
-                    : "O'zgartirilmagan (Asl)"}
-                </div>
-                <div className="text-[10.5px] text-amber-800 font-semibold mt-0.5 flex items-center gap-1">
-                  <span>Jami yozuvlar: {chronology.initialAndEditLogs.length} ta</span>
-                  <span className="underline ml-auto">Batafsil ko'rish &rarr;</span>
-                </div>
-              </div>
 
-              {/* 3. Tanlangan sanadagi ombor qoldig'i */}
-              <div className="p-3.5 rounded-2xl bg-teal-50/80 border border-teal-300 shadow-2xs">
-                <div className="flex items-center justify-between gap-1.5 flex-wrap">
-                  <span className="text-[11px] font-bold text-teal-900 uppercase tracking-wide flex items-center gap-1">
-                    <Calendar className="w-3.5 h-3.5 text-teal-700" />
-                    <span>3. Sanadagi qoldiq:</span>
-                  </span>
-                  <input
-                    type="date"
-                    value={snapshotDate}
-                    onChange={(e) => setSnapshotDate(e.target.value || todayYmd)}
-                    className="px-2 py-0.5 rounded-lg border border-teal-400 bg-white font-mono font-bold text-[11px] text-teal-950 outline-none focus:border-teal-700"
-                  />
-                </div>
-                {snapshotAtDate && (
-                  <>
-                    <div className="text-base sm:text-lg font-extrabold font-mono text-teal-950 mt-1 tabular-nums">
-                      {snapshotAtDate.primaryFormatted}
+                {saveSuccessMsg && (
+                  <div className="p-2 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-950 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                      <span>{saveSuccessMsg}</span>
                     </div>
-                    <div className="text-[10px] text-teal-800 font-mono mt-0.5">
-                      {snapshotAtDate.secondaryFormatted}
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] text-teal-900 font-semibold mt-1 pt-1 border-t border-teal-200/70">
-                      <span>Shu sanagacha sotilgan: {snapshotAtDate.soldUpToDatePieces} dona</span>
-                      {snapshotAtDate.soldOnDatePieces > 0 && (
-                        <span className="bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded font-mono font-bold">
-                          Shu kuni: -{snapshotAtDate.soldOnDatePieces}
-                        </span>
-                      )}
-                    </div>
-                  </>
+                    <button
+                      type="button"
+                      onClick={() => setSaveSuccessMsg(null)}
+                      className="text-emerald-800 hover:text-emerald-950 px-1.5 py-0.5 text-xs font-bold cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-2 items-center">
+                  {/* 1. Birlik tanlash (Agar korobka/qadoq bo'lsa) */}
+                  {hasPackageForInit && (
+                    <div className="lg:col-span-3">
+                      <div className="grid grid-cols-2 gap-1 p-0.5 rounded-xl bg-white border border-indigo-200">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (editInitUnitType !== 'package') {
+                              setEditInitUnitType('package');
+                              setEditInitQtyStr(
+                                String(
+                                  Math.round((previewNewInitialPieces / piecesPerPkgForInit) * 100) /
+                                    100
+                                )
+                              );
+                            }
+                          }}
+                          className={`py-1 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                            editInitUnitType === 'package'
+                              ? 'bg-indigo-700 text-white shadow-2xs'
+                              : 'text-indigo-900 hover:bg-indigo-50'
+                          }`}
+                        >
+                          {activeProduct.packageUnitName} (1={piecesPerPkgForInit})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (editInitUnitType !== 'piece') {
+                              setEditInitUnitType('piece');
+                              setEditInitQtyStr(String(previewNewInitialPieces));
+                            }
+                          }}
+                          className={`py-1 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                            editInitUnitType === 'piece'
+                              ? 'bg-indigo-700 text-white shadow-2xs'
+                              : 'text-indigo-900 hover:bg-indigo-50'
+                          }`}
+                        >
+                          {activeProduct.pieceUnitName || 'dona'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 2. Bazaga kiritilgandagi sonini yozish */}
+                  <div className={hasPackageForInit ? 'lg:col-span-3' : 'lg:col-span-4'}>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = Math.max(0, (parseFloat(editInitQtyStr) || 0) - 1);
+                          setEditInitQtyStr(String(next));
+                          setSaveSuccessMsg(null);
+                        }}
+                        className="w-8 h-8 rounded-xl bg-white hover:bg-indigo-100 border border-indigo-300 text-indigo-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
+                        title="Kamaytirish (-1)"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        value={editInitQtyStr}
+                        onChange={(e) => {
+                          setEditInitQtyStr(e.target.value);
+                          setSaveSuccessMsg(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleSaveInitialStockChange();
+                          }
+                        }}
+                        className="w-full h-8 px-2.5 rounded-xl border border-indigo-400 bg-white font-mono font-extrabold text-xs text-indigo-950 text-center focus:outline-none focus:border-indigo-700"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = (parseFloat(editInitQtyStr) || 0) + 1;
+                          setEditInitQtyStr(String(next));
+                          setSaveSuccessMsg(null);
+                        }}
+                        className="w-8 h-8 rounded-xl bg-white hover:bg-indigo-100 border border-indigo-300 text-indigo-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
+                        title="Ko'paytirish (+1)"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 3. Natija oldindan ko'rinishi (Yangi bosh qoldiq -> Yangi hozirgi qoldiq) */}
+                  <div className={hasPackageForInit ? 'lg:col-span-4' : 'lg:col-span-5'}>
+                    <div className="px-2.5 py-1.5 rounded-xl bg-white border border-indigo-200 text-[10.5px] flex flex-wrap items-center justify-between gap-1.5">
+                      <div>
+                        <span className="text-neutral-500 mr-1">Yangi bosh:</span>
+                        <span className="font-mono font-extrabold text-indigo-950">
+                          {previewNewInitialFormatted.primary} ({previewNewInitialPieces})
+                        </span>
+                      </div>
+                      <ArrowRight className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                      <div>
+                        <span className="text-emerald-800 font-bold mr-1">Hozirgi:</span>
+                        <span className="font-mono font-extrabold text-emerald-700">
+                          {previewNewCurrentFormatted.primary} ({previewNewCurrentPieces})
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 4. Saqlash tugmasi */}
+                  <div className={hasPackageForInit ? 'lg:col-span-2' : 'lg:col-span-3'}>
+                    <button
+                      type="button"
+                      onClick={handleSaveInitialStockChange}
+                      className="w-full h-8 px-3 rounded-xl bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-950 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition cursor-pointer"
+                    >
+                      <Save className="w-3.5 h-3.5 shrink-0" />
+                      <span>Saqlash</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              {/* 4. Hozirgi joriy qoldiq va Jami sotilgan */}
-              <div className="p-3.5 rounded-2xl bg-emerald-50/80 border border-emerald-200 shadow-2xs">
-                <div className="flex items-center justify-between gap-1">
-                  <span className="text-[11px] font-bold text-emerald-800 uppercase tracking-wide">
-                    4. Hozirgi joriy qoldiq:
-                  </span>
-                  <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded-md">
-                    Sotilgan: {summary.formattedPieces}
-                  </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                {/* 1. Baza yaratilganda kiritilgan dastlabki qoldiq */}
+                <div className="p-2.5 sm:p-3 rounded-2xl bg-white border border-indigo-200/80 shadow-2xs">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10.5px] font-bold text-indigo-800 uppercase tracking-wide">
+                      1. Baza yaratilganda:
+                    </span>
+                    <span className="text-[10px] font-mono font-bold bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded-md border border-indigo-200">
+                      {formatDateDMY(chronology.initialDate)}
+                    </span>
+                  </div>
+                  <div className="text-sm sm:text-base font-extrabold font-mono text-indigo-950 mt-0.5 tabular-nums">
+                    {chronology.initialFormatted.primary}
+                  </div>
+                  <div className="text-[10px] text-neutral-600 font-mono">
+                    {chronology.initialFormatted.secondary}
+                  </div>
                 </div>
-                <div className="text-base sm:text-lg font-extrabold font-mono text-emerald-950 mt-1 tabular-nums">
-                  {chronology.currentFormatted.primary}
+
+                {/* 2. Dastlabki qoldiq necha marta va qanday o'zgargani */}
+                <div
+                  onClick={() => setActiveTab('initial_changes')}
+                  className="p-2.5 sm:p-3 rounded-2xl bg-amber-50/70 hover:bg-amber-50 border border-amber-200 shadow-2xs cursor-pointer transition"
+                  title="Dastlabki qoldiq o'zgarishlari xronologiyasini ko'rish uchun bosing"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10.5px] font-bold text-amber-900 uppercase tracking-wide">
+                      2. Bosh qoldiq tahriri:
+                    </span>
+                    <History className="w-3.5 h-3.5 text-amber-700" />
+                  </div>
+                  <div className="text-sm sm:text-base font-extrabold font-mono text-amber-950 mt-0.5 tabular-nums">
+                    {chronology.initialEditCount > 0
+                      ? `${chronology.initialEditCount} marta o'zgartirilgan`
+                      : "O'zgartirilmagan (Asl)"}
+                  </div>
+                  <div className="text-[10px] text-amber-800 font-semibold flex items-center gap-1">
+                    <span>Jami yozuvlar: {chronology.initialAndEditLogs.length} ta</span>
+                    <span className="underline ml-auto">Ko'rish &rarr;</span>
+                  </div>
                 </div>
-                <div className="text-[10.5px] text-emerald-800 font-mono mt-0.5 flex items-center justify-between">
-                  <span>{chronology.currentFormatted.secondary}</span>
-                  <strong className="text-emerald-950">{formatMoney(summary.totalSumUsd)}</strong>
+
+                {/* 3. Tanlangan sanadagi ombor qoldig'i */}
+                <div className="p-2.5 sm:p-3 rounded-2xl bg-teal-50/80 border border-teal-300 shadow-2xs">
+                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                    <span className="text-[10.5px] font-bold text-teal-900 uppercase tracking-wide flex items-center gap-1">
+                      <Calendar className="w-3 h-3 text-teal-700" />
+                      <span>3. Sanadagi qoldiq:</span>
+                    </span>
+                    <input
+                      type="date"
+                      value={snapshotDate}
+                      onChange={(e) => setSnapshotDate(e.target.value || todayYmd)}
+                      className="px-1.5 py-0.5 rounded-lg border border-teal-400 bg-white font-mono font-bold text-[10.5px] text-teal-950 outline-none focus:border-teal-700"
+                    />
+                  </div>
+                  {snapshotAtDate && (
+                    <>
+                      <div className="text-sm sm:text-base font-extrabold font-mono text-teal-950 mt-0.5 tabular-nums">
+                        {snapshotAtDate.primaryFormatted}
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-teal-900 font-semibold mt-0.5">
+                        <span>Sotilgan: {snapshotAtDate.soldUpToDatePieces} dona</span>
+                        {snapshotAtDate.soldOnDatePieces > 0 && (
+                          <span className="bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded font-mono font-bold">
+                            Shu kuni: -{snapshotAtDate.soldOnDatePieces}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* 4. Hozirgi joriy qoldiq va Jami sotilgan */}
+                <div className="p-2.5 sm:p-3 rounded-2xl bg-emerald-50/80 border border-emerald-200 shadow-2xs">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10.5px] font-bold text-emerald-800 uppercase tracking-wide">
+                      4. Hozirgi qoldiq:
+                    </span>
+                    <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-900 px-1.5 py-0.5 rounded-md">
+                      Sotilgan: {summary.formattedPieces}
+                    </span>
+                  </div>
+                  <div className="text-sm sm:text-base font-extrabold font-mono text-emerald-950 mt-0.5 tabular-nums">
+                    {chronology.currentFormatted.primary}
+                  </div>
+                  <div className="text-[10px] text-emerald-800 font-mono flex items-center justify-between">
+                    <span>{chronology.currentFormatted.secondary}</span>
+                    <strong className="text-emerald-950">{formatMoney(summary.totalSumUsd)}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bo'limlar tab tugmalari */}
+              <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
+                <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('all_chronology')}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                      activeTab === 'all_chronology'
+                        ? 'bg-neutral-900 text-white shadow-2xs'
+                        : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                    }`}
+                  >
+                    <Layers className="w-3.5 h-3.5 text-rose-400" />
+                    <span>To'liq xronologiya va sotuvlar ({chronology.timelineEvents.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('initial_changes')}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                      activeTab === 'initial_changes'
+                        ? 'bg-amber-700 text-white shadow-2xs'
+                        : 'bg-white text-amber-900 border border-amber-200 hover:bg-amber-50'
+                    }`}
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    <span>
+                      Dastlabki qoldiq va o'zgarishlar xronologiyasi ({chronology.initialAndEditLogs.length})
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('sales_only')}
+                    className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                      activeTab === 'sales_only'
+                        ? 'bg-rose-700 text-white shadow-2xs'
+                        : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                    }`}
+                  >
+                    <Receipt className="w-3.5 h-3.5" />
+                    <span>Faqat mijozlarga sotuvlar ({filteredRecords.length})</span>
+                  </button>
+                </div>
+
+                {/* Tezkor sana tanlash tugmalari (Sanadagi qoldiq uchun) */}
+                <div className="flex items-center gap-1 text-[11px]">
+                  <span className="text-neutral-500 font-medium mr-1">Sanadagi qoldiq:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSnapshotDate(todayYmd)}
+                    className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
+                      snapshotDate === todayYmd
+                        ? 'bg-teal-700 text-white'
+                        : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Bugun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSnapshotDate(yesterdayYmd)}
+                    className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
+                      snapshotDate === yesterdayYmd
+                        ? 'bg-teal-700 text-white'
+                        : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Kecha
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSnapshotDate(firstDayOfMonthYmd)}
+                    className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
+                      snapshotDate === firstDayOfMonthYmd
+                        ? 'bg-teal-700 text-white'
+                        : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Oy boshi
+                  </button>
                 </div>
               </div>
             </div>
+          )}
 
-            {/* Bo'limlar tab tugmalari */}
-            <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
-              <div className="flex items-center gap-1.5 flex-wrap text-xs">
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('all_chronology')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                    activeTab === 'all_chronology'
-                      ? 'bg-neutral-900 text-white shadow-2xs'
-                      : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
-                  }`}
-                >
-                  <Layers className="w-3.5 h-3.5 text-rose-400" />
-                  <span>To'liq xronologiya va sotuvlar ({chronology.timelineEvents.length})</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('initial_changes')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                    activeTab === 'initial_changes'
-                      ? 'bg-amber-700 text-white shadow-2xs'
-                      : 'bg-white text-amber-900 border border-amber-200 hover:bg-amber-50'
-                  }`}
-                >
-                  <History className="w-3.5 h-3.5" />
-                  <span>
-                    Dastlabki qoldiq va o'zgarishlar xronologiyasi ({chronology.initialAndEditLogs.length})
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('sales_only')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                    activeTab === 'sales_only'
-                      ? 'bg-rose-700 text-white shadow-2xs'
-                      : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
-                  }`}
-                >
-                  <Receipt className="w-3.5 h-3.5" />
-                  <span>Faqat mijozlarga sotuvlar ({filteredRecords.length})</span>
-                </button>
+          {/* Filters and Date Range Picker Bar */}
+          <div className="p-3.5 sm:p-4 bg-white border-b border-neutral-200 space-y-3">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              {/* Search Input */}
+              <div className="relative flex-1 max-w-md">
+                <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Mijoz nomi, telefon, manzil yoki xodim bo'yicha qidirish..."
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-neutral-50 focus:bg-white rounded-xl border border-neutral-200 focus:border-rose-500 outline-none transition"
+                />
               </div>
 
-              {/* Tezkor sana tanlash tugmalari (Sanadagi qoldiq uchun) */}
-              <div className="flex items-center gap-1 text-[11px]">
-                <span className="text-neutral-500 font-medium mr-1">Sanadagi qoldiq:</span>
+              {/* Quick Date Preset Buttons */}
+              <div className="flex items-center gap-1.5 flex-wrap text-xs">
+                <span className="font-bold text-neutral-700 flex items-center gap-1 mr-1">
+                  <Calendar className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Sana filtri:</span>
+                </span>
                 <button
                   type="button"
-                  onClick={() => setSnapshotDate(todayYmd)}
-                  className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
-                    snapshotDate === todayYmd
-                      ? 'bg-teal-700 text-white'
-                      : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  onClick={() => setDateFilter('all')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    dateFilter === 'all'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  Barchasi
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDateFilter('today')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    dateFilter === 'today'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
                   }`}
                 >
                   Bugun
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSnapshotDate(yesterdayYmd)}
-                  className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
-                    snapshotDate === yesterdayYmd
-                      ? 'bg-teal-700 text-white'
-                      : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  onClick={() => setDateFilter('yesterday')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    dateFilter === 'yesterday'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
                   }`}
                 >
                   Kecha
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSnapshotDate(firstDayOfMonthYmd)}
-                  className={`px-2 py-0.5 rounded-lg font-bold cursor-pointer ${
-                    snapshotDate === firstDayOfMonthYmd
-                      ? 'bg-teal-700 text-white'
-                      : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  onClick={() => setDateFilter('this_month')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    dateFilter === 'this_month'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
                   }`}
                 >
-                  Oy boshi
+                  Shu oy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDateFilter('custom')}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                    dateFilter === 'custom'
+                      ? 'bg-rose-700 text-white shadow-2xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  Maxsus muddat
                 </button>
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Filters and Date Range Picker Bar */}
-        <div className="p-4 bg-white border-b border-neutral-200 space-y-3 shrink-0">
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-            {/* Search Input */}
-            <div className="relative flex-1 max-w-md">
-              <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Mijoz nomi, telefon, manzil yoki xodim bo'yicha qidirish..."
-                className="w-full pl-9 pr-3 py-2 text-xs bg-neutral-50 focus:bg-white rounded-xl border border-neutral-200 focus:border-rose-500 outline-none transition"
-              />
-            </div>
-
-            {/* Quick Date Preset Buttons */}
-            <div className="flex items-center gap-1.5 flex-wrap text-xs">
-              <span className="font-bold text-neutral-700 flex items-center gap-1 mr-1">
-                <Calendar className="w-3.5 h-3.5 text-rose-600" />
-                <span>Sana filtri:</span>
-              </span>
-              <button
-                type="button"
-                onClick={() => setDateFilter('all')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-                  dateFilter === 'all'
-                    ? 'bg-rose-700 text-white shadow-2xs'
-                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                }`}
-              >
-                Barchasi
-              </button>
-              <button
-                type="button"
-                onClick={() => setDateFilter('today')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-                  dateFilter === 'today'
-                    ? 'bg-rose-700 text-white shadow-2xs'
-                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                }`}
-              >
-                Bugun
-              </button>
-              <button
-                type="button"
-                onClick={() => setDateFilter('yesterday')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-                  dateFilter === 'yesterday'
-                    ? 'bg-rose-700 text-white shadow-2xs'
-                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                }`}
-              >
-                Kecha
-              </button>
-              <button
-                type="button"
-                onClick={() => setDateFilter('this_month')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-                  dateFilter === 'this_month'
-                    ? 'bg-rose-700 text-white shadow-2xs'
-                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                }`}
-              >
-                Shu oy
-              </button>
-              <button
-                type="button"
-                onClick={() => setDateFilter('custom')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-                  dateFilter === 'custom'
-                    ? 'bg-rose-700 text-white shadow-2xs'
-                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                }`}
-              >
-                Maxsus muddat
-              </button>
-            </div>
-          </div>
-
-          {/* Custom Date Range Picker Inputs (Start Date -> End Date) */}
-          {dateFilter === 'custom' && (
-            <div className="p-3 rounded-2xl bg-rose-50/60 border border-rose-200 flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-150">
-              <span className="font-bold text-rose-900 flex items-center gap-1">
-                <Filter className="w-3.5 h-3.5 text-rose-700" />
-                <span>Maxsus kunlar oralig'i:</span>
-              </span>
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-neutral-600 font-medium">Dan:</span>
-                  <input
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="px-2.5 py-1 rounded-xl border border-neutral-300 bg-white font-mono font-bold text-neutral-900 outline-none focus:border-rose-500"
-                  />
+            {/* Custom Date Range Picker Inputs (Start Date -> End Date) */}
+            {dateFilter === 'custom' && (
+              <div className="p-3 rounded-2xl bg-rose-50/60 border border-rose-200 flex flex-wrap items-center gap-3 text-xs animate-in fade-in duration-150">
+                <span className="font-bold text-rose-900 flex items-center gap-1">
+                  <Filter className="w-3.5 h-3.5 text-rose-700" />
+                  <span>Maxsus kunlar oralig'i:</span>
+                </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-neutral-600 font-medium">Dan:</span>
+                    <input
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                      className="px-2.5 py-1 rounded-xl border border-neutral-300 bg-white font-mono font-bold text-neutral-900 outline-none focus:border-rose-500"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-neutral-600 font-medium">Gacha:</span>
+                    <input
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      className="px-2.5 py-1 rounded-xl border border-neutral-300 bg-white font-mono font-bold text-neutral-900 outline-none focus:border-rose-500"
+                    />
+                  </div>
+                  {(startDate || endDate) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStartDate('');
+                        setEndDate('');
+                      }}
+                      className="px-2 py-1 text-[11px] font-bold text-rose-700 hover:text-rose-900 underline cursor-pointer"
+                    >
+                      Sanani tozalash
+                    </button>
+                  )}
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-neutral-600 font-medium">Gacha:</span>
-                  <input
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="px-2.5 py-1 rounded-xl border border-neutral-300 bg-white font-mono font-bold text-neutral-900 outline-none focus:border-rose-500"
-                  />
-                </div>
-                {(startDate || endDate) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setStartDate('');
-                      setEndDate('');
-                    }}
-                    className="px-2 py-1 text-[11px] font-bold text-rose-700 hover:text-rose-900 underline cursor-pointer"
-                  >
-                    Sanani tozalash
-                  </button>
-                )}
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        {/* Content Table / Mobile Cards */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {/* Content Table / Mobile Cards */}
+          <div className="p-4 sm:p-6 space-y-6">
           {/* 1-BO'LIM: BAZA YARATILGANDA KIRITILGAN DASTLABKI QOLDIQ VA UNING O'ZGARISHLARI XRONOLOGIYASI */}
           {chronology && (activeTab === 'all_chronology' || activeTab === 'initial_changes') && (
             <div className="space-y-4">
@@ -1227,9 +1505,9 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                   </span>
                 </div>
 
-                <div className="overflow-x-auto max-h-80">
+                <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs text-neutral-900 border-collapse">
-                    <thead className="sticky top-0 z-10 bg-indigo-50/95 border-b border-indigo-100 text-indigo-950 font-bold uppercase tracking-wider text-[10.5px]">
+                    <thead className="bg-indigo-50/95 border-b border-indigo-100 text-indigo-950 font-bold uppercase tracking-wider text-[10.5px]">
                       <tr>
                         <th className="py-2.5 px-3 w-10 text-center">#</th>
                         <th className="py-2.5 px-3">Sana</th>
@@ -1323,7 +1601,7 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                   <div className="hidden md:block rounded-2xl border border-neutral-200 overflow-hidden shadow-2xs bg-white">
                 <StickyTableWrapper>
                   <table className="w-full text-left text-xs text-neutral-900 border-collapse">
-                    <thead className="sticky top-0 z-20">
+                    <thead>
                       <tr className="bg-rose-50/80 border-b border-neutral-200 text-neutral-700 font-bold uppercase tracking-wider text-[11px]">
                         <th className="py-3 px-3.5 w-10 text-center">#</th>
                         <th className="py-3 px-3.5">Qachon (Sana va vaqt)</th>
@@ -1530,6 +1808,7 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
           )}
             </div>
           )}
+          </div>
         </div>
 
         {/* Footer */}

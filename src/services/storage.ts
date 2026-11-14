@@ -36,6 +36,28 @@ export const APP_INITIALIZED_KEY = 'savdo_app_initialized_v1';
 // Yopilgan rejalar 7 kundan keyin avtomatik tozalanishi va barchada ko'rinmasligi uchun
 export const CLOSED_PLAN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 kun
 
+export const DB_WIPE_CUTOFF_TS = 1794665500000;
+
+export function isLegacyWipedRecord(id?: string | null): boolean {
+  if (!id) return false;
+  const matches = String(id).match(/179[34]\d{9}/g);
+  if (matches && matches.length > 0) {
+    return matches.some((m) => Number(m) < DB_WIPE_CUTOFF_TS);
+  }
+  if (
+    id === 'cli_1' ||
+    id === 'cli_2' ||
+    id === 'cli_3' ||
+    id === 'wh_1' ||
+    id === 'wh_2' ||
+    id === 'month_plan_seed_1' ||
+    String(id).startsWith('log_seed_')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function isClosedPlanExpired7Days(_plan: DailyPlanItem): boolean {
   // Yopilgan rejalar "Yopilganlar" ro'yxatidan o'z-o'zidan o'chib ketmasligi va har doim ko'rinishi uchun false qaytaramiz
   return false;
@@ -255,212 +277,9 @@ export function unmarkPlanAsDeleted(planId: string): void {
   }
 }
 
-const INITIAL_WAREHOUSE_PRODUCTS: WarehouseProduct[] = [
-  {
-    id: 'wh_1',
-    brand: 'Castrol',
-    name: 'Magnatec Motor moyi',
-    mark1: '5W-40',
-    mark2: 'Sintetika',
-    extraMarks: ['A3/B4'],
-    baseUnit: 'litr',
-    pieceUnitName: '1 idish',
-    volumePerPiece: 5,
-    packageUnitName: 'korobka',
-    piecesPerPackage: 4,
-    pricingUnitType: 'piece',
-    currency: 'USD',
-    price: 30,
-    intakeDate: new Date().toISOString().slice(0, 10),
-    intakeUnitType: 'package',
-    intakeQuantity: 20,
-    totalSum: 2400,
-    totalPieces: 80,
-    totalVolume: 400,
-    minSellingPricingUnitType: 'piece',
-    minSellingPrice: 35,
-    createdBy: 'adminc',
-    createdAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
-    notes: "Boshlang'ich ombor zaxirasi",
-  },
-  {
-    id: 'wh_2',
-    brand: 'Knauf',
-    name: 'Gipsokarton',
-    mark1: '9.5 mm',
-    mark2: 'Namlikka chidamli (yashil)',
-    extraMarks: ['2500x1200'],
-    baseUnit: 'metr kvadrat',
-    pieceUnitName: '1 dona',
-    volumePerPiece: 3,
-    packageUnitName: 'blok',
-    piecesPerPackage: 10,
-    pricingUnitType: 'piece',
-    currency: 'USD',
-    price: 4.5,
-    intakeDate: new Date().toISOString().slice(0, 10),
-    intakeUnitType: 'package',
-    intakeQuantity: 15,
-    totalSum: 675,
-    totalPieces: 150,
-    totalVolume: 450,
-    minSellingPricingUnitType: 'piece',
-    minSellingPrice: 5.5,
-    createdBy: 'adminc',
-    createdAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
-    notes: "To'g'ridan-to'g'ri zavoddan keltirildi",
-  },
-];
+const INITIAL_WAREHOUSE_PRODUCTS: WarehouseProduct[] = [];
 
-// Sample initial data with createdBy, location breakdown and audit logs
-const INITIAL_CLIENTS: Client[] = [
-  {
-    id: 'cli_1',
-    name: 'Akromjon Karimov',
-    phone: '+998 90 123 45 67',
-    phones: ['+998 90 123 45 67'],
-    region: 'Toshkent shahri',
-    district: 'Chilonzor tumani',
-    landmark: '19-mavze, 45-uy',
-    address: 'Toshkent shahri, Chilonzor tumani, 19-mavze, 45-uy',
-    products: [
-      {
-        id: 'p1_1',
-        name: 'Sement M500 (Ohangaron)',
-        unit: 'qop',
-        quantity: 50,
-        unitPrice: 5,
-        totalPrice: 250,
-      },
-      {
-        id: 'p1_2',
-        name: 'Armatura 12mm (Bekobod)',
-        unit: 'metr',
-        quantity: 120,
-        unitPrice: 1,
-        totalPrice: 120,
-      },
-      {
-        id: 'p1_3',
-        name: 'Gipsokarton 9.5mm (Knauf)',
-        unit: 'dona',
-        quantity: 25,
-        unitPrice: 4,
-        totalPrice: 100,
-      },
-    ],
-    currentDebt: 150,
-    currentAdvance: 0,
-    notes: 'Qolgan 150 USD ni hafta oxirigacha beradi.',
-    createdAt: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString(),
-    updatedAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
-    createdBy: 'adminc',
-    syncStatus: 'synced',
-    logs: [
-      {
-        id: 'log_init_1',
-        clientId: 'cli_1',
-        author: 'adminc',
-        timestamp: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString(),
-        type: 'created',
-        title: "Mijoz ro'yxatga qo'shildi",
-        details: "Boshlang'ich mahsulotlar va 150 USD qarz bilan kiritildi.",
-      },
-    ],
-  },
-  {
-    id: 'cli_2',
-    name: 'Shohruh Mirzayev',
-    phone: '+998 93 987 65 43',
-    phones: ['+998 93 987 65 43'],
-    region: 'Samarqand viloyati',
-    district: 'Samarqand shahri',
-    landmark: "Registon ko'chasi, 12-uy",
-    address: "Samarqand viloyati, Samarqand shahri, Registon ko'chasi, 12-uy",
-    products: [
-      {
-        id: 'p2_1',
-        name: 'Kafel yelim (Master)',
-        unit: 'qop',
-        quantity: 20,
-        unitPrice: 4,
-        totalPrice: 80,
-      },
-      {
-        id: 'p2_2',
-        name: 'Kafel 60x60 oq mramor',
-        unit: 'metr kvadrat',
-        quantity: 45,
-        unitPrice: 7.5,
-        totalPrice: 337.5,
-      },
-    ],
-    currentDebt: 0,
-    currentAdvance: 30,
-    notes: 'Keyingi buyurtma uchun 30 USD oldindan bergan.',
-    createdAt: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
-    updatedAt: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(),
-    createdBy: 'adminc',
-    syncStatus: 'synced',
-    logs: [
-      {
-        id: 'log_init_2',
-        clientId: 'cli_2',
-        author: 'adminc',
-        timestamp: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
-        type: 'created',
-        title: "Mijoz ro'yxatga qo'shildi",
-        details: "30 USD avans to'lovi bilan kiritildi.",
-      },
-    ],
-  },
-  {
-    id: 'cli_3',
-    name: 'Dilnoza Saidova',
-    phone: '+998 97 555 44 33',
-    phones: ['+998 97 555 44 33'],
-    region: 'Buxoro viloyati',
-    district: 'Buxoro shahri',
-    landmark: "G'ijduvon shoh ko'chasi, 88-bino",
-    address: "Buxoro viloyati, Buxoro shahri, G'ijduvon shoh ko'chasi, 88-bino",
-    products: [
-      {
-        id: 'p3_1',
-        name: 'Fasad bo\'yoq (Dufa)',
-        unit: 'litr',
-        quantity: 30,
-        unitPrice: 3.5,
-        totalPrice: 105,
-      },
-      {
-        id: 'p3_2',
-        name: 'Shpatlevka (Saten)',
-        unit: 'qop',
-        quantity: 15,
-        unitPrice: 3,
-        totalPrice: 45,
-      },
-    ],
-    currentDebt: 50,
-    currentAdvance: 0,
-    notes: 'Yetkazib berilgan, to\'lov kutilmoqda.',
-    createdAt: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
-    updatedAt: new Date().toISOString(),
-    createdBy: 'agentp1',
-    syncStatus: 'synced',
-    logs: [
-      {
-        id: 'log_init_3',
-        clientId: 'cli_3',
-        author: 'agentp1',
-        timestamp: new Date(Date.now() - 1 * 24 * 3600 * 1000).toISOString(),
-        type: 'created',
-        title: "Mijoz ro'yxatga qo'shildi",
-        details: "1-Agent (agentp1) tomonidan kiritildi.",
-      },
-    ],
-  },
-];
+const INITIAL_CLIENTS: Client[] = [];
 
 class StorageService {
   private listeners: Set<() => void> = new Set();
@@ -473,13 +292,20 @@ class StorageService {
 
   constructor() {
     if (typeof window !== 'undefined') {
-      const OPS_RESET_FLAG = 'savdo_ops_reset_v20261105';
-      if (!localStorage.getItem(OPS_RESET_FLAG)) {
-        localStorage.setItem(OPS_RESET_FLAG, 'true');
+      const FULL_DB_RESET_FLAG = 'savdo_full_db_reset_v20261114_clean_v2';
+      if (!localStorage.getItem(FULL_DB_RESET_FLAG)) {
+        localStorage.setItem(FULL_DB_RESET_FLAG, 'true');
         localStorage.removeItem(SYNC_QUEUE_KEY);
-        localStorage.removeItem(STORAGE_KEY);
-        localStorage.removeItem(DAILY_PLANS_KEY);
-        localStorage.removeItem(WAREHOUSE_KEY);
+        localStorage.setItem(STORAGE_KEY, '[]');
+        localStorage.setItem(DAILY_PLANS_KEY, '[]');
+        localStorage.setItem(WAREHOUSE_KEY, '[]');
+        localStorage.setItem(MONTHLY_PLANS_KEY, '[]');
+        localStorage.removeItem(DELETED_CLIENT_IDS_KEY);
+        localStorage.removeItem(DELETED_WAREHOUSE_IDS_KEY);
+        localStorage.removeItem(DELETED_PLAN_IDS_KEY);
+        localStorage.setItem('savdo_system_logs_v1', '[]');
+        localStorage.removeItem('savdo_system_archives_v1');
+        localStorage.removeItem('savdo_system_15day_archives_v1');
       }
       const isInit = localStorage.getItem(APP_INITIALIZED_KEY);
       if (!isInit) {
@@ -580,7 +406,7 @@ class StorageService {
       const deletedIds = getDeletedClientIds();
       const parsed: Client[] = JSON.parse(data);
       const normalized = parsed
-        .filter((c) => !deletedIds.has(c.id))
+        .filter((c) => c && c.id && !deletedIds.has(c.id) && !isLegacyWipedRecord(c.id))
         .map((c) => {
           let region = c.region;
           let district = c.district;
@@ -613,7 +439,9 @@ class StorageService {
   public saveClients(clients: Client[]): void {
     if (typeof window === 'undefined') return;
     const deletedIds = getDeletedClientIds();
-    const clean = clients.filter((c) => c && c.id && !deletedIds.has(c.id));
+    const clean = clients.filter(
+      (c) => c && c.id && !deletedIds.has(c.id) && !isLegacyWipedRecord(c.id)
+    );
     this.clientsCache = clean;
     this.rebuildClientsMap(clean);
     this.plansCache = null; // Invalidate plans cache in case activeClientIds changed
@@ -1420,6 +1248,8 @@ class StorageService {
           p.clientId &&
           !deletedIds.has(p.clientId) &&
           !deletedPlanIds.has(p.id) &&
+          !isLegacyWipedRecord(p.id) &&
+          !isLegacyWipedRecord(p.clientId) &&
           !isClosedPlanExpired7Days(p)
       );
       const { mergedPlans, recoveredAny } = this.recoverClosedPlansFromClientLogs(filtered);
@@ -1445,6 +1275,8 @@ class StorageService {
         p.clientId &&
         !deletedIds.has(p.clientId) &&
         !deletedPlanIds.has(p.id) &&
+        !isLegacyWipedRecord(p.id) &&
+        !isLegacyWipedRecord(p.clientId) &&
         !isClosedPlanExpired7Days(p)
     );
     const { mergedPlans } = this.recoverClosedPlansFromClientLogs(activeWithin7Days);
@@ -1708,9 +1540,58 @@ class StorageService {
       delete plan.productsDelivered;
       delete plan.deliveryPayment;
     }
-    if (report.productsReturned && report.productsReturned.length > 0) {
-      plan.productsReturned = report.productsReturned;
+    const stampedReturnedProducts =
+      report.productsReturned && report.productsReturned.length > 0
+        ? report.productsReturned
+            .filter((r) => (r.quantity || 0) > 0)
+            .map((r) => ({
+              ...r,
+              returnedAt: (r as any).returnedAt || effectiveTimestamp,
+              author: (r as any).author || author,
+            }))
+        : undefined;
+
+    if (stampedReturnedProducts && stampedReturnedProducts.length > 0) {
+      const prevReturns = Array.isArray(plan.productsReturned) ? plan.productsReturned : [];
+      plan.productsReturned = [...prevReturns, ...stampedReturnedProducts];
     }
+
+    // Track products that were removed or reduced when editing a plan so ClientDetailModal can display them crossed out as returned/cancelled
+    if (oldProducts.length > 0) {
+      const prevCancelled: any[] = Array.isArray((plan as any).cancelledProducts)
+        ? [...(plan as any).cancelledProducts]
+        : [];
+      const newProdsList = effectiveDeliveredProducts || [];
+      oldProducts.forEach((op) => {
+        const matchNew = newProdsList.find(
+          (np) =>
+            (np.id && op.id && np.id === op.id) ||
+            (np.warehouseId && op.warehouseId && np.warehouseId === op.warehouseId) ||
+            np.name.trim().toLowerCase() === op.name.trim().toLowerCase()
+        );
+        if (!matchNew) {
+          prevCancelled.push({
+            ...op,
+            cancelledAt: effectiveTimestamp,
+            cancelledBy: author,
+          });
+        } else if ((matchNew.quantity || 0) < (op.quantity || 0)) {
+          const diffQty = Math.round(((op.quantity || 0) - (matchNew.quantity || 0)) * 100) / 100;
+          const uPrice = op.unitPrice || matchNew.unitPrice || 0;
+          prevCancelled.push({
+            ...op,
+            id: `${op.id || op.name}_ret_${Date.now()}`,
+            quantity: diffQty,
+            totalPrice: Math.round(diffQty * uPrice * 100) / 100,
+            cancelledAt: effectiveTimestamp,
+            cancelledBy: author,
+          });
+        }
+      });
+      // Filter out any cancelled product that was re-added with full quantity
+      (plan as any).cancelledProducts = prevCancelled;
+    }
+
     if (report.reportNote !== undefined && report.reportNote.trim() !== '') {
       plan.reportNote = report.reportNote;
     }
@@ -1725,10 +1606,7 @@ class StorageService {
             financialAction: effectiveFinancialAction,
             productsDelivered: effectiveDeliveredProducts,
             deliveryPayment: effectiveDeliveryPayment,
-            productsReturned:
-              report.productsReturned && report.productsReturned.length > 0
-                ? report.productsReturned
-                : plan.productsReturned,
+            productsReturned: plan.productsReturned,
             reportNote: report.reportNote || plan.reportNote,
           },
         ]
@@ -1760,9 +1638,11 @@ class StorageService {
           financialAction: plan.financialAction,
           productsDelivered: plan.productsDelivered,
           deliveryPayment: plan.deliveryPayment,
+          productsReturned: plan.productsReturned,
           actionsHistory: plan.actionsHistory,
           actionsCount: plan.actionsCount,
         };
+        (updatedOther as any).cancelledProducts = (plan as any).cancelledProducts;
         if (!plan.financialAction) delete updatedOther.financialAction;
         if (!plan.productsDelivered) {
           delete updatedOther.productsDelivered;
@@ -2033,9 +1913,17 @@ class StorageService {
 
         validReturns.forEach((retItem) => {
           // Deduct from client's products
-          const pIndex = updatedProducts.findIndex(
-            (p) => p.id === retItem.productId || p.name === retItem.name
+          const retNameClean = (retItem.name || '').trim().toLowerCase();
+          let pIndex = updatedProducts.findIndex(
+            (p) =>
+              (p.id && retItem.productId && p.id === retItem.productId) ||
+              (p.warehouseId && retItem.warehouseId && p.warehouseId === retItem.warehouseId)
           );
+          if (pIndex === -1) {
+            pIndex = updatedProducts.findIndex(
+              (p) => (p.name || '').trim().toLowerCase() === retNameClean
+            );
+          }
           if (pIndex !== -1) {
             const existing = updatedProducts[pIndex];
             const newQty = Math.max(0, existing.quantity - retItem.quantity);
@@ -2051,6 +1939,9 @@ class StorageService {
                 totalPrice: Math.round(newQty * price),
               };
             }
+          } else {
+            const price = retItem.unitPrice || 0;
+            totalReturnedValue += retItem.quantity * price;
           }
 
           // Return back into warehouse inventory
@@ -2191,6 +2082,39 @@ class StorageService {
     const newNetDebtEffect = newTotalValue - newPaidAmt;
 
     // 4. Reja elementini yangilaymiz (ham ochiq, ham yopilgan holatda ishlaydi)
+    if (oldProducts.length > 0) {
+      const prevCancelled: any[] = Array.isArray((plan as any).cancelledProducts)
+        ? [...(plan as any).cancelledProducts]
+        : [];
+      oldProducts.forEach((op) => {
+        const matchNew = newProducts.find(
+          (np) =>
+            (np.id && op.id && np.id === op.id) ||
+            (np.warehouseId && op.warehouseId && np.warehouseId === op.warehouseId) ||
+            np.name.trim().toLowerCase() === op.name.trim().toLowerCase()
+        );
+        if (!matchNew) {
+          prevCancelled.push({
+            ...op,
+            cancelledAt: effectiveTimestamp,
+            cancelledBy: author,
+          });
+        } else if ((matchNew.quantity || 0) < (op.quantity || 0)) {
+          const diffQty = Math.round(((op.quantity || 0) - (matchNew.quantity || 0)) * 100) / 100;
+          const uPrice = op.unitPrice || matchNew.unitPrice || 0;
+          prevCancelled.push({
+            ...op,
+            id: `${op.id || op.name}_ret_${Date.now()}`,
+            quantity: diffQty,
+            totalPrice: Math.round(diffQty * uPrice * 100) / 100,
+            cancelledAt: effectiveTimestamp,
+            cancelledBy: author,
+          });
+        }
+      });
+      (plan as any).cancelledProducts = prevCancelled;
+    }
+
     if (newProducts.length > 0) {
       plan.productsDelivered = newProducts;
       plan.deliveryPayment = newDeliveryPayment;
@@ -3065,12 +2989,13 @@ class StorageService {
         p.intakeUnitType === 'package' && p.packageUnitName && (p.piecesPerPackage || 1) > 1
           ? (p.intakeQuantity || 0) * (p.piecesPerPackage || 1)
           : p.intakeQuantity || p.totalPieces || 0;
+      const hasEdits = (p.initialEditCount || 0) > 0;
       const initPieces =
-        p.initialTotalPieces !== undefined && p.initialTotalPieces > 0
+        p.initialTotalPieces !== undefined && (p.initialTotalPieces > 0 || hasEdits)
           ? p.initialTotalPieces
           : Math.max(calcIntakePieces, p.totalPieces || 0);
       const initVol =
-        p.initialTotalVolume !== undefined && p.initialTotalVolume > 0
+        p.initialTotalVolume !== undefined && (p.initialTotalVolume > 0 || hasEdits)
           ? p.initialTotalVolume
           : initPieces * (p.volumePerPiece || 1);
       const initDate =
@@ -3079,7 +3004,7 @@ class StorageService {
         (p.createdAt ? p.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10));
       const initUnitType = p.initialIntakeUnitType || p.intakeUnitType || 'piece';
       const initQty =
-        p.initialIntakeQuantity !== undefined && p.initialIntakeQuantity > 0
+        p.initialIntakeQuantity !== undefined && (p.initialIntakeQuantity > 0 || hasEdits)
           ? p.initialIntakeQuantity
           : initUnitType === 'package' && (p.piecesPerPackage || 1) > 1
           ? Math.round((initPieces / (p.piecesPerPackage || 1)) * 100) / 100
@@ -3141,7 +3066,7 @@ class StorageService {
       }
       const parsed: WarehouseProduct[] = JSON.parse(data);
       const filtered = parsed
-        .filter((p) => p && p.id && !deletedIds.has(p.id))
+        .filter((p) => p && p.id && !deletedIds.has(p.id) && !isLegacyWipedRecord(p.id))
         .map(ensureInitialMetadata);
       if (filtered.length !== parsed.length) {
         localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(filtered));
@@ -3161,7 +3086,9 @@ class StorageService {
   public saveWarehouseProducts(items: WarehouseProduct[]): void {
     try {
       const deletedIds = getDeletedWarehouseIds();
-      const cleanItems = items.filter((p) => p && p.id && !deletedIds.has(p.id));
+      const cleanItems = items.filter(
+        (p) => p && p.id && !deletedIds.has(p.id) && !isLegacyWipedRecord(p.id)
+      );
       localStorage.setItem(WAREHOUSE_KEY, JSON.stringify(cleanItems));
       this.warehouseCache = null;
       this.notify();
@@ -3283,6 +3210,12 @@ class StorageService {
         ? (existing.intakeQuantity || 0) * (existing.piecesPerPackage || 1)
         : existing.intakeQuantity || existing.totalPieces || 0;
 
+    const oldInitialPieces =
+      existing.initialTotalPieces !== undefined &&
+      (existing.initialTotalPieces > 0 || (existing.initialEditCount || 0) > 0)
+        ? existing.initialTotalPieces
+        : oldIntakePieces;
+
     const newIntakePieces =
       productData.intakeUnitType === 'package' &&
       productData.packageUnitName &&
@@ -3290,55 +3223,50 @@ class StorageService {
         ? (productData.intakeQuantity || 0) * (productData.piecesPerPackage || 1)
         : productData.intakeQuantity || 0;
 
-    const preservedInitialPieces =
-      existing.initialTotalPieces !== undefined && existing.initialTotalPieces > 0
-        ? existing.initialTotalPieces
-        : oldIntakePieces;
-    const preservedInitialVolume =
-      existing.initialTotalVolume !== undefined && existing.initialTotalVolume > 0
-        ? existing.initialTotalVolume
-        : preservedInitialPieces * (existing.volumePerPiece || 1);
-    const preservedInitialDate =
+    const nextInitialPieces = newIntakePieces;
+    const nextInitialVolume =
+      Math.round(
+        nextInitialPieces * (productData.volumePerPiece || existing.volumePerPiece || 1) * 100
+      ) / 100;
+    const nextInitialDate =
+      productData.intakeDate ||
       existing.initialIntakeDate ||
       existing.intakeDate ||
       (existing.createdAt ? existing.createdAt.slice(0, 10) : nowIso.slice(0, 10));
-    const preservedInitialUnitType =
-      existing.initialIntakeUnitType || existing.intakeUnitType || 'piece';
-    const preservedInitialQty =
-      existing.initialIntakeQuantity !== undefined && existing.initialIntakeQuantity > 0
-        ? existing.initialIntakeQuantity
-        : existing.intakeQuantity;
+    const nextInitialUnitType = productData.intakeUnitType || 'piece';
+    const nextInitialQty = productData.intakeQuantity;
 
     const nextHistory: WarehouseStockChangeLog[] = Array.isArray(existing.stockHistory)
       ? [...existing.stockHistory]
       : [];
     let nextEditCount = existing.initialEditCount || 0;
 
-    const isIntakeChanged = oldIntakePieces !== newIntakePieces;
+    const isIntakeChanged = oldInitialPieces !== nextInitialPieces;
     const isRemainingPiecesChanged = (existing.totalPieces || 0) !== (productData.totalPieces || 0);
 
     if (isIntakeChanged || isRemainingPiecesChanged) {
       nextEditCount += 1;
-      const deltaPieces = (productData.totalPieces || 0) - (existing.totalPieces || 0);
+      const deltaInitial = Math.round((nextInitialPieces - oldInitialPieces) * 100) / 100;
+      const deltaRemaining = Math.round(((productData.totalPieces || 0) - (existing.totalPieces || 0)) * 100) / 100;
       const changeLog: WarehouseStockChangeLog = {
         id: `whlog_edit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         timestamp: nowIso,
         dateStr: nowIso.slice(0, 10),
         author: author || productData.createdBy || 'adminc',
         changeType: isIntakeChanged ? 'initial_edit' : 'manual_adjustment',
-        previousPieces: existing.totalPieces || 0,
-        newPieces: productData.totalPieces || 0,
-        deltaPieces,
-        previousInitialPieces: oldIntakePieces,
-        newInitialPieces: newIntakePieces,
+        previousPieces: isIntakeChanged ? oldInitialPieces : existing.totalPieces || 0,
+        newPieces: isIntakeChanged ? nextInitialPieces : productData.totalPieces || 0,
+        deltaPieces: isIntakeChanged ? deltaInitial : deltaRemaining,
+        previousInitialPieces: oldInitialPieces,
+        newInitialPieces: nextInitialPieces,
         unit:
           productData.intakeUnitType === 'package' && productData.packageUnitName
             ? productData.packageUnitName
             : productData.pieceUnitName || 'dona',
         quantityInUnit: productData.intakeQuantity,
         note: isIntakeChanged
-          ? `Kirim miqdori o'zgartirildi: ${oldIntakePieces} donadan ${newIntakePieces} donaga (Joriy qoldiq: ${existing.totalPieces} -> ${productData.totalPieces} dona)${productData.notes && productData.notes !== existing.notes ? `. Izoh: ${productData.notes}` : ''}`
-          : `Ombordagi qoldiq bevosita tahrirlandi: ${existing.totalPieces} donadan ${productData.totalPieces} donaga (${deltaPieces >= 0 ? '+' : ''}${deltaPieces} dona)${productData.notes && productData.notes !== existing.notes ? `. Izoh: ${productData.notes}` : ''}`,
+          ? `Bazaga kiritilgandagi dastlabki soni (bosh qoldiq) o'zgartirildi: ${oldInitialPieces} donadan ${nextInitialPieces} donaga (${deltaInitial >= 0 ? '+' : ''}${deltaInitial} dona). Hozirgi qoldiq: ${existing.totalPieces} -> ${productData.totalPieces} dona${productData.notes && productData.notes !== existing.notes ? `. Izoh: ${productData.notes}` : ''}`
+          : `Ombordagi qoldiq bevosita tahrirlandi: ${existing.totalPieces} donadan ${productData.totalPieces} donaga (${deltaRemaining >= 0 ? '+' : ''}${deltaRemaining} dona)${productData.notes && productData.notes !== existing.notes ? `. Izoh: ${productData.notes}` : ''}`,
       };
       nextHistory.unshift(changeLog);
     }
@@ -3349,14 +3277,140 @@ class StorageService {
       id: existing.id,
       createdAt: existing.createdAt,
       currency: 'USD',
-      initialIntakeDate: preservedInitialDate,
-      initialIntakeUnitType: preservedInitialUnitType,
-      initialIntakeQuantity: preservedInitialQty,
-      initialTotalPieces: preservedInitialPieces,
-      initialTotalVolume: preservedInitialVolume,
+      initialIntakeDate: nextInitialDate,
+      initialIntakeUnitType: nextInitialUnitType,
+      initialIntakeQuantity: nextInitialQty,
+      initialTotalPieces: nextInitialPieces,
+      initialTotalVolume: nextInitialVolume,
       initialEditCount: nextEditCount,
       stockHistory: nextHistory,
     };
+    (updatedProduct as any).updatedAt = nowIso;
+    products[index] = updatedProduct;
+    this.saveWarehouseProducts(products);
+    return updatedProduct;
+  }
+
+  public updateWarehouseInitialStock(
+    id: string,
+    params: {
+      newInitialQuantity: number;
+      newInitialUnitType: 'package' | 'piece';
+      newInitialDate?: string;
+      note?: string;
+      oldInitialPiecesOverride?: number;
+      netSoldPiecesUpToToday?: number;
+    },
+    author: string = 'adminc'
+  ): WarehouseProduct | null {
+    const products = [...this.getWarehouseProducts()];
+    const index = products.findIndex((p) => p.id === id);
+    if (index === -1) return null;
+
+    const existing = products[index];
+    const nowIso = new Date().toISOString();
+    const hasPkg = Boolean(
+      existing.packageUnitName &&
+        existing.packageUnitName.trim() &&
+        (existing.piecesPerPackage || 1) > 1
+    );
+    const piecesPerPkg = hasPkg ? existing.piecesPerPackage || 1 : 1;
+    const unitType: 'package' | 'piece' = hasPkg ? params.newInitialUnitType : 'piece';
+    const cleanQty = Math.max(0, Math.round((Number(params.newInitialQuantity) || 0) * 100) / 100);
+    const newInitialPieces =
+      unitType === 'package'
+        ? Math.max(0, Math.round(cleanQty * piecesPerPkg * 100) / 100)
+        : cleanQty;
+    const volPerPiece = existing.volumePerPiece || 1;
+    const newInitialVolume = Math.round(newInitialPieces * volPerPiece * 100) / 100;
+
+    const oldIntakePieces =
+      existing.intakeUnitType === 'package' && hasPkg
+        ? (existing.intakeQuantity || 0) * piecesPerPkg
+        : existing.intakeQuantity || existing.totalPieces || 0;
+
+    const oldInitialPieces =
+      params.oldInitialPiecesOverride !== undefined && params.oldInitialPiecesOverride >= 0
+        ? params.oldInitialPiecesOverride
+        : existing.initialTotalPieces !== undefined &&
+          (existing.initialTotalPieces > 0 || (existing.initialEditCount || 0) > 0)
+        ? existing.initialTotalPieces
+        : Math.max(oldIntakePieces, existing.totalPieces || 0);
+
+    const deltaInitialPieces = Math.round((newInitialPieces - oldInitialPieces) * 100) / 100;
+
+    // Bugungi kungacha bo'lgan amallar (sotilgan - qaytarilgan) shu bosh qoldiqqa asosan bo'ladi:
+    // Hozirgi qoldiq = Yangi bosh qoldiq - (bugungi kungacha sof sotilganlar)
+    const netSoldUpToToday =
+      params.netSoldPiecesUpToToday !== undefined
+        ? params.netSoldPiecesUpToToday
+        : Math.max(0, Math.round((oldInitialPieces - (existing.totalPieces || 0)) * 100) / 100);
+
+    const newCurrentPieces = Math.max(
+      0,
+      Math.round((newInitialPieces - netSoldUpToToday) * 100) / 100
+    );
+    const newCurrentVolume = Math.round(newCurrentPieces * volPerPiece * 100) / 100;
+
+    const costPerPiece =
+      (existing.price || 0) > 0
+        ? existing.pricingUnitType === 'package' && hasPkg
+          ? (existing.price || 0) / piecesPerPkg
+          : existing.price || 0
+        : 0;
+    const newTotalSum = Math.round(newCurrentPieces * costPerPiece * 100) / 100;
+
+    const nextHistory: WarehouseStockChangeLog[] = Array.isArray(existing.stockHistory)
+      ? [...existing.stockHistory]
+      : [];
+
+    const unitLabel =
+      unitType === 'package' && existing.packageUnitName
+        ? existing.packageUnitName
+        : existing.pieceUnitName || 'dona';
+
+    const changeLog: WarehouseStockChangeLog = {
+      id: `whlog_edit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: nowIso,
+      dateStr: nowIso.slice(0, 10),
+      author: author || existing.createdBy || 'adminc',
+      changeType: 'initial_edit',
+      previousPieces: oldInitialPieces,
+      newPieces: newInitialPieces,
+      deltaPieces: deltaInitialPieces,
+      previousInitialPieces: oldInitialPieces,
+      newInitialPieces: newInitialPieces,
+      unit: unitLabel,
+      quantityInUnit: cleanQty,
+      note: `Bazaga kiritilgandagi dastlabki soni (bosh qoldiq) o'zgartirildi: ${oldInitialPieces} donadan ${newInitialPieces} donaga (${deltaInitialPieces >= 0 ? '+' : ''}${deltaInitialPieces} dona). Bugungi kungacha amallar: -${netSoldUpToToday} dona -> Hozirgi qoldiq: ${existing.totalPieces} donadan ${newCurrentPieces} donaga o'zgardi.${params.note ? ` Izoh: ${params.note}` : ''}`,
+    };
+
+    nextHistory.unshift(changeLog);
+
+    const effectiveInitDate =
+      params.newInitialDate ||
+      existing.initialIntakeDate ||
+      existing.intakeDate ||
+      (existing.createdAt ? existing.createdAt.slice(0, 10) : nowIso.slice(0, 10));
+
+    const updatedProduct: WarehouseProduct = {
+      ...existing,
+      intakeDate: effectiveInitDate,
+      intakeUnitType: unitType,
+      intakeQuantity: cleanQty,
+      initialIntakeDate: effectiveInitDate,
+      initialIntakeUnitType: unitType,
+      initialIntakeQuantity: cleanQty,
+      initialTotalPieces: newInitialPieces,
+      initialTotalVolume: newInitialVolume,
+      totalPieces: newCurrentPieces,
+      totalVolume: newCurrentVolume,
+      totalSum: newTotalSum > 0 ? newTotalSum : existing.totalSum,
+      initialEditCount: (existing.initialEditCount || 0) + 1,
+      stockHistory: nextHistory,
+    };
+    (updatedProduct as any).updatedAt = nowIso;
+
     products[index] = updatedProduct;
     this.saveWarehouseProducts(products);
     return updatedProduct;
@@ -3551,45 +3605,8 @@ class StorageService {
       const existingClients = this.getClients();
       const data = localStorage.getItem(MONTHLY_PLANS_KEY);
       if (!data) {
-        const now = new Date();
-        const startDateStr = new Date(now.getFullYear(), now.getMonth(), 1)
-          .toISOString()
-          .slice(0, 10);
-        const startMs = new Date(startDateStr + 'T00:00:00').getTime();
-        // Ensure at least 30 days duration
-        const endDateStr = new Date(startMs + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-
-        const initialClientDebts: Record<string, number> = {};
-        let initialTotalDebt = 0;
-        existingClients.forEach((c) => {
-          if (c.currentDebt && c.currentDebt > 0) {
-            initialClientDebts[c.id] = c.currentDebt;
-            initialTotalDebt += c.currentDebt;
-          }
-        });
-
-        const defaultTarget = initialTotalDebt > 0 ? initialTotalDebt : 10000;
-
-        const initialPlan: MonthlyPlan = {
-          id: 'month_plan_seed_1',
-          agentUsername: 'agentp1',
-          targets: [{ currency: 'USD', targetAmount: defaultTarget }],
-          decadeTargets: this.buildDefaultDecadeTargets(defaultTarget),
-          clientPlans: this.buildDefaultClientPlans(existingClients, initialClientDebts),
-          initialClientDebts,
-          initialTotalDebt: defaultTarget,
-          startDate: startDateStr,
-          endDate: endDateStr,
-          createdAt: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(),
-          createdBy: 'agentp1',
-          notes: "Mavjud mijozlardan eski qarzdorliklarni undirish bo'yicha 1 oylik reja",
-          editHistory: [],
-          status: 'active',
-        };
-        const list = [initialPlan];
-        localStorage.setItem(MONTHLY_PLANS_KEY, JSON.stringify(list));
-        this.monthlyPlansCache = list;
-        return list;
+        this.monthlyPlansCache = [];
+        return [];
       }
       const parsed: MonthlyPlan[] = JSON.parse(data);
       const normalized = parsed.map((p) => {

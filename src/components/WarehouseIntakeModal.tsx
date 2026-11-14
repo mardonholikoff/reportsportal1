@@ -18,6 +18,8 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
+import { storageService } from '../services/storage';
+import { buildWarehouseProductChronology } from '../utils/warehouseChronology';
 import {
   ExcelWarehouseImporter,
   ImportedWarehouseProductPayload,
@@ -111,8 +113,12 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
       setPrice(hasPr ? String(editingProduct.price) : '');
 
       setIntakeDate(editingProduct.intakeDate || todayStr);
-      setIntakeUnitType(hasPkg ? editingProduct.intakeUnitType || 'package' : 'piece');
-      setIntakeQuantity(String(editingProduct.intakeQuantity || 1));
+      const initUnit = hasPkg
+        ? editingProduct.initialIntakeUnitType || editingProduct.intakeUnitType || 'package'
+        : 'piece';
+      setIntakeUnitType(initUnit);
+      const initQty = editingProduct.initialIntakeQuantity || editingProduct.intakeQuantity || 1;
+      setIntakeQuantity(String(initQty));
       setCustomRemainingPieces(String(editingProduct.totalPieces ?? 0));
       setIsRemainingManuallyEdited(true);
       setNotes(editingProduct.notes || '');
@@ -265,6 +271,23 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
   const profitPerPiece = sellingPerPiece - costPerPiece;
   const marginPercent = costPerPiece > 0 ? ((sellingPerPiece - costPerPiece) / costPerPiece) * 100 : 0;
 
+  // Net sold pieces up to today for editingProduct so changing initial stock updates current stock relative to operations
+  const editingNetSoldPieces = useMemo(() => {
+    if (!editingProduct) return 0;
+    try {
+      const chron = buildWarehouseProductChronology(
+        editingProduct,
+        storageService.getDailyPlans(),
+        storageService.getClients(),
+        undefined,
+        storageService.getWarehouseProducts()
+      );
+      return Math.max(0, (chron.totalSoldPieces || 0) - (chron.totalReturnedPieces || 0));
+    } catch {
+      return 0;
+    }
+  }, [editingProduct]);
+
   // Total Pieces and Total Volume
   const calculatedIntakePieces = useMemo(() => {
     if (effectiveIntakeUnitType === 'package') {
@@ -274,14 +297,17 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
   }, [effectiveIntakeUnitType, parsedIntakeQty, parsedPiecesPerPkg]);
 
   const calculatedTotalPieces = useMemo(() => {
-    if (editingProduct && isRemainingManuallyEdited && customRemainingPieces.trim() !== '') {
-      const parsedCustom = parseFloat(customRemainingPieces);
-      if (!isNaN(parsedCustom) && parsedCustom >= 0) {
-        return parsedCustom;
+    if (editingProduct) {
+      if (isRemainingManuallyEdited && customRemainingPieces.trim() !== '') {
+        const parsedCustom = parseFloat(customRemainingPieces);
+        if (!isNaN(parsedCustom) && parsedCustom >= 0) {
+          return parsedCustom;
+        }
       }
+      return Math.max(0, Math.round((calculatedIntakePieces - editingNetSoldPieces) * 100) / 100);
     }
     return calculatedIntakePieces;
-  }, [editingProduct, isRemainingManuallyEdited, customRemainingPieces, calculatedIntakePieces]);
+  }, [editingProduct, isRemainingManuallyEdited, customRemainingPieces, calculatedIntakePieces, editingNetSoldPieces]);
 
   const calculatedTotalVolume = useMemo(() => {
     return calculatedTotalPieces * parsedVolumePerPiece;
@@ -1164,7 +1190,18 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                 <select
                   disabled={!isBlock4Unlocked}
                   value={effectiveIntakeUnitType}
-                  onChange={(e) => setIntakeUnitType(e.target.value as 'package' | 'piece')}
+                  onChange={(e) => {
+                    const nextUnit = e.target.value as 'package' | 'piece';
+                    setIntakeUnitType(nextUnit);
+                    setIsRemainingManuallyEdited(false);
+                    const qtyNum = parseFloat(intakeQuantity) || 0;
+                    const nextPieces =
+                      nextUnit === 'package' ? qtyNum * parsedPiecesPerPkg : qtyNum;
+                    const remainingPieces = editingProduct
+                      ? Math.max(0, Math.round((nextPieces - editingNetSoldPieces) * 100) / 100)
+                      : nextPieces;
+                    setCustomRemainingPieces(String(remainingPieces));
+                  }}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-emerald-600 bg-white font-medium"
                 >
                   {hasPackageUnit && (
@@ -1179,7 +1216,7 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
               {/* 3-qator: Soni tanlanadi */}
               <div>
                 <label className="block text-xs font-bold text-neutral-800 mb-1">
-                  3-qator: Kirim soni <span className="text-rose-600">*</span>
+                  3-qator: {editingProduct ? 'Bazaga kiritilgandagi soni (Bosh qoldiq)' : 'Kirim soni'} <span className="text-rose-600">*</span>
                 </label>
                 <input
                   type="number"
@@ -1196,7 +1233,10 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                       effectiveIntakeUnitType === 'package'
                         ? qtyNum * parsedPiecesPerPkg
                         : qtyNum;
-                    setCustomRemainingPieces(String(nextPieces));
+                    const remainingPieces = editingProduct
+                      ? Math.max(0, Math.round((nextPieces - editingNetSoldPieces) * 100) / 100)
+                      : nextPieces;
+                    setCustomRemainingPieces(String(remainingPieces));
                   }}
                   placeholder="Masalan: 10"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-emerald-600 bg-white font-semibold"

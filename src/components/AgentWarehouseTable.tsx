@@ -429,15 +429,17 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                     {filteredProducts.map((p, idx) => {
                       const chron = chronologyMap.get(p.id);
                       const snap = snapshotDate && chron ? chron.getStockAtDate(snapshotDate) : null;
-                      const effPieces = snap ? snap.pieces : p.totalPieces || 0;
-                      const effVolume = snap ? snap.volume : p.totalVolume || 0;
+                      const effPieces = snap ? snap.pieces : chron ? chron.currentPieces : p.totalPieces || 0;
+                      const effVolume = snap ? snap.volume : Math.round(effPieces * (p.volumePerPiece || 1) * 100) / 100;
                       const isLow = effPieces > 0 && effPieces <= 10;
                       const isOutOfStock = effPieces <= 0;
 
                       return (
                         <tr
                           key={p.id}
-                          className="hover:bg-rose-50/20 transition-colors"
+                          onClick={() => setSelectedProductForHistory(p)}
+                          className="hover:bg-rose-50/20 transition-colors cursor-pointer"
+                          title="Mahsulotning bazaga kiritilgandagi sonini (Bosh qoldiqni) o'zgartirish va xronologiyasini ko'rish uchun bosing"
                         >
                           <td className="py-3 px-3.5 text-center text-neutral-400 font-mono text-[11px]">
                             {idx + 1}
@@ -447,8 +449,11 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                           <td className="py-3 px-3.5">
                             <div
                               className="font-bold text-neutral-900 text-xs sm:text-sm flex items-center gap-2 cursor-pointer group"
-                              onClick={() => setSelectedProductForHistory(p)}
-                              title="Topshirilish va dastlabki qoldiq xronologiyasini ko'rish uchun bosing"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedProductForHistory(p);
+                              }}
+                              title="Topshirilish va dastlabki qoldiq xronologiyasini ko'rish / o'zgartirish uchun bosing"
                             >
                               <span className="font-semibold text-rose-800 bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200 text-[10px] uppercase">
                                 {p.brand}
@@ -491,8 +496,11 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                           {/* Dastlabki qoldiq (Baza yaratilganda) */}
                           <td
                             className="py-3 px-3.5 text-center cursor-pointer"
-                            onClick={() => setSelectedProductForHistory(p)}
-                            title="Dastlabki qoldiq va o'zgarishlar xronologiyasini ko'rish"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedProductForHistory(p);
+                            }}
+                            title="Dastlabki qoldiqni o'zgartirish va o'zgarishlar xronologiyasini ko'rish"
                           >
                             <div className="font-bold font-mono text-indigo-950 text-xs">
                               {chron ? chron.initialFormatted.primary : `${p.initialTotalPieces || p.totalPieces} dona`}
@@ -500,16 +508,21 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                             <div className="text-[10px] text-neutral-500 font-mono">
                               {chron ? `${chron.initialPieces.toLocaleString()} ${p.pieceUnitName || 'dona'}` : ''}
                             </div>
-                            {chron && chron.initialEditCount > 0 ? (
-                              <span className="mt-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[9.5px] font-bold">
-                                <History className="w-2.5 h-2.5" />
-                                <span>{chron.initialEditCount} marta o'zgargan</span>
+                            <div className="flex items-center justify-center gap-1 flex-wrap mt-0.5">
+                              {chron && chron.initialEditCount > 0 ? (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[9.5px] font-bold">
+                                  <History className="w-2.5 h-2.5" />
+                                  <span>{chron.initialEditCount} marta o'zgargan</span>
+                                </span>
+                              ) : (
+                                <span className="text-[9.5px] text-emerald-700 font-medium">
+                                  O'zgartirilmagan
+                                </span>
+                              )}
+                              <span className="inline-flex items-center px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-800 border border-indigo-200 text-[9.5px] font-bold hover:bg-indigo-100">
+                                O'zgartirish
                               </span>
-                            ) : (
-                              <span className="text-[9.5px] text-emerald-700 font-medium">
-                                O'zgartirilmagan
-                              </span>
-                            )}
+                            </div>
                           </td>
 
                           {/* Katta o'lcham (Qadoq) */}
@@ -560,7 +573,10 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                           </td>
 
                           {/* Eng kam sotilish narxi (Faqat ko'z bosilganda ko'rinadi) */}
-                          <td className="py-3 px-3.5 text-center">
+                          <td
+                            className="py-3 px-3.5 text-center"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             {showAllMinPrices || revealedMinPriceIds[p.id] ? (
                               <div className="inline-flex flex-col items-center">
                                 <div className="inline-flex items-center gap-1.5">
@@ -632,18 +648,25 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
               {filteredProducts.map((p, idx) => {
                 const chron = chronologyMap.get(p.id);
                 const snap = snapshotDate && chron ? chron.getStockAtDate(snapshotDate) : null;
-                const effPieces = snap ? snap.pieces : p.totalPieces || 0;
-                const effVolume = snap ? snap.volume : p.totalVolume || 0;
+                const effPieces = snap ? snap.pieces : chron ? chron.currentPieces : p.totalPieces || 0;
+                const effVolume = snap ? snap.volume : Math.round(effPieces * (p.volumePerPiece || 1) * 100) / 100;
                 const isLow = effPieces > 0 && effPieces <= 10;
                 const isOutOfStock = effPieces <= 0;
 
                 return (
-                  <div key={p.id} className="p-3.5 space-y-2.5">
+                  <div
+                    key={p.id}
+                    onClick={() => setSelectedProductForHistory(p)}
+                    className="p-3.5 space-y-2.5 cursor-pointer hover:bg-rose-50/15 transition-colors"
+                  >
                     {/* Header: Brand, Name & Status */}
                     <div className="flex items-start justify-between gap-2">
                       <div
                         className="min-w-0 cursor-pointer"
-                        onClick={() => setSelectedProductForHistory(p)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedProductForHistory(p);
+                        }}
                       >
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-mono text-[10px] text-neutral-400 font-bold">
@@ -714,10 +737,13 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-2 rounded-xl bg-neutral-50 border border-neutral-200/80 text-center">
                       <div
                         className="cursor-pointer"
-                        onClick={() => setSelectedProductForHistory(p)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedProductForHistory(p);
+                        }}
                       >
                         <span className="text-[10px] text-indigo-700 font-bold block">
-                          Dastlabki qoldiq
+                          Bazaga kiritilgan
                         </span>
                         <span className="font-mono font-bold text-indigo-950 text-xs">
                           {chron ? chron.initialFormatted.primary : `${p.initialTotalPieces || p.totalPieces} dona`}
@@ -727,6 +753,9 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
                             ({chron.initialEditCount} marta o'zgargan)
                           </span>
                         )}
+                        <span className="text-[9px] text-indigo-700 font-bold underline block">
+                          O'zgartirish
+                        </span>
                       </div>
 
                       <div>

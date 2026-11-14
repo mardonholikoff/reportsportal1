@@ -26,6 +26,7 @@ import {
   getDeletedPlanIds,
   markPlanAsDeleted,
   isClosedPlanExpired7Days,
+  isLegacyWipedRecord,
 } from './storage';
 
 // Initialize Firebase App singleton
@@ -301,14 +302,13 @@ export function getLocalSystemLogs(): SystemLog[] {
     const raw = localStorage.getItem(SYSTEM_LOGS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         localSystemLogsCache = parsed;
         return parsed;
       }
     }
-    const sample = getInitialSampleLogs();
-    saveLocalSystemLogs(sample);
-    return sample;
+    localSystemLogsCache = [];
+    return [];
   } catch {
     return [];
   }
@@ -778,7 +778,11 @@ export function subscribeToFirestoreData(callbacks: {
       { includeMetadataChanges: true },
       (snapshot) => {
         const list: MonthlyPlan[] = [];
-        snapshot.forEach((d) => list.push(d.data() as MonthlyPlan));
+        snapshot.forEach((d) => {
+          if (!isLegacyWipedRecord(d.id)) {
+            list.push(d.data() as MonthlyPlan);
+          }
+        });
         debounced.invoke(list);
       },
       (error) => {
@@ -801,11 +805,8 @@ export function subscribeToFirestoreData(callbacks: {
         const deletedIds = getDeletedClientIds();
         const list: Client[] = [];
         snapshot.forEach((d) => {
-          if (!deletedIds.has(d.id)) {
+          if (!deletedIds.has(d.id) && !isLegacyWipedRecord(d.id)) {
             list.push(d.data() as Client);
-          } else {
-            // Document was marked deleted, ensure purged in Firestore too
-            deleteDoc(d.ref).catch(() => {});
           }
         });
         debounced.invoke(list);
@@ -837,11 +838,12 @@ export function subscribeToFirestoreData(callbacks: {
             item.clientId &&
             !deletedIds.has(item.clientId) &&
             !deletedPlanIds.has(item.id) &&
+            !isLegacyWipedRecord(d.id) &&
+            !isLegacyWipedRecord(item.id) &&
+            !isLegacyWipedRecord(item.clientId) &&
             !isClosedPlanExpired7Days(item)
           ) {
             list.push(item);
-          } else if (item && (deletedIds.has(item.clientId) || deletedPlanIds.has(item.id))) {
-            deleteDoc(d.ref).catch(() => {});
           }
         });
         debounced.invoke(list);
@@ -866,11 +868,8 @@ export function subscribeToFirestoreData(callbacks: {
         const deletedWhIds = getDeletedWarehouseIds();
         const list: WarehouseProduct[] = [];
         snapshot.forEach((d) => {
-          if (!deletedWhIds.has(d.id)) {
+          if (!deletedWhIds.has(d.id) && !isLegacyWipedRecord(d.id)) {
             list.push(d.data() as WarehouseProduct);
-          } else {
-            // Document was marked deleted, ensure purged in Firestore too
-            deleteDoc(d.ref).catch(() => {});
           }
         });
         debounced.invoke(list);
@@ -894,6 +893,9 @@ export function subscribeToFirestoreData(callbacks: {
       (snapshot) => {
         const list: SystemLog[] = [];
         snapshot.forEach((d) => {
+          if (isLegacyWipedRecord(d.id)) {
+            return;
+          }
           const logItem = d.data() as SystemLog;
           list.push(logItem);
           if (logItem.actionType === 'mijoz_ochirish') {
@@ -935,47 +937,12 @@ export function subscribeToFirestoreData(callbacks: {
 const BOOTSTRAP_FLAG_KEY = 'savdo_firestore_bootstrapped_v1';
 
 export async function bootstrapFirestoreData(
-  localClients: Client[],
-  localPlans: DailyPlanItem[],
-  localWarehouse: WarehouseProduct[]
+  _localClients: Client[],
+  _localPlans: DailyPlanItem[],
+  _localWarehouse: WarehouseProduct[]
 ): Promise<void> {
-  // Agar bu brauzerda allaqachon tekshirilgan bo'lsa, qayta og'ir so'rov yubormaymiz
-  if (typeof window !== 'undefined' && localStorage.getItem(BOOTSTRAP_FLAG_KEY)) {
-    return;
-  }
-  try {
-    const deletedIds = getDeletedClientIds();
-    const deletedWhIds = getDeletedWarehouseIds();
-
-    const clientSnap = await getDocs(collection(db, 'clients'));
-    if (clientSnap.empty) {
-      const toUploadClients = localClients.filter((c) => !deletedIds.has(c.id));
-      for (const c of toUploadClients) {
-        await setDoc(doc(db, 'clients', c.id), cleanFirestoreData(c));
-      }
-    }
-
-    const plansSnap = await getDocs(collection(db, 'dailyPlans'));
-    if (plansSnap.empty) {
-      const toUploadPlans = localPlans.filter((p) => !deletedIds.has(p.clientId));
-      for (const p of toUploadPlans) {
-        await setDoc(doc(db, 'dailyPlans', p.id), cleanFirestoreData(p));
-      }
-    }
-
-    const whSnap = await getDocs(collection(db, 'warehouseProducts'));
-    if (whSnap.empty) {
-      const toUploadWarehouse = localWarehouse.filter((w) => !deletedWhIds.has(w.id));
-      for (const w of toUploadWarehouse) {
-        await setDoc(doc(db, 'warehouseProducts', w.id), cleanFirestoreData(w));
-      }
-    }
-
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(BOOTSTRAP_FLAG_KEY, 'true');
-    }
-  } catch (err) {
-    console.warn('Bootstrap upload deferred to offline persistence queue', err);
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(BOOTSTRAP_FLAG_KEY, 'true');
   }
 }
 
@@ -1008,7 +975,7 @@ export async function pullAllFromFirestoreServer(callbacks: {
         const snap = await fetchCollection('clients');
         const list: Client[] = [];
         snap.forEach((d) => {
-          if (!deletedIds.has(d.id)) {
+          if (!deletedIds.has(d.id) && !isLegacyWipedRecord(d.id)) {
             list.push(d.data() as Client);
           }
         });
@@ -1026,6 +993,9 @@ export async function pullAllFromFirestoreServer(callbacks: {
             item.clientId &&
             !deletedIds.has(item.clientId) &&
             !deletedPlanIds.has(item.id) &&
+            !isLegacyWipedRecord(d.id) &&
+            !isLegacyWipedRecord(item.id) &&
+            !isLegacyWipedRecord(item.clientId) &&
             !isClosedPlanExpired7Days(item)
           ) {
             list.push(item);
@@ -1038,7 +1008,7 @@ export async function pullAllFromFirestoreServer(callbacks: {
         const snap = await fetchCollection('warehouseProducts');
         const list: WarehouseProduct[] = [];
         snap.forEach((d) => {
-          if (!deletedWhIds.has(d.id)) {
+          if (!deletedWhIds.has(d.id) && !isLegacyWipedRecord(d.id)) {
             list.push(d.data() as WarehouseProduct);
           }
         });
@@ -1048,7 +1018,11 @@ export async function pullAllFromFirestoreServer(callbacks: {
         if (!callbacks.onMonthlyPlansChange) return;
         const snap = await fetchCollection('monthlyPlans');
         const list: MonthlyPlan[] = [];
-        snap.forEach((d) => list.push(d.data() as MonthlyPlan));
+        snap.forEach((d) => {
+          if (!isLegacyWipedRecord(d.id)) {
+            list.push(d.data() as MonthlyPlan);
+          }
+        });
         callbacks.onMonthlyPlansChange(list);
       })(),
       (async () => {
@@ -1056,6 +1030,9 @@ export async function pullAllFromFirestoreServer(callbacks: {
         const snap = await fetchCollection('systemLogs');
         const list: SystemLog[] = [];
         snap.forEach((d) => {
+          if (isLegacyWipedRecord(d.id)) {
+            return;
+          }
           const logItem = d.data() as SystemLog;
           list.push(logItem);
           if (logItem.actionType === 'mijoz_ochirish') {

@@ -100,6 +100,7 @@ import {
   BellRing,
   Target,
   Calendar,
+  Lock,
 } from 'lucide-react';
 
 export default function App() {
@@ -151,6 +152,13 @@ export default function App() {
   const [executingPlanItem, setExecutingPlanItem] = useState<DailyPlanItem | null>(null);
   const [executingPlanEditSoldMode, setExecutingPlanEditSoldMode] = useState(false);
   const [executingPlanEditFinancialMode, setExecutingPlanEditFinancialMode] = useState(false);
+  const [planNavigationTarget, setPlanNavigationTarget] = useState<{
+    clientId: string;
+    clientName: string;
+    planId?: string;
+    planDate: string;
+    timestamp: number;
+  } | null>(null);
 
   // Warehouse state (Ombor zaxirasi)
   const [warehouseProducts, setWarehouseProducts] = useState<WarehouseProduct[]>(() =>
@@ -827,39 +835,6 @@ export default function App() {
             return rp;
           });
 
-          // Retain local plans (especially closed/recovered plans) that are missing from cleanRemote
-          const remoteIdsSet = new Set(reconciledRemote.map((rp) => rp.id));
-          const remoteDateKeysSet = new Set(
-            reconciledRemote.map((rp) => `${rp.clientId}_${getPlanDateKey(rp)}`)
-          );
-          const remoteClosedKeysSet = new Set(
-            reconciledRemote
-              .map((rp) => {
-                const cKey = getClosedDateKey(rp);
-                return cKey ? `${rp.clientId}_${cKey}` : '';
-              })
-              .filter(Boolean)
-          );
-
-          for (const lp of localPlans) {
-            if (!lp || !lp.clientId) continue;
-            if (deletedIds.has(lp.clientId) || deletedPlanIds.has(lp.id)) continue;
-            const lpDateKey = `${lp.clientId}_${getPlanDateKey(lp)}`;
-            const lpClosedDate = getClosedDateKey(lp);
-            const lpClosedKey = lpClosedDate ? `${lp.clientId}_${lpClosedDate}` : '';
-            const alreadyInRemote =
-              remoteIdsSet.has(lp.id) ||
-              remoteDateKeysSet.has(lpDateKey) ||
-              (lpClosedKey !== '' && remoteClosedKeysSet.has(lpClosedKey));
-            if (!alreadyInRemote) {
-              reconciledRemote.push(lp);
-              remoteIdsSet.add(lp.id);
-              remoteDateKeysSet.add(lpDateKey);
-              if (lpClosedKey) remoteClosedKeysSet.add(lpClosedKey);
-              syncPlanToFirestore(lp);
-            }
-          }
-
           // Deduplicate by clientId+planDate so each client appears once per date
           const { uniquePlans } =
             storageService.deduplicatePlansByClient(reconciledRemote);
@@ -922,6 +897,19 @@ export default function App() {
             .map((rw) => {
               const lw = localWhMap.get(rw.id);
               if (!lw) return rw;
+              const lwEditCount = lw.initialEditCount || 0;
+              const rwEditCount = rw.initialEditCount || 0;
+              const lwUpdatedTime = (lw as any).updatedAt
+                ? new Date((lw as any).updatedAt).getTime()
+                : 0;
+              const rwUpdatedTime = (rw as any).updatedAt
+                ? new Date((rw as any).updatedAt).getTime()
+                : 0;
+              // If local has more initial edits or a newer updatedAt timestamp, keep local and sync up
+              if (lwEditCount > rwEditCount || (lwUpdatedTime > 0 && lwUpdatedTime > rwUpdatedTime)) {
+                syncWarehouseProductToFirestore(lw);
+                return lw;
+              }
               const lwHist = Array.isArray(lw.stockHistory) ? lw.stockHistory : [];
               const rwHist = Array.isArray(rw.stockHistory) ? rw.stockHistory : [];
               const mergedHist = lwHist.length >= rwHist.length ? lwHist : rwHist;
@@ -932,7 +920,7 @@ export default function App() {
                 initialIntakeQuantity: rw.initialIntakeQuantity ?? lw.initialIntakeQuantity,
                 initialTotalPieces: rw.initialTotalPieces ?? lw.initialTotalPieces,
                 initialTotalVolume: rw.initialTotalVolume ?? lw.initialTotalVolume,
-                initialEditCount: Math.max(rw.initialEditCount || 0, lw.initialEditCount || 0),
+                initialEditCount: Math.max(rwEditCount, lwEditCount),
                 stockHistory: mergedHist,
               };
             });
@@ -941,46 +929,53 @@ export default function App() {
         }
       },
       onLogsChange: (remoteLogs: SystemLog[]) => {
-        if (remoteLogs && remoteLogs.length > 0) {
-          // Only purge clients/warehouse items that are still present in active local storage
-          const activeClientIds = new Set(storageService.getClients().map((c) => c.id));
-          const activeWhIds = new Set(storageService.getWarehouseProducts().map((w) => w.id));
-          let anyDeletedFound = false;
-          let anyWarehouseDeletedFound = false;
-          remoteLogs.forEach((logItem) => {
-            if (logItem.actionType === 'mijoz_ochirish') {
-              const delId =
-                logItem.metadata?.deletedClientId || logItem.metadata?.clientId;
-              if (delId && typeof delId === 'string' && activeClientIds.has(delId)) {
-                storageService.deleteClient(delId);
-                activeClientIds.delete(delId);
-                anyDeletedFound = true;
+        if (remoteLogs) {
+          if (remoteLogs.length > 0) {
+            // Only purge clients/warehouse items that are still present in active local storage
+            const activeClientIds = new Set(storageService.getClients().map((c) => c.id));
+            const activeWhIds = new Set(storageService.getWarehouseProducts().map((w) => w.id));
+            let anyDeletedFound = false;
+            let anyWarehouseDeletedFound = false;
+            remoteLogs.forEach((logItem) => {
+              if (logItem.actionType === 'mijoz_ochirish') {
+                const delId =
+                  logItem.metadata?.deletedClientId || logItem.metadata?.clientId;
+                if (delId && typeof delId === 'string' && activeClientIds.has(delId)) {
+                  storageService.deleteClient(delId);
+                  activeClientIds.delete(delId);
+                  anyDeletedFound = true;
+                }
               }
-            }
-            if (logItem.actionType === 'ombor_ochirish') {
-              const delWhId =
-                logItem.metadata?.deletedWarehouseId || logItem.metadata?.productId;
-              if (delWhId && typeof delWhId === 'string' && activeWhIds.has(delWhId)) {
-                storageService.deleteWarehouseProduct(delWhId);
-                activeWhIds.delete(delWhId);
-                anyWarehouseDeletedFound = true;
+              if (logItem.actionType === 'ombor_ochirish') {
+                const delWhId =
+                  logItem.metadata?.deletedWarehouseId || logItem.metadata?.productId;
+                if (delWhId && typeof delWhId === 'string' && activeWhIds.has(delWhId)) {
+                  storageService.deleteWarehouseProduct(delWhId);
+                  activeWhIds.delete(delWhId);
+                  anyWarehouseDeletedFound = true;
+                }
               }
+            });
+            if (anyDeletedFound) {
+              setClients([...storageService.getClients()]);
+              setDailyPlans([...storageService.getActive24hPlans()]);
+              setMonthlyPlans([...storageService.getMonthlyPlans()]);
             }
-          });
-          if (anyDeletedFound) {
-            setClients([...storageService.getClients()]);
-            setDailyPlans([...storageService.getActive24hPlans()]);
-            setMonthlyPlans([...storageService.getMonthlyPlans()]);
-          }
-          if (anyWarehouseDeletedFound) {
-            setWarehouseProducts([...storageService.getWarehouseProducts()]);
+            if (anyWarehouseDeletedFound) {
+              setWarehouseProducts([...storageService.getWarehouseProducts()]);
+            }
           }
           saveLocalSystemLogs(remoteLogs);
           setSystemLogs([...remoteLogs]);
         }
       },
       onMonthlyPlansChange: (remoteMonthlyPlans: MonthlyPlan[]) => {
-        if (remoteMonthlyPlans && remoteMonthlyPlans.length > 0) {
+        if (remoteMonthlyPlans) {
+          if (remoteMonthlyPlans.length === 0) {
+            storageService.saveMonthlyPlans([]);
+            setMonthlyPlans([]);
+            return;
+          }
           const localPlans = storageService.getMonthlyPlans();
           const localMap = new Map<string, MonthlyPlan>();
           localPlans.forEach((lp) => localMap.set(lp.id, lp));
@@ -1532,7 +1527,12 @@ export default function App() {
       const clientIdToSync = result.client?.id || updatedPlan?.clientId || targetPlan?.clientId;
       if (clientIdToSync) {
         const updatedClient = storageService.getClientById(clientIdToSync);
-        if (updatedClient) syncClientToFirestore(updatedClient);
+        if (updatedClient) {
+          syncClientToFirestore(updatedClient);
+          if (selectedClient?.id === clientIdToSync) {
+            setSelectedClient({ ...updatedClient });
+          }
+        }
       }
 
       // Add audit log showing both plan creator and action executor
@@ -1635,7 +1635,12 @@ export default function App() {
 
       if (result.client) {
         const freshClient = storageService.getClientById(result.client.id);
-        if (freshClient) syncClientToFirestore(freshClient);
+        if (freshClient) {
+          syncClientToFirestore(freshClient);
+          if (selectedClient?.id === freshClient.id) {
+            setSelectedClient({ ...freshClient });
+          }
+        }
       }
 
       const prodSummary =
@@ -2034,22 +2039,14 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={() => setAgentActiveTab('oylik_reja')}
-                className={`py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-pointer min-w-0 ${
-                  agentActiveTab === 'oylik_reja'
-                    ? 'bg-rose-700 text-white shadow-xs'
-                    : 'text-neutral-700 hover:bg-rose-50/50'
-                }`}
-                title="1 oylik reja"
+                disabled
+                className="py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-not-allowed opacity-50 bg-neutral-100/80 text-neutral-400 select-none min-w-0"
+                title="Oylik bo'limi vaqtincha bloklangan"
               >
-                <Target className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <Lock className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 text-neutral-400" />
                 <span className="text-[10px] sm:text-xs md:text-sm truncate">Oylik</span>
-                <span
-                  className={`px-1 sm:px-1.5 py-0.2 rounded-full text-[9px] sm:text-[10px] font-bold ${
-                    agentActiveTab === 'oylik_reja' ? 'bg-white text-rose-800' : 'bg-neutral-100 text-neutral-700'
-                  }`}
-                >
-                  2
+                <span className="px-1 sm:px-1.5 py-0.2 rounded-full text-[9px] sm:text-[10px] font-bold bg-neutral-200 text-neutral-500">
+                  Yopiq
                 </span>
               </button>
             </div>
@@ -2061,7 +2058,6 @@ export default function App() {
                   plans={dailyPlans}
                   clients={clients}
                   onOpenCreatePlan={() => setIsCreatePlanOpen(true)}
-                  onOpenMonthlyPlan={() => setAgentActiveTab('oylik_reja')}
                   onOpenExecuteModal={(item, editSold, editFinancial) => {
                     const latestPlans = storageService.getActive24hPlans();
                     const exact = latestPlans.find((p) => p.id === item.id);
@@ -2085,6 +2081,7 @@ export default function App() {
                   onClosePlanItem={handleClosePlanItem}
                   onReopenPlanItems={handleReopenPlanItems}
                   onRemovePlanItems={handleRemoveDailyPlanItems}
+                  navigationTarget={planNavigationTarget}
                 />
               </div>
             )}
@@ -2184,6 +2181,40 @@ export default function App() {
             {/* Tab 5 (Ombordan keyingi qo'shimcha joy): 1 oylik qarz va 1 oylik mahsulot berish rejalari */}
             {agentActiveTab === 'oylik_reja' && (
               <div className="space-y-4 animate-in fade-in duration-150">
+                <div className="bg-white rounded-3xl border border-rose-100 shadow-xs p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                      <Target className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
+                        1 oylik rejalar (Qarz undirish va Mahsulot berish)
+                      </h2>
+                      <p className="text-xs text-neutral-500">
+                        1 oylik qarz undirish va 1 oylik mahsulot berish rejalarini tuzish hamda nazorat qilish
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateMonthlyPlanOpen(true)}
+                      className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+                    >
+                      <Target className="w-4 h-4" />
+                      <span>1 oylik reja tuzish</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateMonthlyProductPlanOpen(true)}
+                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>1 oylik mahsulot rejasi tuzish</span>
+                    </button>
+                  </div>
+                </div>
+
                 <MonthlyPlanProgressCard
                   plan={activeMonthlyPlan}
                   userRole={user.role}
@@ -2203,72 +2234,39 @@ export default function App() {
         )}
 
         {/* ========================================================= */}
-        {/* ADMIN VIEW: 1 OYLIK QARZ UNDIRISH VA MAHSULOT BERISH REJALARI (BOSGANDA KO'RINADI) */}
+        {/* ADMIN VIEW: 1 OYLIK QARZ UNDIRISH VA MAHSULOT BERISH REJALARI (BLOKLANGAN) */}
         {/* ========================================================= */}
         {isAdmin && (
-          <section className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden transition-all duration-200">
+          <section className="bg-neutral-50 rounded-3xl border border-neutral-200 shadow-xs overflow-hidden opacity-65 select-none">
             <div
-              onClick={() => setIsAdminMonthlyPlansOpen(!isAdminMonthlyPlansOpen)}
-              className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-rose-50/30 transition select-none"
+              className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-not-allowed"
+              title="Ushbu bo'lim vaqtincha bloklangan"
             >
               <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-2xl bg-indigo-700 text-white font-bold font-display flex items-center justify-center text-base shadow-xs shrink-0">
-                  <Calendar className="w-5 h-5" />
+                <div className="w-10 h-10 rounded-2xl bg-neutral-300 text-neutral-600 font-bold font-display flex items-center justify-center text-base shadow-xs shrink-0">
+                  <Lock className="w-5 h-5" />
                 </div>
                 <div>
-                  <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
+                  <h2 className="text-base sm:text-lg font-bold font-display text-neutral-500 tracking-tight">
                     1 oylik qarz undirish va 1 oylik mahsulot berish rejalari
                   </h2>
+                  <p className="text-xs text-neutral-400">
+                    Ushbu bo'lim vaqtincha bloklangan
+                  </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsAdminMonthlyPlansOpen(!isAdminMonthlyPlansOpen);
-                  }}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition min-h-[40px] cursor-pointer ${
-                    isAdminMonthlyPlansOpen
-                      ? 'bg-neutral-100 text-neutral-800 hover:bg-neutral-200'
-                      : 'bg-indigo-700 text-white hover:bg-indigo-800 shadow-xs'
-                  }`}
+                  disabled
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold min-h-[40px] cursor-not-allowed bg-neutral-200 text-neutral-500"
                 >
-                  {isAdminMonthlyPlansOpen ? (
-                    <>
-                      <ChevronUp className="w-4 h-4" />
-                      <span>Yopish</span>
-                    </>
-                  ) : (
-                    <>
-                      <ChevronDown className="w-4 h-4" />
-                      <span>Ochish</span>
-                    </>
-                  )}
+                  <Lock className="w-4 h-4" />
+                  <span>Bloklangan</span>
                 </button>
               </div>
             </div>
-
-            {isAdminMonthlyPlansOpen && (
-              <div className="p-5 sm:p-6 pt-0 border-t border-rose-100/70 space-y-4 animate-in fade-in duration-150">
-                <div className="pt-4 space-y-4">
-                  <MonthlyPlanProgressCard
-                    plan={activeMonthlyPlan}
-                    userRole={user.role}
-                    currentUsername={user.username}
-                    onOpenCreatePlan={() => setIsCreateMonthlyPlanOpen(true)}
-                  />
-
-                  <MonthlyProductPlanProgressCard
-                    plan={activeMonthlyProductPlan}
-                    userRole={user.role}
-                    currentUsername={user.username}
-                    onOpenCreatePlan={() => setIsCreateMonthlyProductPlanOpen(true)}
-                  />
-                </div>
-              </div>
-            )}
           </section>
         )}
 
@@ -2499,6 +2497,8 @@ export default function App() {
                     plans={dailyPlans}
                     clients={clients}
                     onRemovePlanItems={handleRemoveDailyPlanItems}
+                    onReopenPlanItems={handleReopenPlanItems}
+                    navigationTarget={planNavigationTarget}
                     onOpenExecuteModal={(item, editSold, editFinancial) => {
                       const latestPlans = storageService.getActive24hPlans();
                       const exact = latestPlans.find((p) => p.id === item.id);
@@ -2704,6 +2704,7 @@ export default function App() {
       {/* Client Detail View & Printable Invoice Modal (With Logs) */}
       <ClientDetailModal
         client={selectedClient}
+        dailyPlans={dailyPlans}
         isOpen={isDetailModalOpen}
         onClose={() => {
           setIsDetailModalOpen(false);
@@ -2730,6 +2731,110 @@ export default function App() {
         onOpenWarehouseDebtModal={(client) => {
           setWarehouseDebtClient(client);
           setIsAddWarehouseDebtOpen(true);
+        }}
+        onNavigateToPlanDate={(target) => {
+          setIsDetailModalOpen(false);
+          setSelectedClient(null);
+
+          const allPlans = storageService.getDailyPlans();
+          let resolvedPlan =
+            (target.planId ? allPlans.find((p) => p.id === target.planId) : undefined) ||
+            allPlans.find((p) => {
+              if (p.clientId !== target.clientId) return false;
+              const effDate =
+                (p.isClosed && p.closedAt ? p.closedAt.slice(0, 10) : null) ||
+                (p as any).lastClosedDateKey ||
+                getPlanDateKey(p);
+              return effDate === target.planDate || getPlanDateKey(p) === target.planDate;
+            });
+
+          // Agar ushbu sanada reja hali yo'q bo'lsa (masalan dastlabki kiritilgan mahsulot bo'lsa), shu sanaga reja yaratib beramiz
+          if (!resolvedPlan) {
+            const clientObj = storageService.getClientById(target.clientId);
+            if (clientObj) {
+              const createdItems = storageService.createDailyPlan(
+                user.username,
+                [
+                  {
+                    clientId: clientObj.id,
+                    plannedAction: 'joyiga borildi',
+                    planNote: `${target.planDate} sanadagi topshirilgan mahsulot bo'yicha reja`,
+                  },
+                ],
+                target.planDate
+              );
+              if (createdItems.length > 0) {
+                resolvedPlan = createdItems[0];
+                if (clientObj.products && clientObj.products.length > 0) {
+                  const totalSum = clientObj.products.reduce(
+                    (s, p) => s + (p.totalPrice || p.quantity * p.unitPrice),
+                    0
+                  );
+                  const allNow = storageService.getDailyPlans();
+                  const idx = allNow.findIndex((p) => p.id === resolvedPlan!.id);
+                  if (idx !== -1) {
+                    const isoDate = `${target.planDate}T12:00:00.000Z`;
+                    allNow[idx] = {
+                      ...allNow[idx],
+                      createdAt: isoDate,
+                      completedAt: isoDate,
+                      status: 'bajarildi',
+                      actionDone: 'joyiga borildi',
+                      productsDelivered: clientObj.products,
+                      deliveryPayment: {
+                        paymentType: 'qarzga',
+                        paymentLabel: 'Qarzga (Nasiya)',
+                        paidAmount: 0,
+                        debtAmount: totalSum,
+                        totalAmount: totalSum,
+                      },
+                      actionsHistory: [
+                        {
+                          timestamp: isoDate,
+                          author: clientObj.createdBy || user.username,
+                          actionDone: 'joyiga borildi',
+                          productsDelivered: clientObj.products,
+                          deliveryPayment: {
+                            paymentType: 'qarzga',
+                            paymentLabel: 'Qarzga (Nasiya)',
+                            paidAmount: 0,
+                            debtAmount: totalSum,
+                            totalAmount: totalSum,
+                          },
+                        },
+                      ],
+                    };
+                    localStorage.setItem('unver_daily_plans_v1', JSON.stringify(allNow));
+                    resolvedPlan = allNow[idx];
+                    syncPlanToFirestore(resolvedPlan);
+                  }
+                }
+                setDailyPlans([...storageService.getActive24hPlans()]);
+              }
+            }
+          }
+
+          if (isAgent) {
+            setAgentActiveTab('reja');
+          } else if (isAdmin) {
+            setIsAdminPlansOpen(true);
+          }
+
+          setPlanNavigationTarget({
+            clientId: target.clientId,
+            clientName: target.clientName,
+            planId: resolvedPlan?.id || target.planId,
+            planDate: target.planDate,
+            timestamp: Date.now(),
+          });
+
+          showToast(`${target.clientName} — ${target.planDate} sanadagi kunlik rejaga o'tildi`);
+
+          if (target.openEditModal && resolvedPlan) {
+            setExecutingPlanEditSoldMode(true);
+            setExecutingPlanEditFinancialMode(false);
+            setExecutingPlanItem(resolvedPlan);
+          }
         }}
         onToggleReminderStatus={handleToggleReminderStatus}
         onDeleteReminder={handleDeleteReminder}

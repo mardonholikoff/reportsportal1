@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Client, DailyPlanItem } from '../types';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
 import {
@@ -57,6 +57,13 @@ interface Props {
   ) => void;
   onReopenPlanItems?: (planItemIds: string[], reopenReason: string) => void;
   onRemovePlanItems?: (planItemIds: string[], reason: string) => void;
+  navigationTarget?: {
+    clientId: string;
+    clientName: string;
+    planId?: string;
+    planDate: string;
+    timestamp: number;
+  } | null;
 }
 
 const PRESET_CLOSE_REASONS = [
@@ -136,13 +143,12 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   onClosePlanItem,
   onReopenPlanItems,
   onRemovePlanItems,
+  navigationTarget,
 }) => {
   // State for editing plan note inline
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [tempNote, setTempNote] = useState('');
-
-  // Filter tabs: 'active' (default) -> closed plans disappear from active view!
-  const [planViewFilter, setPlanViewFilter] = useState<'active' | 'closed' | 'all'>('active');
+  const [highlightedPlanId, setHighlightedPlanId] = useState<string | null>(null);
 
   // Date filter state: 'all' | 'today' | 'yesterday' | 'custom'
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'custom'>('all');
@@ -188,6 +194,55 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     const stored = storageService.getDailyPlans();
     return stored.length >= plans.length ? stored : plans;
   }, [plans]);
+
+  useEffect(() => {
+    if (!navigationTarget) return;
+    const targetDate = navigationTarget.planDate;
+    const todayStr = getTodayDateStr();
+    const yesterdayStr = getYesterdayDateStr();
+
+    if (targetDate === todayStr) {
+      setDateFilter('today');
+    } else if (targetDate === yesterdayStr) {
+      setDateFilter('yesterday');
+    } else if (targetDate) {
+      setDateFilter('custom');
+      setCustomDate(targetDate);
+    } else {
+      setDateFilter('all');
+    }
+
+    setClosureTypeFilter('all');
+    setPaymentFilter('all');
+
+    const stored = storageService.getDailyPlans();
+    const matchedPlan =
+      (navigationTarget.planId
+        ? stored.find((p) => p.id === navigationTarget.planId)
+        : undefined) ||
+      stored.find((p) => {
+        if (p.clientId !== navigationTarget.clientId) return false;
+        const effectiveDate =
+          getClosedDateKey(p) ||
+          (p as any).lastClosedDateKey ||
+          getPlanDateKey(p);
+        return effectiveDate === targetDate || getPlanDateKey(p) === targetDate;
+      });
+
+    if (matchedPlan) {
+      setHighlightedPlanId(matchedPlan.id);
+      setTimeout(() => {
+        const el =
+          document.getElementById(`agent-plan-row-${matchedPlan.id}`) ||
+          document.getElementById(`agent-plan-card-${matchedPlan.id}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 150);
+    } else {
+      setHighlightedPlanId(null);
+    }
+  }, [navigationTarget?.timestamp]);
 
   const formatPlannedActionLabel = (action?: string) => {
     if (action === 'telefon qilindi') return 'Telefon qilish';
@@ -268,14 +323,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     [dateFilteredPlans]
   );
   const displayedPlans = useMemo(() => {
-    const baseList =
-      planViewFilter === 'active'
-        ? activePlans
-        : planViewFilter === 'closed'
-        ? closedPlans
-        : dateFilteredPlans;
-
-    const afterClosureFilter = baseList.filter((p) => {
+    const afterClosureFilter = dateFilteredPlans.filter((p) => {
       if (closureTypeFilter === 'all') return true;
       const isClosed = Boolean(p.isClosed || p.status === 'yopildi');
       if (!isClosed) return false;
@@ -321,9 +369,6 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
     return afterPaymentFilter;
   }, [
-    planViewFilter,
-    activePlans,
-    closedPlans,
     dateFilteredPlans,
     closureTypeFilter,
     paymentFilter,
@@ -398,7 +443,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
     setSelectedPlanIds((prev) => prev.filter((id) => !reopenModalTargetIds.includes(id)));
     setReopenModalTargetIds(null);
     setReopenReason('');
-    setPlanViewFilter('active');
+    setClosureTypeFilter('all');
   };
 
   // Remove plan items single / bulk handlers (mandatory reason)
@@ -509,70 +554,8 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* View Filter Tabs & Create Plan Button */}
+        {/* Export & Create Plan Buttons */}
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-1 p-1 bg-neutral-100/90 rounded-xl border border-neutral-200/80">
-            <button
-              type="button"
-              onClick={() => setPlanViewFilter('active')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                planViewFilter === 'active'
-                  ? 'bg-rose-700 text-white shadow-xs'
-                  : 'text-neutral-700 hover:bg-white'
-              }`}
-              title="Faqat hozirda amallar bajarilishi kutilayotgan faol rejalar"
-            >
-              <span>Faol rejalar</span>
-              <span
-                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                  planViewFilter === 'active' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
-                }`}
-              >
-                {activePlans.length}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setPlanViewFilter('closed')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                planViewFilter === 'closed'
-                  ? 'bg-neutral-800 text-white shadow-xs'
-                  : 'text-neutral-700 hover:bg-white'
-              }`}
-              title="Yopilgan va amallari yakunlangan mijozlar"
-            >
-              <Lock className="w-3 h-3" />
-              <span>Yopilganlar</span>
-              <span
-                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                  planViewFilter === 'closed' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
-                }`}
-              >
-                {closedPlans.length}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setPlanViewFilter('all')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                planViewFilter === 'all'
-                  ? 'bg-neutral-800 text-white shadow-xs'
-                  : 'text-neutral-700 hover:bg-white'
-              }`}
-            >
-              <span>Barchasi</span>
-              <span
-                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                  planViewFilter === 'all' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-800'
-                }`}
-              >
-                {validPlans.length}
-              </span>
-            </button>
-          </div>
-
           {(displayedPlans.length > 0 || validPlans.length > 0) && (
             <>
               <button
@@ -584,11 +567,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                     allSystemPlans,
                     "Kunlik Reja va Bajarilgan Amallar Jadvali (Batafsil)",
                     `Ko'rinish: ${
-                      planViewFilter === 'active'
-                        ? 'Faol (Yopilmagan) rejalar'
-                        : planViewFilter === 'closed'
-                        ? 'Yopilgan rejalar'
-                        : 'Barcha (Yopilgan va Yopilmagan) rejalar'
+                      closureTypeFilter === 'done_closed'
+                        ? 'Bajarib yopilgan rejalar'
+                        : closureTypeFilter === 'undone_closed'
+                        ? 'Bajarilmasdan yopilgan rejalar'
+                        : 'Barcha rejalar'
                     }`,
                     'Agent_Reja_va_Amallar'
                   )
@@ -610,18 +593,6 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 <span>PDF / Print</span>
               </button>
             </>
-          )}
-
-          {onOpenMonthlyPlan && (
-            <button
-              type="button"
-              onClick={onOpenMonthlyPlan}
-              className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
-              title="1 oylik qarz undirish rejasi tuzish"
-            >
-              <Target className="w-4 h-4" />
-              <span>1 oylik reja tuzish</span>
-            </button>
           )}
 
           <button
@@ -713,14 +684,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
             }`}
           >
-            Barchasi
+            Barchasi ({dateFilteredPlans.length})
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (planViewFilter === 'active') setPlanViewFilter('closed');
-              setClosureTypeFilter('done_closed');
-            }}
+            onClick={() => setClosureTypeFilter('done_closed')}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               closureTypeFilter === 'done_closed'
                 ? 'bg-emerald-700 text-white shadow-2xs'
@@ -731,10 +699,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (planViewFilter === 'active') setPlanViewFilter('closed');
-              setClosureTypeFilter('undone_closed');
-            }}
+            onClick={() => setClosureTypeFilter('undone_closed')}
             className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
               closureTypeFilter === 'undone_closed'
                 ? 'bg-amber-600 text-white shadow-2xs'
@@ -851,43 +816,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
           <div className="p-8 text-center rounded-2xl bg-neutral-50 border border-neutral-200 space-y-3">
             <CalendarCheck className="w-8 h-8 text-neutral-400 mx-auto" />
             <h3 className="text-sm font-bold text-neutral-800">
-              {planViewFilter === 'active'
-                ? closedPlans.length > 0
-                  ? `Barcha rejadagi mijozlar yopildi (${closedPlans.length} ta yopilgan)`
-                  : "Faol rejalashtirilgan mijozlar yo'q"
-                : planViewFilter === 'closed'
-                ? "Yopilgan mijozlar mavjud emas"
+              {closureTypeFilter === 'done_closed'
+                ? "Bajarib yopilgan mijozlar mavjud emas"
+                : closureTypeFilter === 'undone_closed'
+                ? "Bajarilmasdan yopilgan mijozlar mavjud emas"
                 : "Rejalashtirilgan mijozlar yo'q"}
             </h3>
-            {planViewFilter === 'active' && closedPlans.length > 0 ? (
-              <div className="flex items-center justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPlanViewFilter('closed')}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-900 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-                >
-                  <Lock className="w-4 h-4" />
-                  <span>Yopilganlarni ko'rish va qayta ochish ({closedPlans.length})</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={onOpenCreatePlan}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Yangi reja tuzish</span>
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={onOpenCreatePlan}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Mijozlarni tanlash</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onOpenCreatePlan}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Mijozlarni tanlash</span>
+            </button>
           </div>
         ) : (
           <>
@@ -934,14 +876,22 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       allSystemPlans
                     );
 
+                    const isHighlighted =
+                      highlightedPlanId === item.id ||
+                      (navigationTarget?.clientId === item.clientId &&
+                        !highlightedPlanId);
+
                     return (
                       <tr
+                        id={`agent-plan-row-${item.id}`}
                         key={item.id}
                         onClick={() => {
                           onOpenExecuteModal(item);
                         }}
                         className={`transition-colors cursor-pointer ${
-                          isSelected
+                          isHighlighted
+                            ? 'bg-indigo-50/90 ring-2 ring-inset ring-indigo-500'
+                            : isSelected
                             ? 'bg-rose-50/60'
                             : isClosed
                             ? 'bg-neutral-50/70 hover:bg-neutral-100/80 opacity-90'
@@ -1471,14 +1421,22 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 const isSelected = selectedPlanIds.includes(item.id);
                 const { paidAmount, debtAmount } = calcPlanFinancials(item);
 
+                const isHighlighted =
+                  highlightedPlanId === item.id ||
+                  (navigationTarget?.clientId === item.clientId &&
+                    !highlightedPlanId);
+
                 return (
                   <div
+                    id={`agent-plan-card-${item.id}`}
                     key={item.id}
                     onClick={() => {
                       onOpenExecuteModal(item);
                     }}
                     className={`p-3 rounded-2xl border transition-colors cursor-pointer ${
-                      isSelected
+                      isHighlighted
+                        ? 'bg-indigo-50/90 border-indigo-500 ring-2 ring-indigo-400 shadow-sm'
+                        : isSelected
                         ? 'bg-rose-50/70 border-rose-300 shadow-xs'
                         : isClosed
                         ? 'bg-neutral-50 border-neutral-200 hover:border-rose-200 opacity-90'

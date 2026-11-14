@@ -1,7 +1,19 @@
 import React, { useState, useMemo } from 'react';
-import { Client } from '../types';
-import { formatMoney, formatDate, formatNumber, getAgentDisplayName, getInitialDebtForClient } from '../utils/format';
-import { storageService } from '../services/storage';
+import { Client, DailyPlanItem } from '../types';
+import {
+  formatMoney,
+  formatDate,
+  formatDateDMY,
+  formatNumber,
+  getAgentDisplayName,
+  getInitialDebtForClient,
+} from '../utils/format';
+import {
+  storageService,
+  getPlanSoldProductsData,
+  getPlanDateKey,
+  getClosedDateKey,
+} from '../services/storage';
 import {
   X,
   Phone,
@@ -15,6 +27,8 @@ import {
   Lock,
   BellRing,
   Check,
+  ExternalLink,
+  RotateCcw,
 } from 'lucide-react';
 import { StickyTableWrapper } from './StickyTableWrapper';
 
@@ -47,6 +61,7 @@ const getPresetDateRange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 't
 
 interface Props {
   client: Client | null;
+  dailyPlans?: DailyPlanItem[];
   isOpen: boolean;
   onClose: () => void;
   onEdit: (client: Client) => void;
@@ -55,24 +70,40 @@ interface Props {
   onOpenWarehouseDebtModal?: (client: Client) => void;
   onToggleReminderStatus?: (reminderId: string, clientId: string) => void;
   onDeleteReminder?: (reminderId: string, clientId: string) => void;
+  onNavigateToPlanDate?: (target: {
+    clientId: string;
+    clientName: string;
+    planId?: string;
+    planDate: string;
+    openEditModal?: boolean;
+  }) => void;
   userRole?: 'admin' | 'agent';
   currentUsername?: string;
 }
 
 export const ClientDetailModal: React.FC<Props> = ({
-  client,
+  client: propClient,
+  dailyPlans,
   isOpen,
   onClose,
   onEdit,
   onDelete,
   onToggleReminderStatus,
   onDeleteReminder,
+  onNavigateToPlanDate,
   userRole = 'admin',
   currentUsername,
 }) => {
   const isAgent = userRole === 'agent';
   const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
+
+  // Always resolve the latest client state from storage so the modal is never stale
+  const client = useMemo(() => {
+    if (!propClient) return null;
+    const fresh = storageService.getClientById(propClient.id);
+    return fresh || propClient;
+  }, [propClient, dailyPlans, isOpen]);
 
   // Compute the latest note by agentp1 regarding this client
   const latestAgentNote = useMemo(() => {
@@ -152,7 +183,7 @@ export const ClientDetailModal: React.FC<Props> = ({
       c.author.toLowerCase().includes('agent')
     );
     return agentCandidate || candidates[0];
-  }, [client]);
+  }, [client, dailyPlans, isOpen]);
 
   // Delivered products date filter state
   const [productStartDate, setProductStartDate] = useState('');
@@ -182,124 +213,310 @@ export const ClientDetailModal: React.FC<Props> = ({
     setLogEndDate(range.end);
   };
 
-  // Extract all delivered products with date, author and payment status
+  // Extract all delivered & returned products with accurate plan dates, return dates, and status
   const allDeliveredProducts = useMemo(() => {
     if (!client) return [];
 
-    const list: Array<{
+    interface DeliveredProductRow {
       id: string;
+      planId?: string;
+      planDate: string;
+      isPlanClosed?: boolean;
       date: string;
       timestamp: string;
       author: string;
+      productId?: string;
+      warehouseId?: string;
       productName: string;
       unit: string;
       quantity: number;
+      returnedQuantity: number;
+      returnDates: string[];
+      status: 'active' | 'partial_returned' | 'returned';
       unitPrice: number;
       totalPrice: number;
       paymentType: string;
       paymentLabel: string;
-    }> = [];
+    }
 
+    const list: DeliveredProductRow[] = [];
     const coveredProductIds = new Set<string>();
+    const coveredWarehouseIds = new Set<string>();
+    const coveredProductNames = new Set<string>();
+
+    interface CollectedReturnEvent {
+      id: string;
+      planId: string;
+      planDate: string;
+      returnDate: string;
+      returnTimestamp: string;
+      author: string;
+      productId?: string;
+      warehouseId?: string;
+      name: string;
+      unit: string;
+      quantity: number;
+      unitPrice: number;
+    }
+
+    const returnEvents: CollectedReturnEvent[] = [];
 
     try {
       const allPlans = storageService.getDailyPlans();
-      const clientPlans = allPlans.filter(
+      const rawClientPlans = allPlans.filter(
         (p) =>
-          p.clientId === client.id ||
-          ((p.clientName || '').trim().toLowerCase() === client.name.trim().toLowerCase() &&
-            (p.clientPhone || '').replace(/\D/g, '') === (client.phone || '').replace(/\D/g, ''))
+          p &&
+          (p.clientId === client.id ||
+            ((p.clientName || '').trim().toLowerCase() === client.name.trim().toLowerCase() &&
+              (p.clientPhone || '').replace(/\D/g, '') === (client.phone || '').replace(/\D/g, '')))
       );
 
+      // Deduplicate plans by effective plan date so stale duplicate records on the same date never show outdated products
+      const getEffectiveDate = (p: DailyPlanItem): string =>
+        getClosedDateKey(p) ||
+        (p as any).lastClosedDateKey ||
+        getPlanDateKey(p) ||
+        (p.planDate || p.createdAt || '').slice(0, 10);
+
+      const getFreshnessScore = (p: DailyPlanItem): string =>
+        p.lastExecutedAt ||
+        (p as any).closedUpdatedAt ||
+        p.reopenedAt ||
+        p.closedAt ||
+        p.completedAt ||
+        p.createdAt ||
+        '';
+
+      const dedupByDate = new Map<string, DailyPlanItem>();
+      const allReturnsByDate = new Map<string, any[]>();
+      const allCancelledByDate = new Map<string, any[]>();
+
+      rawClientPlans.forEach((plan) => {
+        const dKey = getEffectiveDate(plan) || plan.id;
+        // Collect returns from this plan record
+        const planRets: any[] = [];
+        if (Array.isArray(plan.productsReturned) && plan.productsReturned.length > 0) {
+          planRets.push(...plan.productsReturned);
+        } else if (Array.isArray(plan.actionsHistory)) {
+          plan.actionsHistory.forEach((act) => {
+            if (Array.isArray(act.productsReturned)) {
+              planRets.push(...act.productsReturned);
+            }
+          });
+        }
+        if (planRets.length > 0) {
+          const prev = allReturnsByDate.get(dKey) || [];
+          if (planRets.length >= prev.length) {
+            allReturnsByDate.set(dKey, planRets);
+          }
+        }
+
+        const planCancelled: any[] = Array.isArray((plan as any).cancelledProducts)
+          ? (plan as any).cancelledProducts
+          : [];
+        if (planCancelled.length > 0) {
+          const prevC = allCancelledByDate.get(dKey) || [];
+          if (planCancelled.length >= prevC.length) {
+            allCancelledByDate.set(dKey, planCancelled);
+          }
+        }
+
+        const existing = dedupByDate.get(dKey);
+        if (!existing || getFreshnessScore(plan) >= getFreshnessScore(existing)) {
+          dedupByDate.set(dKey, plan);
+        }
+      });
+
+      const clientPlans = Array.from(dedupByDate.values());
+
       clientPlans.forEach((plan) => {
-        const actions =
-          plan.actionsHistory && plan.actionsHistory.length > 0
-            ? plan.actionsHistory
-            : plan.productsDelivered && plan.productsDelivered.length > 0
-            ? [
-                {
-                  timestamp: plan.closedAt || plan.completedAt || plan.createdAt,
-                  author: plan.lastExecutedBy || plan.agentUsername,
-                  productsDelivered: plan.productsDelivered,
-                  deliveryPayment: plan.deliveryPayment,
-                },
-              ]
-            : [];
+        const planDateKey =
+          getEffectiveDate(plan) || new Date().toISOString().slice(0, 10);
+        const soldData = getPlanSoldProductsData(plan);
+        const prods = (soldData.productsDelivered || []).filter(
+          (p) => p && (p.name || '').trim() !== '' && (Number(p.quantity) || 0) > 0
+        );
 
-        actions.forEach((act, actIdx) => {
-          const prods = (act.productsDelivered || []).filter(
-            (p) => p && (p.name || '').trim() !== '' && (Number(p.quantity) || 0) > 0
-          );
-          if (prods.length === 0) return;
+        const author =
+          plan.lastExecutedBy ||
+          plan.actionsHistory?.[0]?.author ||
+          plan.agentUsername ||
+          'agentp1';
+        const rawTs =
+          plan.actionsHistory?.[0]?.timestamp ||
+          plan.closedAt ||
+          plan.completedAt ||
+          `${planDateKey}T12:00:00`;
+        const timePart = rawTs.includes('T') ? rawTs.slice(10, 16) : 'T12:00';
+        const displayTimestamp = `${planDateKey}${timePart}`;
 
-          const ts =
-            act.timestamp ||
-            plan.closedAt ||
-            plan.completedAt ||
-            (plan.planDate ? `${plan.planDate}T12:00:00` : plan.createdAt) ||
-            new Date().toISOString();
-          const dStr = ts.slice(0, 10);
-          const author = act.author || plan.lastExecutedBy || plan.agentUsername || 'agentp1';
-          const dp = act.deliveryPayment;
-          const pType = dp?.paymentType || 'qarzga';
-          const isCredit = pType === 'qarzga' || (dp?.debtAmount && dp.debtAmount > 0);
-          const pLabel = isCredit ? 'Qarzga' : 'Naqdga';
+        const dp = soldData.deliveryPayment || plan.deliveryPayment;
+        const pType = dp?.paymentType || 'qarzga';
+        const isCredit = pType === 'qarzga' || Boolean(dp?.debtAmount && dp.debtAmount > 0);
+        const pLabel = isCredit ? 'Qarzga' : 'Naqdga';
 
-          prods.forEach((p, pIdx) => {
-            if (p.id) coveredProductIds.add(p.id);
-            const u = !p.unit || p.unit.toLowerCase() === 'birlik' ? 'dona' : p.unit;
-            const qty = Number(p.quantity) || 0;
-            const uPrice = Number(p.unitPrice) || 0;
-            const tPrice = Number(p.totalPrice) || qty * uPrice;
+        prods.forEach((p, pIdx) => {
+          if (p.id) coveredProductIds.add(p.id);
+          if (p.warehouseId) coveredWarehouseIds.add(p.warehouseId);
+          coveredProductNames.add(p.name.trim().toLowerCase());
+
+          const u = !p.unit || p.unit.toLowerCase() === 'birlik' ? 'dona' : p.unit;
+          const qty = Number(p.quantity) || 0;
+          const uPrice = Number(p.unitPrice) || 0;
+          const tPrice =
+            p.totalPrice !== undefined && p.totalPrice >= 0
+              ? Number(p.totalPrice)
+              : qty * uPrice;
+          const itemDate =
+            ((p as any).date ? String((p as any).date).slice(0, 10) : '') || planDateKey;
+
+          list.push({
+            id: `${plan.id}_del_${pIdx}_${p.id || p.name}`,
+            planId: plan.id,
+            planDate: planDateKey,
+            isPlanClosed: Boolean(plan.isClosed || plan.status === 'yopildi'),
+            date: itemDate,
+            timestamp: displayTimestamp,
+            author,
+            productId: p.id,
+            warehouseId: p.warehouseId,
+            productName: p.name,
+            unit: u,
+            quantity: qty,
+            returnedQuantity: 0,
+            returnDates: [],
+            status: 'active',
+            unitPrice: uPrice,
+            totalPrice: tPrice,
+            paymentType: pType,
+            paymentLabel: pLabel,
+          });
+        });
+
+        // Cancelled products when reopening and editing this plan
+        const cancelledList =
+          allCancelledByDate.get(planDateKey) || (plan as any).cancelledProducts || [];
+        if (Array.isArray(cancelledList) && cancelledList.length > 0) {
+          cancelledList.forEach((cp: any, cIdx: number) => {
+            if (!cp || !(cp.name || '').trim()) return;
+            const cNameNorm = cp.name.trim().toLowerCase();
+            // Skip if currently still active with same quantity in prods
+            const stillSameInActive = prods.some(
+              (ap) =>
+                ap.name.trim().toLowerCase() === cNameNorm &&
+                Number(ap.quantity) >= Number(cp.quantity)
+            );
+            if (stillSameInActive) return;
+
+            if (cp.id) coveredProductIds.add(cp.id);
+            if (cp.warehouseId) coveredWarehouseIds.add(cp.warehouseId);
+            coveredProductNames.add(cNameNorm);
+
+            const u = !cp.unit || cp.unit.toLowerCase() === 'birlik' ? 'dona' : cp.unit;
+            const qty = Number(cp.quantity) || 0;
+            const uPrice = Number(cp.unitPrice) || 0;
+            const tPrice =
+              cp.totalPrice !== undefined ? Number(cp.totalPrice) : qty * uPrice;
+            const cancelledDate = (cp.cancelledAt || planDateKey).slice(0, 10);
 
             list.push({
-              id: `${plan.id}_${actIdx}_${pIdx}_${p.id || p.name}`,
-              date: dStr,
-              timestamp: ts,
-              author,
-              productName: p.name,
+              id: `${plan.id}_canc_${cIdx}_${cp.id || cp.name}`,
+              planId: plan.id,
+              planDate: planDateKey,
+              isPlanClosed: Boolean(plan.isClosed || plan.status === 'yopildi'),
+              date: planDateKey,
+              timestamp: displayTimestamp,
+              author: cp.cancelledBy || author,
+              productId: cp.id,
+              warehouseId: cp.warehouseId,
+              productName: cp.name,
               unit: u,
               quantity: qty,
+              returnedQuantity: qty,
+              returnDates: [cancelledDate],
+              status: 'returned',
               unitPrice: uPrice,
               totalPrice: tPrice,
               paymentType: pType,
               paymentLabel: pLabel,
             });
           });
-        });
+        }
+
+        // Collect productsReturned from this plan
+        const rets = allReturnsByDate.get(planDateKey) || plan.productsReturned || [];
+        if (Array.isArray(rets) && rets.length > 0) {
+          rets.forEach((r: any, rIdx: number) => {
+            if (!r || !(r.name || '').trim() || (Number(r.quantity) || 0) <= 0) return;
+            const retTs = r.returnedAt || rawTs;
+            const retDate = (r.returnedAt || planDateKey).slice(0, 10);
+            coveredProductNames.add(r.name.trim().toLowerCase());
+            if (r.productId) coveredProductIds.add(r.productId);
+            if (r.warehouseId) coveredWarehouseIds.add(r.warehouseId);
+
+            returnEvents.push({
+              id: `${plan.id}_ret_${rIdx}_${r.productId || r.name}`,
+              planId: plan.id,
+              planDate: planDateKey,
+              returnDate: retDate,
+              returnTimestamp: `${retDate}${retTs.includes('T') ? retTs.slice(10, 16) : 'T12:00'}`,
+              author: r.author || author,
+              productId: r.productId,
+              warehouseId: r.warehouseId,
+              name: r.name,
+              unit: !r.unit || r.unit.toLowerCase() === 'birlik' ? 'dona' : r.unit,
+              quantity: Number(r.quantity) || 0,
+              unitPrice: Number(r.unitPrice) || 0,
+            });
+          });
+        }
       });
     } catch (err) {
       console.error('Error fetching plans for delivered products:', err);
     }
 
-    // Also include any products in client.products not already covered
+    // Include initial client.products ONLY if not already covered by plans
     if (client.products && client.products.length > 0) {
-      const fallbackDate = (client.updatedAt || client.createdAt || new Date().toISOString()).slice(0, 10);
-      const fallbackTs = client.updatedAt || client.createdAt || new Date().toISOString();
+      const fallbackDate = (client.createdAt || client.updatedAt || new Date().toISOString()).slice(
+        0,
+        10
+      );
+      const fallbackTs = (client.createdAt || client.updatedAt || new Date().toISOString()).slice(
+        0,
+        16
+      );
       const fallbackAuthor = client.createdBy || 'adminc';
       const isCredit = (client.currentDebt || 0) > 0;
       const pLabel = isCredit ? 'Qarzga' : 'Naqdga';
 
       client.products.forEach((p, pIdx) => {
+        if (!p || !(p.name || '').trim()) return;
+        const normName = p.name.trim().toLowerCase();
         if (p.id && coveredProductIds.has(p.id)) return;
-        const alreadyInList = list.some(
-          (item) => item.productName.toLowerCase() === p.name.trim().toLowerCase() && item.quantity === p.quantity
-        );
-        if (alreadyInList) return;
+        if (p.warehouseId && coveredWarehouseIds.has(p.warehouseId)) return;
+        if (coveredProductNames.has(normName)) return;
 
         const u = !p.unit || p.unit.toLowerCase() === 'birlik' ? 'dona' : p.unit;
         const qty = Number(p.quantity) || 0;
+        if (qty <= 0) return;
         const uPrice = Number(p.unitPrice) || 0;
         const tPrice = Number(p.totalPrice) || qty * uPrice;
+        const itemDate = ((p as any).date ? String((p as any).date).slice(0, 10) : '') || fallbackDate;
 
         list.push({
           id: `cp_${p.id || pIdx}_${p.name}`,
-          date: fallbackDate,
+          planDate: itemDate,
+          date: itemDate,
           timestamp: fallbackTs,
           author: fallbackAuthor,
+          productId: p.id,
+          warehouseId: p.warehouseId,
           productName: p.name,
           unit: u,
           quantity: qty,
+          returnedQuantity: 0,
+          returnDates: [],
+          status: 'active',
           unitPrice: uPrice,
           totalPrice: tPrice,
           paymentType: isCredit ? 'qarzga' : 'naqd',
@@ -308,25 +525,107 @@ export const ClientDetailModal: React.FC<Props> = ({
       });
     }
 
+    // Sort delivered rows chronologically (oldest first) to match returns against delivered rows accurately
+    const activeChronological = list
+      .filter((row) => row.status !== 'returned')
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    // Match each return event against delivered rows
+    returnEvents.forEach((ret) => {
+      let remToMatch = ret.quantity;
+      const retNameClean = ret.name.trim().toLowerCase();
+
+      const candidates = activeChronological.filter((row) => {
+        if (row.returnedQuantity >= row.quantity) return false;
+        if (ret.productId && row.productId && ret.productId === row.productId) return true;
+        if (ret.warehouseId && row.warehouseId && ret.warehouseId === row.warehouseId) return true;
+        return row.productName.trim().toLowerCase() === retNameClean;
+      });
+
+      for (const targetRow of candidates) {
+        if (remToMatch <= 0) break;
+        const available = Math.max(0, targetRow.quantity - targetRow.returnedQuantity);
+        if (available <= 0) continue;
+        const matched = Math.min(available, remToMatch);
+        targetRow.returnedQuantity = Math.round((targetRow.returnedQuantity + matched) * 100) / 100;
+        remToMatch = Math.round((remToMatch - matched) * 100) / 100;
+        if (!targetRow.returnDates.includes(ret.returnDate)) {
+          targetRow.returnDates.push(ret.returnDate);
+        }
+        if (targetRow.returnedQuantity >= targetRow.quantity) {
+          targetRow.status = 'returned';
+        } else if (targetRow.returnedQuantity > 0) {
+          targetRow.status = 'partial_returned';
+        }
+      }
+
+      // If there's still unmatched return quantity (e.g., returned from an older initial stock or 4.2 extra return), add it as a returned row
+      if (remToMatch > 0) {
+        list.push({
+          id: ret.id,
+          planId: ret.planId,
+          planDate: ret.planDate,
+          date: ret.returnDate,
+          timestamp: ret.returnTimestamp,
+          author: ret.author,
+          productId: ret.productId,
+          warehouseId: ret.warehouseId,
+          productName: ret.name,
+          unit: ret.unit,
+          quantity: remToMatch,
+          returnedQuantity: remToMatch,
+          returnDates: [ret.returnDate],
+          status: 'returned',
+          unitPrice: ret.unitPrice,
+          totalPrice: Math.round(remToMatch * ret.unitPrice * 100) / 100,
+          paymentType: 'qaytarilgan',
+          paymentLabel: 'Qaytarilgan',
+        });
+      }
+    });
+
     list.sort((a, b) => (b.timestamp || b.date).localeCompare(a.timestamp || a.date));
     return list;
-  }, [client]);
+  }, [client, dailyPlans, isOpen]);
 
   // Filtered delivered products based on product date filter
   const filteredDeliveredProducts = useMemo(() => {
     return allDeliveredProducts.filter((p) => {
-      if (productStartDate && p.date < productStartDate) return false;
-      if (productEndDate && p.date > productEndDate) return false;
-      return true;
+      const matchesDeliveryDate =
+        (!productStartDate || p.date >= productStartDate) &&
+        (!productEndDate || p.date <= productEndDate);
+      const matchesReturnDate =
+        p.returnDates.length > 0 &&
+        p.returnDates.some(
+          (rd) => (!productStartDate || rd >= productStartDate) && (!productEndDate || rd <= productEndDate)
+        );
+      return matchesDeliveryDate || matchesReturnDate;
     });
   }, [allDeliveredProducts, productStartDate, productEndDate]);
 
   const totalFilteredProductsValue = useMemo(() => {
-    return filteredDeliveredProducts.reduce((sum, p) => sum + p.totalPrice, 0);
+    return filteredDeliveredProducts.reduce((sum, p) => {
+      if (p.status === 'returned') return sum;
+      if (p.status === 'partial_returned') {
+        const activeQty = Math.max(0, p.quantity - p.returnedQuantity);
+        return sum + Math.round(activeQty * p.unitPrice * 100) / 100;
+      }
+      return sum + p.totalPrice;
+    }, 0);
   }, [filteredDeliveredProducts]);
 
   const totalFilteredProductsQty = useMemo(() => {
-    return filteredDeliveredProducts.reduce((sum, p) => sum + p.quantity, 0);
+    return filteredDeliveredProducts.reduce((sum, p) => {
+      if (p.status === 'returned') return sum;
+      if (p.status === 'partial_returned') {
+        return sum + Math.max(0, p.quantity - p.returnedQuantity);
+      }
+      return sum + p.quantity;
+    }, 0);
+  }, [filteredDeliveredProducts]);
+
+  const totalReturnedProductsQty = useMemo(() => {
+    return filteredDeliveredProducts.reduce((sum, p) => sum + (p.returnedQuantity || 0), 0);
   }, [filteredDeliveredProducts]);
 
   // Filtered audit logs based on log date filter
@@ -344,7 +643,7 @@ export const ClientDetailModal: React.FC<Props> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
-      <div className="relative w-full max-w-4xl bg-white rounded-3xl shadow-2xl border border-rose-100 my-8 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+      <div className="relative w-full max-w-5xl bg-white rounded-3xl shadow-2xl border border-rose-100 my-8 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Modal Top Bar */}
         <div className="no-print px-5 sm:px-6 py-4 bg-gradient-to-r from-rose-50/90 via-white to-rose-50/50 border-b border-rose-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -610,15 +909,27 @@ export const ClientDetailModal: React.FC<Props> = ({
           {/* Products Table with Date Filtering */}
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Package className="w-4 h-4 text-rose-700" />
                 <h3 className="text-sm font-bold text-neutral-900 uppercase tracking-wider">
                   Topshirilgan mahsulotlar ({filteredDeliveredProducts.length} ta yozuv)
                 </h3>
+                {onNavigateToPlanDate && filteredDeliveredProducts.length > 0 && (
+                  <span className="text-[11px] font-semibold text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-200">
+                    Mahsulot ustiga bossangiz o&apos;sha kungi rejaga olib boradi
+                  </span>
+                )}
               </div>
-              <span className="text-xs font-bold font-mono text-neutral-800 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200">
-                Jami summa: {formatMoney(totalFilteredProductsValue)}
-              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                {totalReturnedProductsQty > 0 && (
+                  <span className="text-xs font-bold font-mono text-rose-800 bg-rose-100/80 px-2.5 py-1 rounded-lg border border-rose-300">
+                    Qaytarilgan: {formatNumber(totalReturnedProductsQty)} dona
+                  </span>
+                )}
+                <span className="text-xs font-bold font-mono text-neutral-800 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200">
+                  Jami faol summa: {formatMoney(totalFilteredProductsValue)}
+                </span>
+              </div>
             </div>
 
             {/* Date filter bar for products */}
@@ -696,66 +1007,239 @@ export const ClientDetailModal: React.FC<Props> = ({
               </div>
             ) : (
               <div className="overflow-hidden rounded-2xl border border-rose-150 shadow-2xs">
-                <StickyTableWrapper maxHeightClassName="max-h-80">
-                  <table className="w-full min-w-[760px] text-left text-xs whitespace-nowrap">
+                <StickyTableWrapper maxHeightClassName="max-h-96">
+                  <table className="w-full min-w-[880px] text-left text-xs whitespace-nowrap">
                     <thead className="bg-rose-50 text-neutral-800 border-b border-rose-200 sticky top-0 z-20 font-bold uppercase tracking-wider text-[10.5px]">
                       <tr>
                         <th className="py-2.5 px-3 w-10 text-center">#</th>
-                        <th className="py-2.5 px-3 min-w-[125px]">Sana va Vaqt</th>
-                        <th className="py-2.5 px-3 min-w-[120px]">Kim bergan</th>
-                        <th className="py-2.5 px-3 min-w-[180px]">Mahsulot nomi</th>
+                        <th className="py-2.5 px-3 min-w-[125px]">Berilgan Sana</th>
+                        <th className="py-2.5 px-3 min-w-[115px]">Kim bergan</th>
+                        <th className="py-2.5 px-3 min-w-[200px]">Mahsulot nomi va holati</th>
                         <th className="py-2.5 px-3 w-16">O'lchov</th>
                         <th className="py-2.5 px-3 text-right">Miqdori</th>
                         <th className="py-2.5 px-3 text-right">Birlik narxi</th>
                         <th className="py-2.5 px-3 text-right">Jami summa</th>
-                        <th className="py-2.5 px-3 text-center min-w-[110px]">To'lov turi</th>
+                        <th className="py-2.5 px-3 text-center min-w-[105px]">To'lov turi</th>
+                        {onNavigateToPlanDate && (
+                          <th className="py-2.5 px-3 text-center min-w-[175px]">
+                            O&apos;sha kungi reja / Tahrirlash
+                          </th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100">
-                      {filteredDeliveredProducts.map((p, idx) => (
-                        <tr key={p.id || idx} className="hover:bg-rose-50/30 transition-colors">
-                          <td className="py-2.5 px-3 text-neutral-400 font-mono text-center">{idx + 1}</td>
-                          <td className="py-2.5 px-3 font-mono text-neutral-600 text-[11px]">
-                            {p.timestamp ? p.timestamp.replace('T', ' ').slice(0, 16) : p.date}
-                          </td>
-                          <td className="py-2.5 px-3 font-bold text-neutral-800">
-                            {getAgentDisplayName(p.author)}
-                          </td>
-                          <td className="py-2.5 px-3 font-semibold text-neutral-900">{p.productName}</td>
-                          <td className="py-2.5 px-3 text-neutral-700">{p.unit}</td>
-                          <td className="py-2.5 px-3 text-right font-mono font-medium text-neutral-900 tabular-nums">
-                            {formatNumber(p.quantity)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono text-neutral-700 tabular-nums">
-                            {formatMoney(p.unitPrice)}
-                          </td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-neutral-900 tabular-nums">
-                            {formatMoney(p.totalPrice)}
-                          </td>
-                          <td className="py-2.5 px-3 text-center">
-                            {p.paymentLabel === 'Qarzga' ? (
-                              <span className="inline-block px-2.5 py-0.5 rounded-md text-[10.5px] font-bold bg-rose-100 text-rose-900 border border-rose-300">
-                                Qarzga
-                              </span>
-                            ) : (
-                              <span className="inline-block px-2.5 py-0.5 rounded-md text-[10.5px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
-                                Naqdga
-                              </span>
+                      {filteredDeliveredProducts.map((p, idx) => {
+                        const isFullyReturned = p.status === 'returned';
+                        const isPartialReturned = p.status === 'partial_returned';
+                        const activeQty = Math.max(0, p.quantity - (p.returnedQuantity || 0));
+                        const activeSum = Math.round(activeQty * p.unitPrice * 100) / 100;
+                        const returnDateFormatted =
+                          p.returnDates && p.returnDates.length > 0
+                            ? p.returnDates.map(formatDateDMY).join(', ')
+                            : '';
+
+                        return (
+                          <tr
+                            key={p.id || idx}
+                            onClick={() => {
+                              if (onNavigateToPlanDate && p.planDate) {
+                                onNavigateToPlanDate({
+                                  clientId: client.id,
+                                  clientName: client.name,
+                                  planId: p.planId,
+                                  planDate: p.planDate,
+                                  openEditModal: false,
+                                });
+                              }
+                            }}
+                            title={
+                              onNavigateToPlanDate
+                                ? `${formatDateDMY(p.planDate)} kungi rejaga o'tish uchun bosing`
+                                : undefined
+                            }
+                            className={`transition-colors ${
+                              onNavigateToPlanDate ? 'cursor-pointer' : ''
+                            } ${
+                              isFullyReturned
+                                ? 'bg-rose-50/40 hover:bg-rose-50/80'
+                                : isPartialReturned
+                                ? 'bg-amber-50/40 hover:bg-amber-50/80'
+                                : 'hover:bg-rose-50/30'
+                            }`}
+                          >
+                            <td className="py-2.5 px-3 text-neutral-400 font-mono text-center">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-neutral-700 text-[11px]">
+                              <div className="font-bold text-neutral-900">
+                                {formatDateDMY(p.planDate || p.date)}
+                              </div>
+                              {p.timestamp && p.timestamp.includes('T') && (
+                                <div className="text-[10px] text-neutral-400">
+                                  {p.timestamp.slice(11, 16)}
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 font-bold text-neutral-800">
+                              {getAgentDisplayName(p.author)}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <div className="flex flex-col gap-1">
+                                <span
+                                  className={`font-bold ${
+                                    isFullyReturned
+                                      ? 'line-through text-neutral-400 decoration-rose-600 decoration-2'
+                                      : 'text-neutral-900'
+                                  }`}
+                                >
+                                  {p.productName}
+                                </span>
+                                {isFullyReturned && (
+                                  <span className="inline-flex items-center gap-1 self-start px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-900 border border-rose-300">
+                                    <RotateCcw className="w-3 h-3 text-rose-700 shrink-0" />
+                                    <span>
+                                      Qaytarilgan
+                                      {returnDateFormatted ? ` (${returnDateFormatted})` : ''}
+                                    </span>
+                                  </span>
+                                )}
+                                {isPartialReturned && (
+                                  <span className="inline-flex items-center gap-1 self-start px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                    <RotateCcw className="w-3 h-3 text-amber-700 shrink-0" />
+                                    <span>
+                                      <span className="line-through mr-1">
+                                        {formatNumber(p.returnedQuantity)} {p.unit}
+                                      </span>
+                                      qaytarilgan
+                                      {returnDateFormatted ? ` (${returnDateFormatted})` : ''}
+                                    </span>
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 text-neutral-700">{p.unit}</td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                              {isFullyReturned ? (
+                                <span className="line-through text-neutral-400 decoration-rose-600 decoration-2 font-bold">
+                                  {formatNumber(p.quantity)}
+                                </span>
+                              ) : isPartialReturned ? (
+                                <div className="flex flex-col items-end">
+                                  <span className="line-through text-neutral-400 decoration-rose-500 text-[10.5px]">
+                                    {formatNumber(p.quantity)}
+                                  </span>
+                                  <span className="font-bold text-emerald-800">
+                                    Qoldi: {formatNumber(activeQty)}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="font-medium text-neutral-900">
+                                  {formatNumber(p.quantity)}
+                                </span>
+                              )}
+                            </td>
+                            <td
+                              className={`py-2.5 px-3 text-right font-mono tabular-nums ${
+                                isFullyReturned ? 'line-through text-neutral-400' : 'text-neutral-700'
+                              }`}
+                            >
+                              {formatMoney(p.unitPrice)}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                              {isFullyReturned ? (
+                                <span className="line-through text-neutral-400 decoration-rose-600 decoration-2 font-bold">
+                                  {formatMoney(p.totalPrice)}
+                                </span>
+                              ) : isPartialReturned ? (
+                                <div className="flex flex-col items-end">
+                                  <span className="line-through text-neutral-400 text-[10.5px]">
+                                    {formatMoney(p.totalPrice)}
+                                  </span>
+                                  <span className="font-bold text-neutral-900">
+                                    {formatMoney(activeSum)}
+                                  </span>
+                                </div>
+                              ) : (
+                                <span className="font-bold text-neutral-900">
+                                  {formatMoney(p.totalPrice)}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              {isFullyReturned ? (
+                                <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                                  Qaytarilgan
+                                </span>
+                              ) : p.paymentLabel === 'Qarzga' ? (
+                                <span className="inline-block px-2.5 py-0.5 rounded-md text-[10.5px] font-bold bg-rose-100 text-rose-900 border border-rose-300">
+                                  Qarzga
+                                </span>
+                              ) : (
+                                <span className="inline-block px-2.5 py-0.5 rounded-md text-[10.5px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                                  Naqdga
+                                </span>
+                              )}
+                            </td>
+                            {onNavigateToPlanDate && (
+                              <td
+                                className="py-2.5 px-3 text-center"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div className="inline-flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onNavigateToPlanDate({
+                                        clientId: client.id,
+                                        clientName: client.name,
+                                        planId: p.planId,
+                                        planDate: p.planDate,
+                                        openEditModal: false,
+                                      })
+                                    }
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-[10.5px] font-bold transition cursor-pointer"
+                                    title={`${formatDateDMY(p.planDate)} kungi rejaga o'tish`}
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                    <span>Rejaga o&apos;tish</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onNavigateToPlanDate({
+                                        clientId: client.id,
+                                        clientName: client.name,
+                                        planId: p.planId,
+                                        planDate: p.planDate,
+                                        openEditModal: true,
+                                      })
+                                    }
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10.5px] font-bold transition cursor-pointer shadow-2xs"
+                                    title={`${formatDateDMY(p.planDate)} kungi rejani ochib o'zgartirish`}
+                                  >
+                                    <Edit className="w-3 h-3" />
+                                    <span>O&apos;zgartirish</span>
+                                  </button>
+                                </div>
+                              </td>
                             )}
-                          </td>
-                        </tr>
-                      ))}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                     <tfoot className="bg-rose-50/90 font-bold border-t-2 border-rose-200 sticky bottom-0 z-10 text-[11px]">
                       <tr>
                         <td colSpan={5} className="py-2.5 px-3 text-neutral-900 uppercase">
-                          JAMI: {filteredDeliveredProducts.length} ta yozuv ({formatNumber(totalFilteredProductsQty)} dona)
+                          JAMI FAOL: {formatNumber(totalFilteredProductsQty)} dona
+                          {totalReturnedProductsQty > 0
+                            ? ` (Qaytarilgan: ${formatNumber(totalReturnedProductsQty)} dona)`
+                            : ''}
                         </td>
                         <td colSpan={2} />
                         <td className="py-2.5 px-3 text-right font-mono text-rose-950 tabular-nums text-xs sm:text-sm font-extrabold">
                           {formatMoney(totalFilteredProductsValue)}
                         </td>
-                        <td />
+                        <td colSpan={onNavigateToPlanDate ? 2 : 1} />
                       </tr>
                     </tfoot>
                   </table>

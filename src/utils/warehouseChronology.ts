@@ -603,11 +603,13 @@ export function buildWarehouseProductChronology(
     .filter((e) => e.type === 'return')
     .reduce((s, e) => s + e.pieces, 0);
 
+  const initialEditLogsOnly = rawHistory
+    .filter((h) => h && h.changeType === 'initial_edit')
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
   const editLogsOnly = rawHistory
     .filter((h) => h && (h.changeType === 'initial_edit' || h.changeType === 'manual_adjustment'))
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-  const totalManualDelta = editLogsOnly.reduce((s, h) => s + (h.deltaPieces || 0), 0);
 
   const configuredIntakePieces =
     product.intakeUnitType === 'package' &&
@@ -616,23 +618,32 @@ export function buildWarehouseProductChronology(
       ? (product.intakeQuantity || 0) * (product.piecesPerPackage || 1)
       : product.intakeQuantity || 0;
 
-  const currentPieces = Math.max(0, product.totalPieces || 0);
+  const rawCurrentPieces = Math.max(0, product.totalPieces || 0);
+  const hasExplicitInitialEdit =
+    (product.initialEditCount || 0) > 0 || initialEditLogsOnly.length > 0;
 
-  // Conservation formula: Initial + ManualDelta - Sold + Returned = Current
-  // => Reconstructed Initial = Current + Sold - Returned - ManualDelta
+  // Conservation formula: Initial - Sold + Returned = Current
+  // => Reconstructed Initial = Current + Sold - Returned
   const reconstructedInitialFromConservation = Math.max(
     0,
-    Math.round((currentPieces + totalSoldPieces - totalReturnedPieces - totalManualDelta) * 100) / 100
+    Math.round((rawCurrentPieces + totalSoldPieces - totalReturnedPieces) * 100) / 100
   );
 
   const initialPieces =
-    editLogsOnly.length > 0 && product.initialTotalPieces !== undefined && product.initialTotalPieces > 0
+    hasExplicitInitialEdit &&
+    product.initialTotalPieces !== undefined &&
+    product.initialTotalPieces >= 0
       ? product.initialTotalPieces
       : Math.max(
           product.initialTotalPieces || 0,
           configuredIntakePieces,
           reconstructedInitialFromConservation
         );
+
+  // Hozirgi qoldiq bosh qoldiqqa va bugungi kungacha bo'lgan amallarga (sotuv va qaytarishlarga) asoslanadi
+  const currentPieces = hasExplicitInitialEdit
+    ? Math.max(0, Math.round((initialPieces - totalSoldPieces + totalReturnedPieces) * 100) / 100)
+    : rawCurrentPieces;
 
   const initialVolume = Math.round(initialPieces * (product.volumePerPiece || 1) * 100) / 100;
   const initialDate =
@@ -643,53 +654,68 @@ export function buildWarehouseProductChronology(
   const initialFormatted = formatPiecesForWarehouseProduct(product, initialPieces);
   const currentFormatted = formatPiecesForWarehouseProduct(product, currentPieces);
 
-  // Add adjustment events into flowEvents for date-based stock calculation
-  editLogsOnly.forEach((el) => {
-    if ((el.deltaPieces || 0) !== 0) {
-      flowEvents.push({
-        id: el.id,
-        timestamp: el.timestamp,
-        dateStr: el.dateStr || el.timestamp.slice(0, 10),
-        type: 'adjustment',
-        author: el.author || 'adminc',
-        pieces: el.deltaPieces,
-        quantityDisplay: `${el.deltaPieces >= 0 ? '+' : ''}${el.deltaPieces} dona`,
-        note: el.note,
-      });
-    }
-  });
+  // Build initialIntakeLog + editLogsOnly in chronological order for the Initial Stock Changes History table
+  const existingInitLog = rawHistory.find((h) => h && h.changeType === 'initial_intake');
+  const firstOriginalInitialPieces =
+    initialEditLogsOnly.length > 0 &&
+    initialEditLogsOnly[0].previousInitialPieces !== undefined &&
+    initialEditLogsOnly[0].previousInitialPieces > 0
+      ? initialEditLogsOnly[0].previousInitialPieces
+      : existingInitLog && existingInitLog.newPieces > 0 && initialEditLogsOnly.length > 0
+      ? existingInitLog.newPieces
+      : initialPieces;
 
-  // Build initialIntakeLog + editLogsOnly in chronological order
   const initialIntakeLog: WarehouseStockChangeLog = {
-    id: `whlog_init_${product.id}`,
+    id: existingInitLog?.id || `whlog_init_${product.id}`,
     timestamp: product.createdAt || `${initialDate}T08:00:00.000Z`,
     dateStr: initialDate,
     author: product.createdBy || 'adminc',
     changeType: 'initial_intake',
     previousPieces: 0,
-    newPieces: initialPieces,
-    deltaPieces: initialPieces,
+    newPieces: firstOriginalInitialPieces,
+    deltaPieces: firstOriginalInitialPieces,
     previousInitialPieces: 0,
-    newInitialPieces: initialPieces,
+    newInitialPieces: firstOriginalInitialPieces,
     unit:
       (product.initialIntakeUnitType || product.intakeUnitType) === 'package' &&
       product.packageUnitName
         ? product.packageUnitName
         : product.pieceUnitName || 'dona',
     quantityInUnit:
-      product.initialIntakeQuantity ||
-      ((product.initialIntakeUnitType || product.intakeUnitType) === 'package' &&
+      (product.initialIntakeUnitType || product.intakeUnitType) === 'package' &&
       (product.piecesPerPackage || 1) > 1
-        ? Math.round((initialPieces / (product.piecesPerPackage || 1)) * 100) / 100
-        : initialPieces),
-    note: product.notes || "Baza yaratilganda / omborga dastlabki kiritilgan qoldiq",
+        ? Math.round((firstOriginalInitialPieces / (product.piecesPerPackage || 1)) * 100) / 100
+        : firstOriginalInitialPieces,
+    note:
+      existingInitLog?.note ||
+      product.notes ||
+      'Baza yaratilganda / omborga dastlabki kiritilgan qoldiq',
   };
 
-  // If configuredIntakePieces differs from reconstructedInitialFromConservation and editLogsOnly is empty,
-  // check if current stock was manually set without a sale
-  const allInitialAndEditLogs: WarehouseStockChangeLog[] = [initialIntakeLog, ...editLogsOnly];
+  const normalizedEditLogs: WarehouseStockChangeLog[] = editLogsOnly.map((el) => {
+    if (
+      el.changeType === 'initial_edit' &&
+      el.previousInitialPieces !== undefined &&
+      el.newInitialPieces !== undefined
+    ) {
+      const initDelta = Math.round((el.newInitialPieces - el.previousInitialPieces) * 100) / 100;
+      return {
+        ...el,
+        previousPieces: el.previousInitialPieces,
+        newPieces: el.newInitialPieces,
+        deltaPieces: initDelta,
+      };
+    }
+    return el;
+  });
+
+  const allInitialAndEditLogs: WarehouseStockChangeLog[] = [
+    initialIntakeLog,
+    ...normalizedEditLogs,
+  ];
 
   // Build unified step-by-step timeline in chronological order (oldest -> newest) then reverse for display
+  // Barcha sotuv va qaytarish amallari yangilangan bosh qoldiqdan (initialPieces) boshlab hisoblanadi
   const rawTimeline: Array<{
     id: string;
     timestamp: string;
@@ -706,34 +732,7 @@ export function buildWarehouseProductChronology(
     totalPrice?: number;
     paymentType?: string;
     note?: string;
-    explicitBefore?: number;
-    explicitAfter?: number;
   }> = [];
-
-  editLogsOnly.forEach((el, idx) => {
-    rawTimeline.push({
-      id: el.id || `edit_${idx}`,
-      timestamp: el.timestamp,
-      dateStr: el.dateStr || el.timestamp.slice(0, 10),
-      eventType: el.changeType === 'initial_edit' ? 'initial_edit' : 'manual_adjustment',
-      title:
-        el.changeType === 'initial_edit'
-          ? `Dastlabki kirim miqdori o'zgartirildi (#${idx + 1})`
-          : `Ombor qoldig'i tahrirlandi (#${idx + 1})`,
-      subtitle:
-        el.previousInitialPieces !== undefined &&
-        el.newInitialPieces !== undefined &&
-        el.previousInitialPieces !== el.newInitialPieces
-          ? `Dastlabki kirim: ${el.previousInitialPieces} dona -> ${el.newInitialPieces} dona`
-          : `Qoldiq: ${el.previousPieces} dona -> ${el.newPieces} dona`,
-      author: el.author || 'adminc',
-      quantityDisplay: `${el.deltaPieces >= 0 ? '+' : ''}${el.deltaPieces} dona`,
-      deltaPieces: el.deltaPieces || 0,
-      note: el.note,
-      explicitBefore: el.previousPieces,
-      explicitAfter: el.newPieces,
-    });
-  });
 
   flowEvents
     .filter((fe) => fe.type === 'sale' || fe.type === 'return')
@@ -785,13 +784,16 @@ export function buildWarehouseProductChronology(
   const timelineWithBalances: ProductChronologyTimelineItem[] = [];
   let runningPieces = initialPieces;
 
-  // 1st item: Initial database creation
+  // 1st item: Initial database creation (Bosh qoldiq)
   timelineWithBalances.push({
     id: initialIntakeLog.id,
     timestamp: initialIntakeLog.timestamp,
     dateStr: earliestEventDate,
     eventType: 'initial_intake',
-    title: 'Baza yaratilganda dastlabki kiritilgan qoldiq',
+    title:
+      editLogsOnly.length > 0
+        ? `Baza yaratilganda dastlabki qoldiq (Bosh qoldiq — ${editLogsOnly.length} marta yangilangan)`
+        : 'Baza yaratilganda dastlabki kiritilgan qoldiq (Bosh qoldiq)',
     subtitle: `${initialFormatted.primary} (${initialFormatted.secondary})`,
     author: initialIntakeLog.author,
     quantityDisplay: `+${initialPieces} dona (${initialFormatted.primary})`,
@@ -801,16 +803,15 @@ export function buildWarehouseProductChronology(
     note: initialIntakeLog.note,
     formattedAfter: initialFormatted.primary,
     description:
-      initialIntakeLog.note ||
-      `Dastlabki qoldiq sifatida ${initialFormatted.primary} (${initialFormatted.secondary}) kiritildi`,
+      editLogsOnly.length > 0
+        ? `Bosh qoldiq: ${initialFormatted.primary} (${initialFormatted.secondary}). Barcha bugungi kungacha bo'lgan amallar shu bosh qoldiqqa asoslanadi.`
+        : initialIntakeLog.note ||
+          `Dastlabki qoldiq sifatida ${initialFormatted.primary} (${initialFormatted.secondary}) kiritildi`,
   });
 
   rawTimeline.forEach((item) => {
     const before = runningPieces;
-    const after =
-      item.explicitAfter !== undefined && item.deltaPieces === 0
-        ? item.explicitAfter
-        : Math.max(0, Math.round((before + item.deltaPieces) * 100) / 100);
+    const after = Math.max(0, Math.round((before + item.deltaPieces) * 100) / 100);
     runningPieces = after;
 
     const afterFormatted = formatPiecesForWarehouseProduct(product, after);
@@ -843,40 +844,28 @@ export function buildWarehouseProductChronology(
   const getStockAtDate = (dateYmd: string): ProductDateStockSnapshot => {
     const cleanDate = (dateYmd || '').trim() || nowYmd;
 
-    let soldAfterDate = 0;
-    let returnedAfterDate = 0;
-    let adjustedAfterDate = 0;
     let soldOnDate = 0;
     let soldUpToDate = 0;
     let returnedUpToDate = 0;
 
     flowEvents.forEach((fe) => {
       if (fe.type === 'sale') {
-        if (fe.dateStr > cleanDate) {
-          soldAfterDate += fe.pieces;
-        } else {
+        if (fe.dateStr <= cleanDate) {
           soldUpToDate += fe.pieces;
           if (fe.dateStr === cleanDate) {
             soldOnDate += fe.pieces;
           }
         }
       } else if (fe.type === 'return') {
-        if (fe.dateStr > cleanDate) {
-          returnedAfterDate += fe.pieces;
-        } else {
+        if (fe.dateStr <= cleanDate) {
           returnedUpToDate += fe.pieces;
-        }
-      } else if (fe.type === 'adjustment') {
-        if (fe.dateStr > cleanDate) {
-          adjustedAfterDate += fe.pieces;
         }
       }
     });
 
     const piecesAtDate = Math.max(
       0,
-      Math.round((currentPieces + soldAfterDate - returnedAfterDate - adjustedAfterDate) * 100) /
-        100
+      Math.round((initialPieces - soldUpToDate + returnedUpToDate) * 100) / 100
     );
     const formattedAtDate = formatPiecesForWarehouseProduct(product, piecesAtDate);
 
