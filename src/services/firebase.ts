@@ -563,6 +563,14 @@ export async function deleteClientFromFirestore(
 
 function preparePlanPayloadForFirestore(plan: DailyPlanItem): any {
   const payload: any = cleanFirestoreData(plan);
+  payload.financialAction =
+    plan.financialAction && plan.financialAction.amount > 0 ? payload.financialAction : null;
+  payload.productsDelivered =
+    plan.productsDelivered && plan.productsDelivered.length > 0 ? payload.productsDelivered : null;
+  payload.deliveryPayment =
+    plan.productsDelivered && plan.productsDelivered.length > 0 && plan.deliveryPayment
+      ? payload.deliveryPayment
+      : null;
   if (!plan.isClosed && plan.status !== 'yopildi') {
     payload.isClosed = false;
     payload.closedWithoutAction = false;
@@ -605,6 +613,13 @@ function preparePlanPayloadForFirestore(plan: DailyPlanItem): any {
 export function normalizeIncomingPlanFromFirestore(raw: any): DailyPlanItem {
   if (!raw || typeof raw !== 'object') return raw as DailyPlanItem;
   const item: any = { ...raw };
+  if (!item.financialAction || !(item.financialAction.amount > 0)) {
+    delete item.financialAction;
+  }
+  if (!Array.isArray(item.productsDelivered) || item.productsDelivered.length === 0) {
+    delete item.productsDelivered;
+    delete item.deliveryPayment;
+  }
   if (item.isClosed || item.status === 'yopildi') {
     if (item.closedDisplayDate) {
       item.closedAt = item.closedDisplayDate;

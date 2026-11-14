@@ -1021,9 +1021,11 @@ class StorageService {
           duplicateIds.push(loserBase.id);
         }
 
+        const winnerWasEdited = Boolean(winnerBase.lastExecutedAt);
         const authoritativeActionsHistory =
-          winnerBase.actionsHistory && winnerBase.actionsHistory.length > 0
-            ? winnerBase.actionsHistory
+          winnerWasEdited ||
+          (winnerBase.actionsHistory && winnerBase.actionsHistory.length > 0)
+            ? winnerBase.actionsHistory || []
             : loserBase.actionsHistory || [];
         const latestAction = authoritativeActionsHistory[0];
 
@@ -1032,20 +1034,14 @@ class StorageService {
           plannedAction: winnerBase.plannedAction || loserBase.plannedAction,
           plannedAmount: winnerBase.plannedAmount ?? loserBase.plannedAmount,
           planNote: winnerBase.planNote || loserBase.planNote,
-          productsDelivered: winnerBase.productsDelivered || loserBase.productsDelivered,
-          deliveryPayment: winnerBase.deliveryPayment || loserBase.deliveryPayment,
-          financialAction: winnerBase.financialAction || loserBase.financialAction,
+          productsDelivered: winnerBase.productsDelivered,
+          deliveryPayment: winnerBase.deliveryPayment,
+          financialAction: winnerBase.financialAction,
           productsReturned: winnerBase.productsReturned || loserBase.productsReturned,
           lastExecutedBy: winnerBase.lastExecutedBy || loserBase.lastExecutedBy || latestAction?.author,
           lastExecutedAt: winnerBase.lastExecutedAt || loserBase.lastExecutedAt || latestAction?.timestamp,
-          actionsHistory:
-            authoritativeActionsHistory.length > 0
-              ? authoritativeActionsHistory
-              : winnerBase.actionsHistory,
-          actionsCount:
-            authoritativeActionsHistory.length > 0
-              ? authoritativeActionsHistory.length
-              : winnerBase.actionsCount,
+          actionsHistory: authoritativeActionsHistory,
+          actionsCount: authoritativeActionsHistory.length,
         });
       }
     }
@@ -1072,16 +1068,29 @@ class StorageService {
   } {
     const clients = this.getClients();
     const deletedPlanIds = getDeletedPlanIds();
-    // Remove any synthetic plan_rec_ items that were created on dates other than 2026-11-01 (unless they contain delivered products)
+    // Remove any synthetic plan_rec_ items that were created unintended on 2026-11-05 without operations or user edits
     const hasDeliveredProds = (p: DailyPlanItem) =>
       Boolean(
         (p.productsDelivered && p.productsDelivered.length > 0) ||
           (p.actionsHistory &&
             p.actionsHistory.some((a) => a.productsDelivered && a.productsDelivered.length > 0))
       );
+    const hasFinOps = (p: DailyPlanItem) =>
+      Boolean(
+        (p.financialAction && p.financialAction.amount > 0) ||
+          (p.actionsHistory &&
+            p.actionsHistory.some((a) => a.financialAction && a.financialAction.amount > 0))
+      );
     const resultPlans = plans.filter((p) => {
       if (!p || !p.id) return false;
-      if (p.id.startsWith('plan_rec_') && !p.id.endsWith('_2026-11-01') && !hasDeliveredProds(p)) {
+      if (
+        p.id.startsWith('plan_rec_') &&
+        p.id.endsWith('_2026-11-05') &&
+        !hasDeliveredProds(p) &&
+        !hasFinOps(p) &&
+        !p.reopenedAt &&
+        !(p.reopenHistory && p.reopenHistory.length > 0)
+      ) {
         return false;
       }
       return true;
@@ -1140,8 +1149,6 @@ class StorageService {
           return getLogWallMs(l) > closeWallMs;
         });
 
-        if (hasNewerReopenOrRemove) continue;
-
         const recId = `plan_rec_${client.id}_${dateKey}`;
         if (deletedPlanIds.has(recId)) continue;
 
@@ -1151,6 +1158,7 @@ class StorageService {
             p.clientId === client.id &&
             (getPlanDateKey(p) === dateKey || getClosedDateKey(p) === dateKey)
         );
+        if (existingIdx === -1 && hasNewerReopenOrRemove) continue;
 
         const isUnperformed =
           closeLog.title === 'Reja bajarilmasdan yopildi' ||
@@ -1170,18 +1178,30 @@ class StorageService {
         const explicitProdLog = client.logs.find(
           (l) =>
             l &&
-            (l.id?.endsWith('_prod') ||
-              l.id?.endsWith('_prod_edit') ||
-              (l.type === 'product_added' &&
-                (l.title === 'Yangi mahsulotlar topshirildi' ||
-                  l.title === "Sotilgan mahsulotlar / to'lov turi o'zgartirildi")))
+            l.type === 'product_added' &&
+            (l.id?.endsWith('_prod') || l.title === 'Yangi mahsulotlar topshirildi') &&
+            getPlanDateKey({ createdAt: l.timestamp } as DailyPlanItem) === dateKey
         );
 
         const sameDateProducts = (client.products || []).filter((prod) => {
           const prodDate = (prod as any).date || (prod as any).deliveredAt;
-          if (!prodDate) return Boolean(explicitProdLog);
-          return getPlanDateKey({ createdAt: prodDate } as DailyPlanItem) === dateKey || Boolean(explicitProdLog);
+          if (!prodDate) return false;
+          return getPlanDateKey({ createdAt: prodDate } as DailyPlanItem) === dateKey;
         });
+
+        const sameDatePaymentLogForExisting = client.logs.find(
+          (l) =>
+            l &&
+            l.type === 'payment' &&
+            getPlanDateKey({ createdAt: l.timestamp } as DailyPlanItem) === dateKey &&
+            (l.amountChanged || 0) > 0
+        );
+        const hasProdEditLog = client.logs.some(
+          (l) => l && l.id?.endsWith('_prod_edit')
+        );
+        const hasFinEditLog = client.logs.some(
+          (l) => l && l.id?.endsWith('_fin_edit')
+        );
 
         if (existingIdx !== -1) {
           const existingPlan = resultPlans[existingIdx];
@@ -1191,12 +1211,15 @@ class StorageService {
           const existingReopenMs = existingPlan.reopenedAt
             ? new Date(existingPlan.reopenedAt).getTime()
             : 0;
-          if (!existingClosed && closeWallMs > existingReopenMs) {
+          if (!hasNewerReopenOrRemove && !existingClosed && closeWallMs > existingReopenMs) {
             resultPlans[existingIdx] = {
               ...existingPlan,
               isClosed: true,
               status: 'yopildi',
-              closedWithoutAction: isUnperformed && sameDateProducts.length === 0,
+              closedWithoutAction:
+                isUnperformed &&
+                sameDateProducts.length === 0 &&
+                !sameDatePaymentLogForExisting,
               closedAt: closeLog.timestamp,
               closedBy: closeLog.author || client.lastPlanClosedBy || existingPlan.agentUsername,
               closeReason: extractedReason,
@@ -1209,6 +1232,7 @@ class StorageService {
             recoveredAny = true;
           }
           if (
+            !hasProdEditLog &&
             explicitProdLog &&
             sameDateProducts.length > 0 &&
             !hasDeliveredProds(resultPlans[existingIdx])
@@ -1240,6 +1264,47 @@ class StorageService {
               ...targetP,
               closedWithoutAction: false,
               productsDelivered: stampedProds,
+              actionsHistory: updatedHist,
+              actionsCount: Math.max(targetP.actionsCount || 0, 1),
+            };
+            recoveredAny = true;
+          }
+          if (
+            !hasFinEditLog &&
+            sameDatePaymentLogForExisting &&
+            !hasFinOps(resultPlans[existingIdx])
+          ) {
+            const targetP = resultPlans[existingIdx];
+            const recFin: NonNullable<DailyPlanItem['financialAction']> = {
+              method: 'naqd',
+              methodLabel: sameDatePaymentLogForExisting.paymentMethodLabel || 'Naqd pul',
+              amount: sameDatePaymentLogForExisting.amountChanged || 0,
+              amountUzs: sameDatePaymentLogForExisting.amountUzs,
+              exchangeRate: sameDatePaymentLogForExisting.exchangeRate,
+              note: sameDatePaymentLogForExisting.details,
+            };
+            const updatedHist =
+              targetP.actionsHistory && targetP.actionsHistory.length > 0
+                ? targetP.actionsHistory.map((ah, idx) =>
+                    idx === 0 ? { ...ah, financialAction: recFin } : ah
+                  )
+                : [
+                    {
+                      timestamp: closeLog.timestamp,
+                      author:
+                        sameDatePaymentLogForExisting.author ||
+                        closeLog.author ||
+                        targetP.lastExecutedBy ||
+                        targetP.agentUsername,
+                      actionDone: targetP.actionDone || targetP.plannedAction || 'joyiga borildi',
+                      financialAction: recFin,
+                      reportNote: targetP.reportNote || extractedReason,
+                    },
+                  ];
+            resultPlans[existingIdx] = {
+              ...targetP,
+              closedWithoutAction: false,
+              financialAction: recFin,
               actionsHistory: updatedHist,
               actionsCount: Math.max(targetP.actionsCount || 0, 1),
             };
@@ -1552,9 +1617,7 @@ class StorageService {
         plan.status = 'rejalashtirilgan';
       }
     }
-    if (plan.isClosed) {
-      return { success: false }; // Yopilgan mijoz ustida qaytib amal bajarib bo'lmaydi
-    }
+    const wasClosed = Boolean(plan.isClosed || plan.status === 'yopildi');
     const nowStr = new Date().toISOString();
     const effectiveDateKey =
       (targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate.trim()) ? targetDate.trim() : '') ||
@@ -1584,30 +1647,29 @@ class StorageService {
       : undefined;
 
     // 1. Update plan item (record which agent executed the action)
-    const effectiveFinancialAction = report.financialAction
-      ? {
-          method: report.financialAction.method,
-          methodLabel: report.financialAction.methodLabel,
-          amount: report.financialAction.amount,
-          currency: report.financialAction.currency,
-          note: report.financialAction.note,
-          amountUzs: report.financialAction.amountUzs,
-          exchangeRate: report.financialAction.exchangeRate,
-          splits: report.financialAction.splits,
-        }
-      : existingFin.financialAction;
+    const effectiveFinancialAction =
+      report.financialAction && report.financialAction.amount > 0
+        ? {
+            method: report.financialAction.method,
+            methodLabel: report.financialAction.methodLabel,
+            amount: report.financialAction.amount,
+            currency: report.financialAction.currency,
+            note: report.financialAction.note,
+            amountUzs: report.financialAction.amountUzs,
+            exchangeRate: report.financialAction.exchangeRate,
+            splits: report.financialAction.splits,
+          }
+        : undefined;
 
     const effectiveDeliveredProducts =
       stampedDeliveredProducts && stampedDeliveredProducts.length > 0
         ? stampedDeliveredProducts
-        : oldProducts.length > 0
-        ? oldProducts
         : undefined;
 
     const effectiveDeliveryPayment =
       stampedDeliveredProducts && stampedDeliveredProducts.length > 0
         ? report.deliveryPayment
-        : oldDeliveryPayment;
+        : undefined;
 
     const hasFinancialOrProductOps = Boolean(
       (effectiveFinancialAction && effectiveFinancialAction.amount > 0) ||
@@ -1615,21 +1677,36 @@ class StorageService {
         (report.productsReturned && report.productsReturned.length > 0)
     );
 
-    // Faqat moliyaviy yoki mahsulotga oid amaliyot bajarilsagina bajarildi bo'ladi, aks holda rejalashtirilgan holda qoladi
-    plan.status = hasFinancialOrProductOps ? 'bajarildi' : plan.status || 'rejalashtirilgan';
-    plan.closedWithoutAction = false;
+    if (wasClosed) {
+      plan.isClosed = true;
+      plan.status = 'yopildi';
+      plan.closedWithoutAction = !hasFinancialOrProductOps && !report.actionDone;
+      (plan as any).unperformedClose = plan.closedWithoutAction;
+      (plan as any).closedUpdatedAt = nowStr;
+    } else {
+      // Faqat moliyaviy yoki mahsulotga oid amaliyot bajarilsagina bajarildi bo'ladi, aks holda rejalashtirilgan holda qoladi
+      plan.status = hasFinancialOrProductOps ? 'bajarildi' : 'rejalashtirilgan';
+      plan.closedWithoutAction = false;
+    }
     if (hasFinancialOrProductOps && !plan.completedAt) {
       plan.completedAt = effectiveTimestamp;
+    } else if (!hasFinancialOrProductOps && !wasClosed) {
+      delete plan.completedAt;
     }
     plan.lastExecutedBy = author;
     plan.lastExecutedAt = nowStr;
     plan.actionDone = report.actionDone;
     if (effectiveFinancialAction) {
       plan.financialAction = effectiveFinancialAction;
+    } else {
+      delete plan.financialAction;
     }
     if (effectiveDeliveredProducts && effectiveDeliveredProducts.length > 0) {
       plan.productsDelivered = effectiveDeliveredProducts;
       plan.deliveryPayment = effectiveDeliveryPayment;
+    } else {
+      delete plan.productsDelivered;
+      delete plan.deliveryPayment;
     }
     if (report.productsReturned && report.productsReturned.length > 0) {
       plan.productsReturned = report.productsReturned;
@@ -1639,23 +1716,65 @@ class StorageService {
     }
 
     // Consolidate into a single authoritative actionsHistory entry so reopened/re-saved plans never duplicate products or payments
-    plan.actionsHistory = [
-      {
-        timestamp: plan.actionsHistory?.[0]?.timestamp || effectiveTimestamp,
-        author,
-        actionDone: report.actionDone,
-        financialAction: effectiveFinancialAction,
-        productsDelivered: effectiveDeliveredProducts,
-        deliveryPayment: effectiveDeliveryPayment,
-        productsReturned:
-          report.productsReturned && report.productsReturned.length > 0
-            ? report.productsReturned
-            : plan.productsReturned,
-        reportNote: report.reportNote || plan.reportNote,
-      },
-    ];
-    plan.actionsCount = 1;
+    plan.actionsHistory = hasFinancialOrProductOps
+      ? [
+          {
+            timestamp: plan.actionsHistory?.[0]?.timestamp || effectiveTimestamp,
+            author,
+            actionDone: report.actionDone,
+            financialAction: effectiveFinancialAction,
+            productsDelivered: effectiveDeliveredProducts,
+            deliveryPayment: effectiveDeliveryPayment,
+            productsReturned:
+              report.productsReturned && report.productsReturned.length > 0
+                ? report.productsReturned
+                : plan.productsReturned,
+            reportNote: report.reportNote || plan.reportNote,
+          },
+        ]
+      : [];
+    plan.actionsCount = plan.actionsHistory.length;
     plans[planIndex] = plan;
+
+    // Sync any duplicate plan entries for this client on the same dateKey so deduplication never reverts the edit
+    const targetPlanDateKey = getPlanDateKey(plan);
+    for (let i = 0; i < plans.length; i++) {
+      if (i === planIndex) continue;
+      const other = plans[i];
+      if (
+        other &&
+        other.clientId === plan.clientId &&
+        (getPlanDateKey(other) === targetPlanDateKey ||
+          getPlanDateKey(other) === effectiveDateKey ||
+          getClosedDateKey(other) === effectiveDateKey)
+      ) {
+        const updatedOther: DailyPlanItem = {
+          ...other,
+          status: plan.status,
+          isClosed: plan.isClosed,
+          closedWithoutAction: plan.closedWithoutAction,
+          completedAt: plan.completedAt,
+          lastExecutedBy: author,
+          lastExecutedAt: nowStr,
+          actionDone: plan.actionDone,
+          financialAction: plan.financialAction,
+          productsDelivered: plan.productsDelivered,
+          deliveryPayment: plan.deliveryPayment,
+          actionsHistory: plan.actionsHistory,
+          actionsCount: plan.actionsCount,
+        };
+        if (!plan.financialAction) delete updatedOther.financialAction;
+        if (!plan.productsDelivered) {
+          delete updatedOther.productsDelivered;
+          delete updatedOther.deliveryPayment;
+        }
+        if (wasClosed) {
+          (updatedOther as any).closedUpdatedAt = nowStr;
+        }
+        plans[i] = updatedOther;
+      }
+    }
+
     this.saveDailyPlans(plans);
 
     // 2. Update client in database & write audit logs (applying ONLY deltas if previous values existed on this plan!)
@@ -1666,17 +1785,15 @@ class StorageService {
     const clientLogs = [...(client.logs || [])];
     const planDatePrefix = effectiveDateKey || (plan.planDate || plan.createdAt || '').slice(0, 10);
 
-    // Financial payment operation (Section 2 - delta-aware)
-    if (report.financialAction && report.financialAction.amount > 0) {
-      const newFinAmt = Math.max(0, Math.round(report.financialAction.amount * 100) / 100);
+    // Financial payment operation (Section 2 - delta-aware, supports both update and removal)
+    const newFinAmt =
+      report.financialAction && report.financialAction.amount > 0
+        ? Math.max(0, Math.round(report.financialAction.amount * 100) / 100)
+        : 0;
+    if (newFinAmt > 0 || oldFinAmount > 0) {
       // Oldin oldFinAmount mijoz qarzini kamaytirgan (-oldFinAmount), endi newFinAmt kamaytiradi (-newFinAmt)
       const finDebtDelta = Math.round((oldFinAmount - newFinAmt) * 100) / 100;
       currentNetDebt = Math.round((currentNetDebt + finDebtDelta) * 100) / 100;
-
-      const formattedNewAmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(
-        newFinAmt
-      );
-      const updatedLogDetails = `${author} tomonidan to'lov qabul qilindi: ${formattedNewAmt} USD (${report.financialAction.methodLabel}). ${report.financialAction.note ? `Izoh: ${report.financialAction.note}` : ''}`.trim();
 
       let paymentLogIdx = clientLogs.findIndex(
         (l) =>
@@ -1691,109 +1808,155 @@ class StorageService {
         );
       }
 
-      if (paymentLogIdx !== -1 && oldFinAmount > 0) {
-        clientLogs[paymentLogIdx] = {
-          ...clientLogs[paymentLogIdx],
-          author,
-          title: `Moliyaviy amaliyot: ${report.financialAction.methodLabel}`,
-          details: updatedLogDetails,
-          amountChanged: newFinAmt,
-          amountUzs: report.financialAction.amountUzs,
-          exchangeRate: report.financialAction.exchangeRate,
-          purpose: 'payment',
-          paymentMethodLabel: report.financialAction.methodLabel,
-        };
-      } else {
+      if (newFinAmt > 0 && report.financialAction) {
+        const formattedNewAmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(
+          newFinAmt
+        );
+        const updatedLogDetails = `${author} tomonidan to'lov qabul qilindi: ${formattedNewAmt} USD (${report.financialAction.methodLabel}). ${report.financialAction.note ? `Izoh: ${report.financialAction.note}` : ''}`.trim();
+
+        if (paymentLogIdx !== -1 && oldFinAmount > 0) {
+          clientLogs[paymentLogIdx] = {
+            ...clientLogs[paymentLogIdx],
+            author,
+            title: `Moliyaviy amaliyot: ${report.financialAction.methodLabel}`,
+            details: updatedLogDetails,
+            amountChanged: newFinAmt,
+            amountUzs: report.financialAction.amountUzs,
+            exchangeRate: report.financialAction.exchangeRate,
+            purpose: 'payment',
+            paymentMethodLabel: report.financialAction.methodLabel,
+          };
+        } else {
+          clientLogs.unshift({
+            id: 'log_' + Date.now() + '_fin',
+            clientId: client.id,
+            author,
+            timestamp: effectiveTimestamp,
+            type: 'payment',
+            title: `Moliyaviy amaliyot: ${report.financialAction.methodLabel}`,
+            details: updatedLogDetails,
+            amountChanged: newFinAmt,
+            amountUzs: report.financialAction.amountUzs,
+            exchangeRate: report.financialAction.exchangeRate,
+            purpose: 'payment',
+            paymentMethodLabel: report.financialAction.methodLabel,
+          });
+        }
+      } else if (paymentLogIdx !== -1) {
+        clientLogs.splice(paymentLogIdx, 1);
+      }
+
+      if (oldFinAmount > 0 && newFinAmt !== oldFinAmount) {
+        const fmtOld = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(oldFinAmount);
+        const fmtNew = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(newFinAmt);
         clientLogs.unshift({
-          id: 'log_' + Date.now() + '_fin',
+          id: 'log_' + Date.now() + '_fin_edit',
           clientId: client.id,
           author,
-          timestamp: effectiveTimestamp,
-          type: 'payment',
-          title: `Moliyaviy amaliyot: ${report.financialAction.methodLabel}`,
-          details: updatedLogDetails,
+          timestamp: nowStr,
+          type: 'visit_action',
+          title:
+            newFinAmt === 0
+              ? "Moliyaviy amaliyot (to'lov) bekor qilindi"
+              : "Moliyaviy amaliyot (to'lov) tahrirlandi",
+          details: `${author} tomonidan moliyaviy amaliyot o'zgartirildi: Oldingi to'lov: ${fmtOld} USD -> Yangi to'lov: ${fmtNew} USD (${report.financialAction?.methodLabel || "To'lov bekor qilindi"}).`,
           amountChanged: newFinAmt,
-          amountUzs: report.financialAction.amountUzs,
-          exchangeRate: report.financialAction.exchangeRate,
-          purpose: 'payment',
-          paymentMethodLabel: report.financialAction.methodLabel,
         });
       }
     }
 
-    // Products delivered operation (Section 3 - delta-aware)
+    // Products delivered operation (Section 3 - delta-aware, supports both update and removal)
     let updatedProducts = [...(client.products || [])];
-    if (stampedDeliveredProducts && stampedDeliveredProducts.length > 0) {
-      const validProds = stampedDeliveredProducts.filter((p) => p.name.trim() !== '');
-      if (validProds.length > 0) {
-        // 1. If this plan already had oldProducts, restore oldProducts to warehouse first and remove them from client.products
-        if (oldProducts.length > 0) {
-          oldProducts.forEach((op) => {
-            if (op.warehouseId && (op.quantity || 0) > 0) {
-              this.restoreProductToWarehouseStockOnly(op.warehouseId, op.quantity, op.unit);
-            }
-            let removeIdx = updatedProducts.findIndex((cp) => cp.id && op.id && cp.id === op.id);
-            if (removeIdx === -1) {
-              removeIdx = updatedProducts.findIndex(
-                (cp) => cp.name === op.name && cp.unit === op.unit && cp.quantity === op.quantity
-              );
-            }
-            if (removeIdx === -1) {
-              removeIdx = updatedProducts.findIndex((cp) => cp.name === op.name);
-            }
-            if (removeIdx !== -1) {
-              updatedProducts.splice(removeIdx, 1);
-            }
-          });
-        }
-
-        const newProdIds = new Set(validProds.map((vp) => vp.id).filter(Boolean));
-        updatedProducts = [
-          ...validProds,
-          ...updatedProducts.filter((cp) => !cp.id || !newProdIds.has(cp.id)),
-        ];
-
-        // 2. Deduct new products from warehouse inventory
-        validProds.forEach((vp) => {
-          if (vp.warehouseId) {
-            this.deductProductFromWarehouse(vp.warehouseId, vp.quantity, vp.unit);
+    const validProds = stampedDeliveredProducts
+      ? stampedDeliveredProducts.filter((p) => p.name.trim() !== '')
+      : [];
+    if (validProds.length > 0 || oldProducts.length > 0) {
+      // 1. If this plan already had oldProducts, restore oldProducts to warehouse first and remove them from client.products
+      if (oldProducts.length > 0) {
+        oldProducts.forEach((op) => {
+          if ((op.quantity || 0) > 0) {
+            this.restoreProductToWarehouseStockOnly(op.warehouseId, op.quantity, op.unit, op.name);
+          }
+          let removeIdx = updatedProducts.findIndex((cp) => cp.id && op.id && cp.id === op.id);
+          if (removeIdx === -1) {
+            removeIdx = updatedProducts.findIndex(
+              (cp) => cp.name === op.name && cp.unit === op.unit && cp.quantity === op.quantity
+            );
+          }
+          if (removeIdx === -1) {
+            removeIdx = updatedProducts.findIndex((cp) => cp.name === op.name);
+          }
+          if (removeIdx !== -1) {
+            updatedProducts.splice(removeIdx, 1);
           }
         });
+      }
 
-        // 3. Calculate old vs new net debt effect
-        const oldTotalValue = oldProducts.reduce(
-          (sum, p) =>
-            sum + (p.totalPrice !== undefined ? p.totalPrice : (p.quantity || 0) * (p.unitPrice || 0)),
-          0
+      const newProdIds = new Set(validProds.map((vp) => vp.id).filter(Boolean));
+      updatedProducts = [
+        ...validProds,
+        ...updatedProducts.filter((cp) => !cp.id || !newProdIds.has(cp.id)),
+      ];
+
+      // 2. Deduct new products from warehouse inventory
+      validProds.forEach((vp) => {
+        if (vp.warehouseId) {
+          this.deductProductFromWarehouse(vp.warehouseId, vp.quantity, vp.unit);
+        }
+      });
+
+      // 3. Calculate old vs new net debt effect
+      const oldTotalValue = oldProducts.reduce(
+        (sum, p) =>
+          sum + (p.totalPrice !== undefined ? p.totalPrice : (p.quantity || 0) * (p.unitPrice || 0)),
+        0
+      );
+      const oldPayType = oldDeliveryPayment?.paymentType || 'qarzga';
+      const oldPaidAmt =
+        oldDeliveryPayment?.paidAmount !== undefined
+          ? oldDeliveryPayment.paidAmount
+          : oldPayType === 'qarzga'
+          ? 0
+          : oldTotalValue;
+      const oldNetDebtEffect = oldProducts.length > 0 ? oldTotalValue - oldPaidAmt : 0;
+
+      const totalDeliveredValue = validProds.reduce(
+        (sum, p) => sum + (p.totalPrice !== undefined ? p.totalPrice : p.quantity * p.unitPrice),
+        0
+      );
+
+      const deliveryPay = report.deliveryPayment;
+      const payType = deliveryPay?.paymentType || 'qarzga';
+      const paidAmt =
+        validProds.length === 0
+          ? 0
+          : deliveryPay?.paidAmount !== undefined
+          ? deliveryPay.paidAmount
+          : payType === 'qarzga'
+          ? 0
+          : totalDeliveredValue;
+      const newNetDebtEffect = validProds.length > 0 ? totalDeliveredValue - paidAmt : 0;
+      const debtAdded = Math.max(0, Math.round(newNetDebtEffect * 100) / 100);
+
+      const prodDebtDelta = Math.round((newNetDebtEffect - oldNetDebtEffect) * 100) / 100;
+      currentNetDebt = Math.round((currentNetDebt + prodDebtDelta) * 100) / 100;
+
+      let prodLogIdx = clientLogs.findIndex(
+        (l) =>
+          l.type === 'product_added' &&
+          (l.id.endsWith('_prod') || l.id.endsWith('_prod_edit') || l.purpose === 'product') &&
+          planDatePrefix &&
+          (l.timestamp || '').slice(0, 10) === planDatePrefix
+      );
+      if (prodLogIdx === -1 && oldProducts.length > 0) {
+        prodLogIdx = clientLogs.findIndex(
+          (l) =>
+            l.type === 'product_added' &&
+            (l.id.endsWith('_prod') || l.id.endsWith('_prod_edit') || l.purpose === 'product')
         );
-        const oldPayType = oldDeliveryPayment?.paymentType || 'qarzga';
-        const oldPaidAmt =
-          oldDeliveryPayment?.paidAmount !== undefined
-            ? oldDeliveryPayment.paidAmount
-            : oldPayType === 'qarzga'
-            ? 0
-            : oldTotalValue;
-        const oldNetDebtEffect = oldProducts.length > 0 ? oldTotalValue - oldPaidAmt : 0;
+      }
 
-        const totalDeliveredValue = validProds.reduce(
-          (sum, p) => sum + (p.totalPrice !== undefined ? p.totalPrice : p.quantity * p.unitPrice),
-          0
-        );
-
-        const deliveryPay = report.deliveryPayment;
-        const payType = deliveryPay?.paymentType || 'qarzga';
-        const paidAmt =
-          deliveryPay?.paidAmount !== undefined
-            ? deliveryPay.paidAmount
-            : payType === 'qarzga'
-            ? 0
-            : totalDeliveredValue;
-        const newNetDebtEffect = totalDeliveredValue - paidAmt;
-        const debtAdded = Math.max(0, Math.round(newNetDebtEffect * 100) / 100);
-
-        const prodDebtDelta = Math.round((newNetDebtEffect - oldNetDebtEffect) * 100) / 100;
-        currentNetDebt = Math.round((currentNetDebt + prodDebtDelta) * 100) / 100;
-
+      if (validProds.length > 0) {
         const prodSumStr = validProds
           .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
           .join(', ');
@@ -1802,21 +1965,6 @@ class StorageService {
           payType === 'qarzga'
             ? `Qarzga berildi (+${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD qarzga yozildi)`
             : `To'lov shakli: ${deliveryPay?.paymentLabel || payType} (${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(paidAmt)} USD)${debtAdded > 0 ? `, qoldiq qarz: +${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD` : ''}`;
-
-        let prodLogIdx = clientLogs.findIndex(
-          (l) =>
-            l.type === 'product_added' &&
-            (l.id.endsWith('_prod') || l.id.endsWith('_prod_edit') || l.purpose === 'product') &&
-            planDatePrefix &&
-            (l.timestamp || '').slice(0, 10) === planDatePrefix
-        );
-        if (prodLogIdx === -1 && oldProducts.length > 0) {
-          prodLogIdx = clientLogs.findIndex(
-            (l) =>
-              l.type === 'product_added' &&
-              (l.id.endsWith('_prod') || l.id.endsWith('_prod_edit') || l.purpose === 'product')
-          );
-        }
 
         if (prodLogIdx !== -1 && oldProducts.length > 0) {
           clientLogs[prodLogIdx] = {
@@ -1851,6 +1999,29 @@ class StorageService {
             paymentMethodLabel: deliveryPay?.paymentLabel,
           });
         }
+      } else if (prodLogIdx !== -1) {
+        clientLogs.splice(prodLogIdx, 1);
+      }
+
+      if (oldProducts.length > 0 && (validProds.length === 0 || prodDebtDelta !== 0)) {
+        const oldProdSumStr = oldProducts.map((p) => `${p.name} (${p.quantity} ${p.unit})`).join(', ');
+        const newProdSumStr =
+          validProds.length > 0
+            ? validProds.map((p) => `${p.name} (${p.quantity} ${p.unit})`).join(', ')
+            : 'Mahsulotlar bekor qilindi';
+        clientLogs.unshift({
+          id: 'log_' + Date.now() + '_prod_edit',
+          clientId: client.id,
+          author,
+          timestamp: nowStr,
+          type: 'visit_action',
+          title:
+            validProds.length === 0
+              ? 'Sotilgan mahsulotlar bekor qilindi va omborga qaytarildi'
+              : "Sotilgan mahsulotlar / to'lov turi o'zgartirildi",
+          details: `${author} tomonidan mahsulot amaliyoti o'zgartirildi. Oldin: ${oldProdSumStr} -> Yangi: ${newProdSumStr}.`,
+          amountChanged: Math.abs(prodDebtDelta),
+        });
       }
     }
 
@@ -1975,8 +2146,8 @@ class StorageService {
 
     // 1. Oldingi sotilgan mahsulotlar miqdorini ombor zaxirasiga qaytarib qo'yamiz
     oldProducts.forEach((op) => {
-      if (op.warehouseId && (op.quantity || 0) > 0) {
-        this.restoreProductToWarehouseStockOnly(op.warehouseId, op.quantity, op.unit);
+      if ((op.quantity || 0) > 0) {
+        this.restoreProductToWarehouseStockOnly(op.warehouseId, op.quantity, op.unit, op.name);
       }
     });
 
@@ -2020,20 +2191,15 @@ class StorageService {
     const newNetDebtEffect = newTotalValue - newPaidAmt;
 
     // 4. Reja elementini yangilaymiz (ham ochiq, ham yopilgan holatda ishlaydi)
-    plan.productsDelivered = newProducts.length > 0 ? newProducts : undefined;
-    plan.deliveryPayment = newProducts.length > 0 ? newDeliveryPayment : undefined;
+    if (newProducts.length > 0) {
+      plan.productsDelivered = newProducts;
+      plan.deliveryPayment = newDeliveryPayment;
+    } else {
+      delete plan.productsDelivered;
+      delete plan.deliveryPayment;
+    }
     plan.lastExecutedBy = author;
     plan.lastExecutedAt = nowStr;
-    if (!plan.completedAt) {
-      plan.completedAt = effectiveTimestamp;
-    }
-    if (!plan.isClosed && plan.status !== 'yopildi') {
-      plan.status = 'bajarildi';
-    }
-    plan.closedWithoutAction = false;
-    if (!plan.actionDone) {
-      plan.actionDone = plan.plannedAction || 'joyiga borildi';
-    }
     if (updateData.reportNote !== undefined && updateData.reportNote.trim() !== '') {
       plan.reportNote = updateData.reportNote.trim();
     }
@@ -2053,12 +2219,18 @@ class StorageService {
                 ? updateData.reportNote.trim()
                 : historyCopy[i].reportNote,
           };
+          if (newProducts.length === 0) {
+            delete historyCopy[i].productsDelivered;
+            delete historyCopy[i].deliveryPayment;
+          }
         } else if (historyCopy[i].productsDelivered || historyCopy[i].deliveryPayment) {
           historyCopy[i] = {
             ...historyCopy[i],
             productsDelivered: undefined,
             deliveryPayment: undefined,
           };
+          delete historyCopy[i].productsDelivered;
+          delete historyCopy[i].deliveryPayment;
         }
       }
       plan.actionsHistory = historyCopy;
@@ -2075,6 +2247,28 @@ class StorageService {
       ];
       plan.actionsCount = 1;
     }
+
+    const remainingFinAfterProdEdit = getPlanFinancialActionData(plan);
+    const hasRemainingOpsAfterProdEdit = Boolean(
+      newProducts.length > 0 ||
+        (remainingFinAfterProdEdit.financialAction &&
+          remainingFinAfterProdEdit.totalFinancialAmount > 0) ||
+        (plan.productsReturned && plan.productsReturned.length > 0)
+    );
+    if (!plan.isClosed && plan.status !== 'yopildi') {
+      if (hasRemainingOpsAfterProdEdit) {
+        plan.status = 'bajarildi';
+        if (!plan.completedAt) plan.completedAt = effectiveTimestamp;
+        if (!plan.actionDone) plan.actionDone = plan.plannedAction || 'joyiga borildi';
+      } else {
+        plan.status = 'rejalashtirilgan';
+        plan.actionsHistory = [];
+        plan.actionsCount = 0;
+        delete plan.completedAt;
+        delete plan.actionDone;
+      }
+    }
+    plan.closedWithoutAction = false;
 
     plans[planIndex] = plan;
     this.saveDailyPlans(plans);
@@ -2213,7 +2407,8 @@ class StorageService {
     updateData: {
       financialAction: NonNullable<DailyPlanItem['financialAction']>;
       reportNote?: string;
-    }
+    },
+    targetDate?: string
   ): { success: boolean; plan?: DailyPlanItem; client?: Client } {
     const plans = this.getDailyPlans();
     const planIndex = plans.findIndex((p) => p.id === planItemId);
@@ -2221,6 +2416,16 @@ class StorageService {
 
     const plan = { ...plans[planIndex] };
     const nowStr = new Date().toISOString();
+    const effectiveDateKey =
+      (targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate.trim()) ? targetDate.trim() : '') ||
+      getClosedDateKey(plan) ||
+      (plan as any).lastClosedDateKey ||
+      getPlanDateKey(plan) ||
+      nowStr.slice(0, 10);
+    const effectiveTimestamp =
+      effectiveDateKey !== nowStr.slice(0, 10)
+        ? `${effectiveDateKey}T${nowStr.slice(11)}`
+        : nowStr;
 
     // 1. Oldingi moliyaviy to'lov summasini aniqlaymiz
     const existingFin = getPlanFinancialActionData(plan);
@@ -2241,11 +2446,16 @@ class StorageService {
         : undefined;
 
     // 3. Plan ma'lumotlarini va actionsHistory'ni yangilaymiz (ikkilanib qolmasligi uchun yagona yozuvga keltiramiz)
-    plan.financialAction = updatedFinAction;
+    if (updatedFinAction) {
+      plan.financialAction = updatedFinAction;
+    } else {
+      delete plan.financialAction;
+    }
     if (updateData.reportNote !== undefined && updateData.reportNote.trim()) {
       plan.reportNote = updateData.reportNote.trim();
     }
     plan.lastExecutedBy = author;
+    plan.lastExecutedAt = nowStr;
 
     if (plan.actionsHistory && plan.actionsHistory.length > 0) {
       const historyCopy = [...plan.actionsHistory];
@@ -2258,18 +2468,22 @@ class StorageService {
             financialAction: updatedFinAction,
             reportNote: updateData.reportNote?.trim() || historyCopy[i].reportNote,
           };
+          if (!updatedFinAction) {
+            delete historyCopy[i].financialAction;
+          }
         } else if (historyCopy[i].financialAction) {
           historyCopy[i] = {
             ...historyCopy[i],
             financialAction: undefined,
           };
+          delete historyCopy[i].financialAction;
         }
       }
       plan.actionsHistory = historyCopy;
     } else if (updatedFinAction) {
       plan.actionsHistory = [
         {
-          timestamp: plan.completedAt || nowStr,
+          timestamp: plan.completedAt || effectiveTimestamp,
           author,
           actionDone: plan.actionDone || plan.plannedAction || 'joyiga borildi',
           financialAction: updatedFinAction,
@@ -2277,6 +2491,30 @@ class StorageService {
         },
       ];
       plan.actionsCount = 1;
+    }
+
+    const remainingSoldAfterFinEdit = getPlanSoldProductsData(plan);
+    const hasRemainingOpsAfterFinEdit = Boolean(
+      updatedFinAction ||
+        remainingSoldAfterFinEdit.productsDelivered.length > 0 ||
+        (plan.productsReturned && plan.productsReturned.length > 0)
+    );
+    if (!plan.isClosed && plan.status !== 'yopildi') {
+      if (hasRemainingOpsAfterFinEdit) {
+        plan.status = 'bajarildi';
+        if (!plan.completedAt) plan.completedAt = effectiveTimestamp;
+        if (!plan.actionDone) plan.actionDone = plan.plannedAction || 'joyiga borildi';
+      } else {
+        plan.status = 'rejalashtirilgan';
+        plan.actionsHistory = [];
+        plan.actionsCount = 0;
+        delete plan.completedAt;
+        delete plan.actionDone;
+      }
+    } else {
+      plan.closedWithoutAction = !hasRemainingOpsAfterFinEdit && !plan.actionDone;
+      (plan as any).unperformedClose = plan.closedWithoutAction;
+      (plan as any).closedUpdatedAt = nowStr;
     }
 
     plans[planIndex] = plan;
@@ -2337,7 +2575,7 @@ class StorageService {
           id: 'log_' + Date.now() + '_fin',
           clientId: client.id,
           author,
-          timestamp: nowStr,
+          timestamp: effectiveTimestamp,
           type: 'payment',
           title: `To'lov qabul qilindi (${updatedFinAction.methodLabel})`,
           details: updatedLogDetails,
@@ -3160,12 +3398,22 @@ class StorageService {
   }
 
   public restoreProductToWarehouseStockOnly(
-    warehouseId: string,
+    warehouseId: string | undefined,
     quantity: number,
-    unit: string
+    unit: string,
+    productName?: string
   ): void {
     const warehouse = this.getWarehouseProducts();
-    const found = warehouse.find((w) => w.id === warehouseId);
+    let found = warehouseId ? warehouse.find((w) => w.id === warehouseId) : undefined;
+    if (!found && productName) {
+      const itemNorm = productName.toLowerCase().trim();
+      found = warehouse.find(
+        (w) =>
+          itemNorm.includes(w.name.toLowerCase()) ||
+          w.name.toLowerCase().includes(itemNorm) ||
+          itemNorm.includes(w.brand.toLowerCase())
+      );
+    }
     if (!found) return;
 
     const isPkg = unit === found.packageUnitName;

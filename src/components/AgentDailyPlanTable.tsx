@@ -938,14 +938,14 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                       <tr
                         key={item.id}
                         onClick={() => {
-                          if (!isClosed) onOpenExecuteModal(item);
+                          onOpenExecuteModal(item);
                         }}
-                        className={`transition-colors ${
+                        className={`transition-colors cursor-pointer ${
                           isSelected
                             ? 'bg-rose-50/60'
                             : isClosed
-                            ? 'bg-neutral-50/70 opacity-85 cursor-default'
-                            : 'hover:bg-rose-50/30 cursor-pointer'
+                            ? 'bg-neutral-50/70 hover:bg-neutral-100/80 opacity-90'
+                            : 'hover:bg-rose-50/30'
                         }`}
                       >
                         {/* 1. Index + Selection Checkbox */}
@@ -1255,20 +1255,18 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                           {soldData.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
                                         </span>
                                       </div>
-                                      {!isClosed && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            onOpenExecuteModal(item, true);
-                                          }}
-                                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
-                                          title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
-                                        >
-                                          <Edit3 className="w-2.5 h-2.5" />
-                                          <span>Mahsulotga o'zgartirish kiritish</span>
-                                        </button>
-                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onOpenExecuteModal(item, true);
+                                        }}
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                        title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish yoki bekor qilish"
+                                      >
+                                        <Edit3 className="w-2.5 h-2.5" />
+                                        <span>Mahsulotga o'zgartirish kiritish</span>
+                                      </button>
                                     </div>
                                   );
                                 })()}
@@ -1360,21 +1358,21 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             ) : (
                               <span className="text-neutral-400 text-xs">-</span>
                             )}
-                            {!isClosed &&
-                              getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onOpenExecuteModal(item, false, true);
-                                  }}
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
-                                  title="Moliyaviy amaliyotga (to'lovga) o'zgartirish kiritish"
-                                >
-                                  <Edit3 className="w-2.5 h-2.5" />
-                                  <span>To&apos;lovni o&apos;zgartirish</span>
-                                </button>
-                              )}
+                            {(getPlanFinancialActionData(item).totalFinancialAmount > 0 ||
+                              paidAmount > 0) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenExecuteModal(item, false, true);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                title="Moliyaviy amaliyotga (to'lovga) o'zgartirish kiritish yoki bekor qilish"
+                              >
+                                <Edit3 className="w-2.5 h-2.5" />
+                                <span>To&apos;lovni o&apos;zgartirish</span>
+                              </button>
+                            )}
                           </div>
                         </td>
 
@@ -1407,6 +1405,18 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                         <span>Yuk xati</span>
                                       </button>
                                     )}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onOpenExecuteModal(item);
+                                      }}
+                                      className="px-2 py-1 rounded-lg bg-indigo-700 hover:bg-indigo-800 text-white text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                                      title="Amaliyotlarni tahrirlash yoki bekor qilish"
+                                    >
+                                      <Edit3 className="w-3 h-3" />
+                                      <span>Tahrirlash</span>
+                                    </button>
                                     <button
                                       type="button"
                                       onClick={(e) => handleOpenReopenSingle(item, e)}
@@ -1465,14 +1475,14 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                   <div
                     key={item.id}
                     onClick={() => {
-                      if (!isClosed) onOpenExecuteModal(item);
+                      onOpenExecuteModal(item);
                     }}
-                    className={`p-3 rounded-2xl border transition-colors ${
+                    className={`p-3 rounded-2xl border transition-colors cursor-pointer ${
                       isSelected
                         ? 'bg-rose-50/70 border-rose-300 shadow-xs'
                         : isClosed
-                        ? 'bg-neutral-50 border-neutral-200 opacity-90'
-                        : 'bg-white border-rose-100 hover:border-rose-300 cursor-pointer shadow-xs'
+                        ? 'bg-neutral-50 border-neutral-200 hover:border-rose-200 opacity-90'
+                        : 'bg-white border-rose-100 hover:border-rose-300 shadow-xs'
                     }`}
                   >
                     {/* Top Row: #, Checkbox, Client Name, Creator, Status */}
@@ -1676,19 +1686,17 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                                   Berildi: {soldData.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
                                 </span>
                               </div>
-                              {!isClosed && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onOpenExecuteModal(item, true);
-                                  }}
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
-                                >
-                                  <Edit3 className="w-2.5 h-2.5" />
-                                  <span>Mahsulotga o&apos;zgartirish kiritish</span>
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenExecuteModal(item, true);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                              >
+                                <Edit3 className="w-2.5 h-2.5" />
+                                <span>Mahsulotga o&apos;zgartirish kiritish</span>
+                              </button>
                             </div>
                           );
                         })()}
@@ -1723,20 +1731,19 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         ) : (
                           <span className="text-neutral-400 text-xs">-</span>
                         )}
-                        {!isClosed &&
-                          getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onOpenExecuteModal(item, false, true);
-                              }}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
-                            >
-                              <Edit3 className="w-2.5 h-2.5" />
-                              <span>To&apos;lovga o&apos;zgartirish kiritish</span>
-                            </button>
-                          )}
+                        {getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenExecuteModal(item, false, true);
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                          >
+                            <Edit3 className="w-2.5 h-2.5" />
+                            <span>To&apos;lovga o&apos;zgartirish kiritish</span>
+                          </button>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
@@ -1750,7 +1757,18 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                             <span>Yopish</span>
                           </button>
                         ) : (
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenExecuteModal(item);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer flex items-center gap-1 shadow-xs"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>Tahrirlash</span>
+                            </button>
                             <button
                               type="button"
                               onClick={(e) => handleOpenReopenSingle(item, e)}

@@ -594,9 +594,24 @@ export default function App() {
             .filter((q) => q.action === 'create' && q.client)
             .map((q) => q.client as Client);
 
+          const localClientsById = new Map(
+            storageService.getClients().map((lc) => [lc.id, lc])
+          );
           const clientsMap = new Map<string, Client>();
-          // 1. Bulutdagi Firestore bazasi yagona va aktual haqiqat manbai
-          cleanRemote.forEach((rc) => clientsMap.set(rc.id, rc));
+          // 1. Bulutdagi Firestore bazasi va lokal eng so'nggi tahrirlangan holatni solishtiramiz
+          cleanRemote.forEach((rc) => {
+            const lc = localClientsById.get(rc.id);
+            if (lc && lc.updatedAt && rc.updatedAt) {
+              const lcMs = new Date(lc.updatedAt).getTime();
+              const rcMs = new Date(rc.updatedAt).getTime();
+              if (!isNaN(lcMs) && !isNaN(rcMs) && lcMs > rcMs) {
+                clientsMap.set(rc.id, lc);
+                syncClientToFirestore(lc);
+                return;
+              }
+            }
+            clientsMap.set(rc.id, rc);
+          });
           // 2. Faqat haqiqiy oflayn yangi qo'shilganlar saqlab qolinadi
           pendingLocalCreates.forEach((lc) => {
             if (!clientsMap.has(lc.id)) clientsMap.set(lc.id, lc);
@@ -628,12 +643,23 @@ export default function App() {
                     (a) => a.productsDelivered && a.productsDelivered.length > 0
                   ))
             );
+          const hasPlanFinOps = (p: DailyPlanItem) =>
+            Boolean(
+              (p.financialAction && p.financialAction.amount > 0) ||
+                (p.actionsHistory &&
+                  p.actionsHistory.some(
+                    (a) => a.financialAction && a.financialAction.amount > 0
+                  ))
+            );
           const isUnintendedRec = (p: DailyPlanItem) =>
             Boolean(
               p.id &&
                 p.id.startsWith('plan_rec_') &&
-                !p.id.endsWith('_2026-11-01') &&
-                !hasPlanDeliveredProducts(p)
+                p.id.endsWith('_2026-11-05') &&
+                !hasPlanDeliveredProducts(p) &&
+                !hasPlanFinOps(p) &&
+                !p.reopenedAt &&
+                !(p.reopenHistory && p.reopenHistory.length > 0)
             );
 
           remotePlans.forEach((rp) => {
@@ -687,18 +713,45 @@ export default function App() {
                   (lp as any).lastClosedDateKey ||
                   getClosedDateKey(rp) ||
                   rp.planDate;
-                return lp.id === rp.id
-                  ? lp
-                  : ({
-                      ...rp,
-                      isClosed: false,
-                      status: 'rejalashtirilgan' as const,
-                      planDate: preservedClosedDate,
-                      lastClosedDateKey: preservedClosedDate,
-                      reopenedAt: lp.reopenedAt,
-                      reopenedBy: lp.reopenedBy,
-                      reopenReason: lp.reopenReason,
-                    } as DailyPlanItem);
+                if (lp.id === rp.id) {
+                  syncPlanToFirestore(lp);
+                  return lp;
+                }
+                const reopenedSynced: DailyPlanItem = {
+                  ...rp,
+                  isClosed: false,
+                  closedWithoutAction: false,
+                  status:
+                    lp.status && lp.status !== 'yopildi'
+                      ? lp.status
+                      : ('rejalashtirilgan' as const),
+                  planDate: preservedClosedDate,
+                  lastClosedDateKey: preservedClosedDate,
+                  reopenedAt: lp.reopenedAt,
+                  reopenedBy: lp.reopenedBy,
+                  reopenReason: lp.reopenReason,
+                  actionDone: lp.actionDone,
+                  completedAt: lp.completedAt,
+                  productsDelivered: lp.productsDelivered,
+                  deliveryPayment: lp.deliveryPayment,
+                  financialAction: lp.financialAction,
+                  actionsHistory: lp.actionsHistory || [],
+                  actionsCount: lp.actionsCount ?? 0,
+                  lastExecutedAt: lp.lastExecutedAt || rp.lastExecutedAt,
+                  lastExecutedBy: lp.lastExecutedBy || rp.lastExecutedBy,
+                } as DailyPlanItem;
+                if (!lp.productsDelivered || lp.productsDelivered.length === 0) {
+                  delete reopenedSynced.productsDelivered;
+                  delete reopenedSynced.deliveryPayment;
+                }
+                if (!lp.financialAction || !(lp.financialAction.amount > 0)) {
+                  delete reopenedSynced.financialAction;
+                }
+                delete reopenedSynced.closedAt;
+                delete reopenedSynced.closedBy;
+                delete reopenedSynced.closeReason;
+                syncPlanToFirestore(reopenedSynced);
+                return reopenedSynced;
               }
             }
 
@@ -718,16 +771,20 @@ export default function App() {
                         closedAt: lp.closedAt,
                         closedBy: lp.closedBy,
                         closeReason: lp.closeReason,
-                        productsDelivered: lp.productsDelivered || rp.productsDelivered,
-                        deliveryPayment: lp.deliveryPayment || rp.deliveryPayment,
-                        financialAction: lp.financialAction || rp.financialAction,
-                        actionsHistory:
-                          lp.actionsHistory && lp.actionsHistory.length > 0
-                            ? lp.actionsHistory
-                            : rp.actionsHistory,
+                        productsDelivered: lp.productsDelivered,
+                        deliveryPayment: lp.deliveryPayment,
+                        financialAction: lp.financialAction,
+                        actionsHistory: lp.actionsHistory || [],
                         lastExecutedAt: lp.lastExecutedAt || rp.lastExecutedAt,
                         lastExecutedBy: lp.lastExecutedBy || rp.lastExecutedBy,
                       };
+                if (!lp.productsDelivered || lp.productsDelivered.length === 0) {
+                  delete closedSynced.productsDelivered;
+                  delete closedSynced.deliveryPayment;
+                }
+                if (!lp.financialAction || !(lp.financialAction.amount > 0)) {
+                  delete closedSynced.financialAction;
+                }
                 delete closedSynced.reopenedAt;
                 delete closedSynced.reopenedBy;
                 delete closedSynced.reopenReason;
@@ -740,13 +797,10 @@ export default function App() {
               }
             }
 
-            // 3. Local has newer execution/product edits than remote (or local has delivered products missing from remote)
+            // 3. Local has newer execution/product/financial edits than remote
             const lpExecMs = getExecMs(lp);
             const rpExecMs = getExecMs(rp);
-            if (
-              lpExecMs > rpExecMs ||
-              (hasPlanDeliveredProducts(lp) && !hasPlanDeliveredProducts(rp))
-            ) {
+            if (lpExecMs > rpExecMs) {
               const mergedExec: DailyPlanItem =
                 lp.id === rp.id
                   ? lp
@@ -754,7 +808,18 @@ export default function App() {
                       ...rp,
                       ...lp,
                       id: rp.id,
+                      productsDelivered: lp.productsDelivered,
+                      deliveryPayment: lp.deliveryPayment,
+                      financialAction: lp.financialAction,
+                      actionsHistory: lp.actionsHistory || [],
                     };
+              if (!lp.productsDelivered || lp.productsDelivered.length === 0) {
+                delete mergedExec.productsDelivered;
+                delete mergedExec.deliveryPayment;
+              }
+              if (!lp.financialAction || !(lp.financialAction.amount > 0)) {
+                delete mergedExec.financialAction;
+              }
               syncPlanToFirestore(mergedExec);
               return mergedExec;
             }
@@ -1438,7 +1503,9 @@ export default function App() {
     closeDate?: string
   ) => {
     const currentUsername = user?.username || 'agentp1';
-    const targetPlan = dailyPlans.find((p) => p.id === planItemId);
+    const targetPlan =
+      dailyPlans.find((p) => p.id === planItemId) ||
+      storageService.getDailyPlans().find((p) => p.id === planItemId);
     const result = storageService.executeDailyPlanItem(
       planItemId,
       currentUsername,
@@ -1453,7 +1520,7 @@ export default function App() {
       }
 
       const freshPlans = storageService.getDailyPlans();
-      const updatedPlan = freshPlans.find((p) => p.id === planItemId);
+      const updatedPlan = freshPlans.find((p) => p.id === planItemId) || targetPlan;
       if (updatedPlan) {
         const targetDate = getPlanDateKey(updatedPlan);
         const matchingPlans = freshPlans.filter(
@@ -1462,8 +1529,9 @@ export default function App() {
         syncPlansBulkToFirestore(matchingPlans.length > 0 ? matchingPlans : [updatedPlan]);
       }
 
-      if (targetPlan) {
-        const updatedClient = storageService.getClientById(targetPlan.clientId);
+      const clientIdToSync = result.client?.id || updatedPlan?.clientId || targetPlan?.clientId;
+      if (clientIdToSync) {
+        const updatedClient = storageService.getClientById(clientIdToSync);
         if (updatedClient) syncClientToFirestore(updatedClient);
       }
 
@@ -1542,8 +1610,17 @@ export default function App() {
     if (result.success) {
       if (closeAfterSave && result.plan) {
         const autoCloseReason =
-          data.reportNote?.trim() || "Sotilgan mahsulotlar yangilandi va hisobot yopildi";
-        storageService.closeDailyPlanItem(planItemId, currentUsername, autoCloseReason, false, closeDate);
+          data.reportNote?.trim() ||
+          (data.productsDelivered.length > 0
+            ? "Sotilgan mahsulotlar yangilandi va hisobot yopildi"
+            : "Sotilgan mahsulotlar bekor qilinib omborga qaytarildi va hisobot yopildi");
+        storageService.closeDailyPlanItem(
+          planItemId,
+          currentUsername,
+          autoCloseReason,
+          undefined,
+          closeDate
+        );
       }
 
       const freshPlans = storageService.getDailyPlans();
@@ -1561,9 +1638,10 @@ export default function App() {
         if (freshClient) syncClientToFirestore(freshClient);
       }
 
-      const prodSummary = data.productsDelivered
-        .map((p) => `${p.name} (${p.quantity} ${p.unit})`)
-        .join(', ');
+      const prodSummary =
+        data.productsDelivered.length > 0
+          ? data.productsDelivered.map((p) => `${p.name} (${p.quantity} ${p.unit})`).join(', ')
+          : "Barcha mahsulotlar olib tashlandi va omborga qaytarildi";
       const payLabel =
         resolvedDeliveryPayment.paymentLabel ||
         resolvedDeliveryPayment.paymentType ||
@@ -1573,12 +1651,17 @@ export default function App() {
         userId: currentUsername,
         userRole: user?.role || 'agent',
         actionType: 'amal_bajarish',
-        actionTitle: `Sotilgan mahsulotlar va to'lov turi tahrirlandi (@${currentUsername})`,
-        details: `Mijoz: ${result.client?.name || finalPlan?.clientName || ''}. Yangilangan mahsulotlar: ${prodSummary}. To'lov shakli: ${payLabel}.`,
+        actionTitle:
+          data.productsDelivered.length > 0
+            ? `Sotilgan mahsulotlar va to'lov turi tahrirlandi (@${currentUsername})`
+            : `Sotilgan mahsulotlar bekor qilinib omborga qaytarildi (@${currentUsername})`,
+        details: `Mijoz: ${result.client?.name || finalPlan?.clientName || ''}. Holat: ${prodSummary}. To'lov shakli: ${payLabel}.`,
       });
 
       showToast(
-        `Sotilgan mahsulotlar va to'lov turi muvaffaqiyatli yangilandi (@${currentUsername})!`
+        data.productsDelivered.length > 0
+          ? `Sotilgan mahsulotlar va to'lov turi muvaffaqiyatli yangilandi (@${currentUsername})!`
+          : `Sotilgan mahsulotlar olib tashlandi, omborga qaytarildi va mijoz balansi oldingi holatiga tiklandi!`
       );
 
       setDailyPlans([...storageService.getActive24hPlans()]);
@@ -1603,17 +1686,21 @@ export default function App() {
     const result = storageService.updateFinancialActionOnPlanItem(
       planItemId,
       currentUsername,
-      data
+      data,
+      closeDate
     );
     if (result.success) {
       if (closeAfterSave && result.plan) {
         const autoCloseReason =
-          data.reportNote?.trim() || "Moliyaviy amaliyot yangilandi va hisobot yopildi";
+          data.reportNote?.trim() ||
+          (data.financialAction.amount > 0
+            ? "Moliyaviy amaliyot yangilandi va hisobot yopildi"
+            : "Moliyaviy amaliyot bekor qilindi va hisobot yopildi");
         storageService.closeDailyPlanItem(
           planItemId,
           currentUsername,
           autoCloseReason,
-          false,
+          undefined,
           closeDate
         );
       }
@@ -1637,12 +1724,21 @@ export default function App() {
         userId: currentUsername,
         userRole: user?.role || 'agent',
         actionType: 'amal_bajarish',
-        actionTitle: `Moliyaviy amaliyot (to'lov) tahrirlandi (@${currentUsername})`,
-        details: `Mijoz: ${result.client?.name || finalPlan?.clientName || ''}. Yangilangan to'lov: ${data.financialAction.amount.toLocaleString('uz-UZ')} USD (${data.financialAction.methodLabel}).`,
+        actionTitle:
+          data.financialAction.amount > 0
+            ? `Moliyaviy amaliyot (to'lov) tahrirlandi (@${currentUsername})`
+            : `Moliyaviy amaliyot (to'lov) olib tashlandi (@${currentUsername})`,
+        details: `Mijoz: ${result.client?.name || finalPlan?.clientName || ''}. ${
+          data.financialAction.amount > 0
+            ? `Yangilangan to'lov: ${data.financialAction.amount.toLocaleString('uz-UZ')} USD (${data.financialAction.methodLabel}).`
+            : "To'lov bekor qilindi (0 USD) va mijoz balansi oldingi holatiga qaytarildi."
+        }`,
       });
 
       showToast(
-        `Moliyaviy amaliyot (to'lov) muvaffaqiyatli yangilandi (@${currentUsername})!`
+        data.financialAction.amount > 0
+          ? `Moliyaviy amaliyot (to'lov) muvaffaqiyatli yangilandi (@${currentUsername})!`
+          : `Moliyaviy amaliyot olib tashlandi va mijoz balansi oldingi holatiga tiklandi!`
       );
 
       setDailyPlans([...storageService.getActive24hPlans()]);

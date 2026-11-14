@@ -1934,31 +1934,39 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     <td className="py-3 px-3.5 text-center whitespace-nowrap">
                       <div className="flex items-center justify-center gap-1.5">
                         {onOpenExecuteModal &&
-                          !isClosed &&
                           getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
                             <button
                               type="button"
                               onClick={() => onOpenExecuteModal(item, false, true)}
                               className="px-2 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-[10.5px] font-bold transition cursor-pointer flex items-center gap-1 shadow-2xs"
-                              title="Moliyaviy amaliyotga (to'lovga) o'zgartirish kiritish"
+                              title="Moliyaviy amaliyotni tahrirlash yoki bekor qilish"
                             >
                               <Edit3 className="w-3.5 h-3.5" />
                               <span>To&apos;lovni o&apos;zgartirish</span>
                             </button>
                           )}
                         {onOpenExecuteModal &&
-                          !isClosed &&
                           getPlanSoldProductsData(item).productsDelivered.length > 0 && (
                             <button
                               type="button"
                               onClick={() => onOpenExecuteModal(item, true, false)}
                               className="px-2 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[10.5px] font-bold transition cursor-pointer flex items-center gap-1 shadow-2xs"
-                              title="Sotilgan mahsulotlarga va to'lov turiga o'zgartirish kiritish"
+                              title="Sotilgan mahsulotlarni tahrirlash yoki bekor qilish"
                             >
                               <Edit3 className="w-3.5 h-3.5" />
-                              <span>Mahsulotni o'zgartirish</span>
+                              <span>Mahsulotni o&apos;zgartirish</span>
                             </button>
                           )}
+                        {onOpenExecuteModal && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenExecuteModal(item)}
+                            className="p-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-200 transition cursor-pointer"
+                            title="Rejani tahrirlash / amaliyot qo'shish yoki bekor qilish"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => setInspectedPlan(item)}
@@ -2228,9 +2236,21 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
             {/* Footer */}
             <div className="p-4 bg-neutral-50 border-t border-neutral-200 flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2 flex-wrap">
+                {onOpenExecuteModal && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = inspectedPlan;
+                      setInspectedPlan(null);
+                      onOpenExecuteModal(target);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Tahrirlash / Bekor qilish</span>
+                  </button>
+                )}
                 {onOpenExecuteModal &&
-                  !inspectedPlan.isClosed &&
-                  inspectedPlan.status !== 'yopildi' &&
                   getPlanFinancialActionData(inspectedPlan).totalFinancialAmount > 0 && (
                     <button
                       type="button"
@@ -2246,8 +2266,6 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     </button>
                   )}
                 {onOpenExecuteModal &&
-                  !inspectedPlan.isClosed &&
-                  inspectedPlan.status !== 'yopildi' &&
                   getPlanSoldProductsData(inspectedPlan).productsDelivered.length > 0 && (
                     <button
                       type="button"
@@ -2259,7 +2277,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                       className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
                     >
                       <Edit3 className="w-3.5 h-3.5" />
-                      <span>Sotilgan mahsulotlarga o'zgartirish kiritish</span>
+                      <span>Sotilgan mahsulotlarga o&apos;zgartirish kiritish</span>
                     </button>
                   )}
               </div>
