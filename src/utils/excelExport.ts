@@ -10,6 +10,7 @@ export interface ClientBlock2ExportRow {
   paidSumUsd: number;
   creditSumUsd: number;
   totalSumUsd: number;
+  priorAdvanceAtCreditUsd?: number;
 }
 
 export async function exportClientsToXLSX(clients: Client[]): Promise<void> {
@@ -324,7 +325,11 @@ export async function exportClientProductAnalyticsToXLSX(
 
     const fullAddress =
       [r.client.region, r.client.district].filter(Boolean).join(', ') || r.client.address || '-';
-    const prodText = r.productsSummaryLines.join('\n') || '-';
+    const priorNote =
+      r.creditSumUsd > 0 && r.priorAdvanceAtCreditUsd && r.priorAdvanceAtCreditUsd > 0
+        ? `\n(Oldingi haqdorligi bor edi: ${r.priorAdvanceAtCreditUsd} USD)`
+        : '';
+    const prodText = (r.productsSummaryLines.join('\n') || '-') + priorNote;
 
     const row = worksheet.addRow([
       idx + 1,

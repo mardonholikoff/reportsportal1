@@ -2166,30 +2166,81 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     deferredB5Search,
   ]);
 
+  const mixedConversionClientIds = useMemo(() => {
+    const statusByClient = new Map<string, { hasConverted: boolean; hasPureUsd: boolean }>();
+    filteredB5Items.forEach((item) => {
+      if (!item.clientId) return;
+      const cur = statusByClient.get(item.clientId) || {
+        hasConverted: false,
+        hasPureUsd: false,
+      };
+      if (item.isConverted) {
+        cur.hasConverted = true;
+      } else {
+        cur.hasPureUsd = true;
+      }
+      statusByClient.set(item.clientId, cur);
+    });
+    const set = new Set<string>();
+    statusByClient.forEach((v, k) => {
+      if (v.hasConverted && v.hasPureUsd) {
+        set.add(k);
+      }
+    });
+    return set;
+  }, [filteredB5Items]);
+
   const b5Stats = useMemo(() => {
     let totalUzs = 0;
     let totalUsd = 0;
     let convertedUsd = 0;
     let nonConvertedUsd = 0;
+    const convertedByMethod = {
+      naqd: { usd: 0, uzs: 0 },
+      bank: { usd: 0, uzs: 0 },
+      qr: { usd: 0, uzs: 0 },
+      karta: { usd: 0, uzs: 0 },
+    };
 
     filteredB5Items.forEach((i) => {
       if (i.isConverted) {
         totalUzs += i.amountUzs;
         convertedUsd += i.amountUsd;
+        const mStr = `${i.paymentMethod || ''} ${i.paymentMethodLabel || ''}`.toLowerCase();
+        if (mStr.includes('bank')) {
+          convertedByMethod.bank.usd += i.amountUsd;
+          convertedByMethod.bank.uzs += i.amountUzs;
+        } else if (mStr.includes('karta')) {
+          convertedByMethod.karta.usd += i.amountUsd;
+          convertedByMethod.karta.uzs += i.amountUzs;
+        } else if (mStr.includes('qr')) {
+          convertedByMethod.qr.usd += i.amountUsd;
+          convertedByMethod.qr.uzs += i.amountUzs;
+        } else {
+          convertedByMethod.naqd.usd += i.amountUsd;
+          convertedByMethod.naqd.uzs += i.amountUzs;
+        }
       } else {
         nonConvertedUsd += i.amountUsd;
       }
       totalUsd += i.amountUsd;
     });
 
+    const round2 = (n: number) => Math.round(n * 100) / 100;
     const avgRate = convertedUsd > 0 ? Math.round(totalUzs / convertedUsd) : 0;
 
     return {
       totalCount: filteredB5Items.length,
       totalUzs,
-      totalUsd: Math.round(totalUsd * 100) / 100,
-      convertedUsd: Math.round(convertedUsd * 100) / 100,
-      nonConvertedUsd: Math.round(nonConvertedUsd * 100) / 100,
+      totalUsd: round2(totalUsd),
+      convertedUsd: round2(convertedUsd),
+      nonConvertedUsd: round2(nonConvertedUsd),
+      convertedByMethod: {
+        naqd: { usd: round2(convertedByMethod.naqd.usd), uzs: convertedByMethod.naqd.uzs },
+        bank: { usd: round2(convertedByMethod.bank.usd), uzs: convertedByMethod.bank.uzs },
+        qr: { usd: round2(convertedByMethod.qr.usd), uzs: convertedByMethod.qr.uzs },
+        karta: { usd: round2(convertedByMethod.karta.usd), uzs: convertedByMethod.karta.uzs },
+      },
       avgRate,
     };
   }, [filteredB5Items]);
@@ -5068,20 +5119,48 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                   {formatMoney(b5Stats.totalUsd)}
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2 pt-1.5 border-t border-emerald-100 text-xs">
-                <div className="px-2.5 py-1.5 rounded-xl bg-amber-50/80 border border-amber-200/80">
-                  <span className="text-[10px] font-bold text-amber-900 block">
-                    Konvertatsiya bilan (+):
-                  </span>
-                  <span className="font-mono font-extrabold text-amber-950 text-xs sm:text-sm">
-                    {formatMoney(b5Stats.convertedUsd)}
-                  </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1.5 border-t border-emerald-100 text-xs">
+                <div className="px-2.5 py-2 rounded-xl bg-amber-50/80 border border-amber-200/80 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold text-amber-900">
+                      Konvertatsiya bilan (+):
+                    </span>
+                    <span className="font-mono font-extrabold text-amber-950 text-xs sm:text-sm">
+                      {formatMoney(b5Stats.convertedUsd)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-2.5 gap-y-1 pt-1 border-t border-amber-200/70 text-[10px]">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-neutral-600 font-semibold">Naqd:</span>
+                      <span className="font-mono font-bold text-amber-950">
+                        {formatMoney(b5Stats.convertedByMethod.naqd.usd)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-neutral-600 font-semibold">Bank:</span>
+                      <span className="font-mono font-bold text-amber-950">
+                        {formatMoney(b5Stats.convertedByMethod.bank.usd)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-neutral-600 font-semibold">QR:</span>
+                      <span className="font-mono font-bold text-amber-950">
+                        {formatMoney(b5Stats.convertedByMethod.qr.usd)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-neutral-600 font-semibold">Karta:</span>
+                      <span className="font-mono font-bold text-amber-950">
+                        {formatMoney(b5Stats.convertedByMethod.karta.usd)}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div className="px-2.5 py-1.5 rounded-xl bg-neutral-50 border border-neutral-200">
+                <div className="px-2.5 py-2 rounded-xl bg-neutral-50 border border-neutral-200 flex flex-col justify-between">
                   <span className="text-[10px] font-bold text-neutral-600 block">
                     Konvertatsiyasiz (-):
                   </span>
-                  <span className="font-mono font-extrabold text-neutral-900 text-xs sm:text-sm">
+                  <span className="font-mono font-extrabold text-neutral-900 text-xs sm:text-sm mt-1">
                     {formatMoney(b5Stats.nonConvertedUsd)}
                   </span>
                 </div>
@@ -5309,7 +5388,16 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                         </span>
                       </td>
                       <td className="py-3 px-3 text-center">
-                        {item.isConverted ? (
+                        {mixedConversionClientIds.has(item.clientId) ? (
+                          <div className="inline-flex flex-col items-center gap-0.5">
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-mono font-black text-sm">
+                              +
+                            </span>
+                            <span className="text-[10px] font-bold text-emerald-800 whitespace-nowrap">
+                              (sof dollar ham bor)
+                            </span>
+                          </div>
+                        ) : item.isConverted ? (
                           <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-mono font-black text-sm">
                             +
                           </span>

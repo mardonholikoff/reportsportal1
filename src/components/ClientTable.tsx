@@ -69,6 +69,7 @@ interface ProductDeliveryOccurrence {
   totalPriceUsd: number;
   paidUsd: number;
   creditUsd: number;
+  priorAdvanceUsd?: number;
 }
 
 interface ClientAggregatedProductRow {
@@ -92,6 +93,7 @@ interface ClientBlock2ComputedItem {
   totalSumUsd: number;
   paidSumUsd: number;
   creditSumUsd: number;
+  priorAdvanceAtCreditUsd: number;
 }
 
 export const ClientTable: React.FC<Props> = ({
@@ -614,11 +616,98 @@ export const ClientTable: React.FC<Props> = ({
       const coveredProductIds = new Set<string>();
       const coveredQtyByProdKey = new Map<string, number>();
 
+      // Mijozning barcha qarz/haqdorlik tarixidan har bir mahsulot topshirish vaqtidagi oldingi haqdorlikni tiklaymiz
+      const balanceLogs = (client.logs || [])
+        .map((l, idx) => ({ l, idx }))
+        .filter(
+          ({ l }) =>
+            (l.type === 'payment' || l.type === 'product_added') &&
+            !(l.id?.endsWith('_prod_edit') && l.type === 'product_added')
+        )
+        .sort((a, b) => {
+          const tsCmp = (b.l.timestamp || '').localeCompare(a.l.timestamp || '');
+          return tsCmp !== 0 ? tsCmp : a.idx - b.idx;
+        });
+
+      let runningNet = (Number(client.currentDebt) || 0) - (Number(client.currentAdvance) || 0);
+      const prodLogPriorAdvances: Array<{
+        timestamp: string;
+        dateStr: string;
+        priorAdvanceUsd: number;
+        used: boolean;
+      }> = [];
+
+      balanceLogs.forEach(({ l }) => {
+        const amt = Number(l.amountChanged) || 0;
+        let delta = 0;
+        let isProductDeliveryLog = false;
+        if (l.type === 'payment') {
+          delta = -amt;
+        } else if (l.type === 'product_added') {
+          const isReturn =
+            String(l.id || '').endsWith('_ret') ||
+            (l.title || '').toLowerCase().includes('qaytarildi');
+          delta = isReturn ? -amt : amt;
+          isProductDeliveryLog = !isReturn;
+        }
+        const netBefore = Math.round((runningNet - delta) * 100) / 100;
+        if (isProductDeliveryLog) {
+          prodLogPriorAdvances.push({
+            timestamp: l.timestamp || '',
+            dateStr: (l.timestamp || '').slice(0, 10),
+            priorAdvanceUsd: netBefore < -0.005 ? Math.round(Math.abs(netBefore) * 100) / 100 : 0,
+            used: false,
+          });
+        }
+        runningNet = netBefore;
+      });
+
+      const getPriorAdvanceAtCredit = (
+        timestamp: string | undefined,
+        dateStr: string,
+        creditAmt: number
+      ): number => {
+        if (creditAmt <= 0) return 0;
+        if (timestamp) {
+          const exact = prodLogPriorAdvances.find((p) => !p.used && p.timestamp === timestamp);
+          if (exact) {
+            exact.used = true;
+            return exact.priorAdvanceUsd;
+          }
+        }
+        if (dateStr) {
+          const byDate = prodLogPriorAdvances.find((p) => !p.used && p.dateStr === dateStr);
+          if (byDate) {
+            byDate.used = true;
+            return byDate.priorAdvanceUsd;
+          }
+        }
+        // Fallback if no _prod log exists for this action
+        let netAtEndOfDate = (Number(client.currentDebt) || 0) - (Number(client.currentAdvance) || 0);
+        balanceLogs.forEach(({ l }) => {
+          const ld = (l.timestamp || '').slice(0, 10);
+          if (dateStr && ld > dateStr) {
+            const amt = Number(l.amountChanged) || 0;
+            const isRet =
+              l.type === 'product_added' &&
+              (String(l.id || '').endsWith('_ret') ||
+                (l.title || '').toLowerCase().includes('qaytarildi'));
+            const delta = l.type === 'payment' || isRet ? -amt : amt;
+            netAtEndOfDate = Math.round((netAtEndOfDate - delta) * 100) / 100;
+          }
+        });
+        const netBeforeFallback = Math.round((netAtEndOfDate - creditAmt) * 100) / 100;
+        return netBeforeFallback < -0.005
+          ? Math.round(Math.abs(netBeforeFallback) * 100) / 100
+          : 0;
+      };
+
       const cPlans = plansByClient.get(client.id) || [];
       cPlans.forEach((plan) => {
         const actions =
           plan.actionsHistory && plan.actionsHistory.length > 0
             ? plan.actionsHistory.map((act) => ({
+                timestamp: act.timestamp || plan.closedAt || plan.completedAt || plan.createdAt,
                 dateStr: (
                   act.timestamp ||
                   plan.closedAt ||
@@ -633,6 +722,7 @@ export const ClientTable: React.FC<Props> = ({
             : plan.productsDelivered && plan.productsDelivered.length > 0
             ? [
                 {
+                  timestamp: plan.closedAt || plan.completedAt || plan.createdAt,
                   dateStr: (
                     plan.closedAt ||
                     plan.completedAt ||
@@ -683,6 +773,12 @@ export const ClientTable: React.FC<Props> = ({
             creditRatio = 0;
           }
 
+          const batchCreditTotal = Math.round(eventTotal * creditRatio * 100) / 100;
+          const batchPriorAdvanceUsd =
+            batchCreditTotal > 0
+              ? getPriorAdvanceAtCredit(act.timestamp, act.dateStr, batchCreditTotal)
+              : 0;
+
           // Bir amaliyot ichida bir xil mahsulot bir necha qatorda bo'lsa ham 1 marta berilgan deb guruhlaymiz
           const groupedInBatch = new Map<
             string,
@@ -712,6 +808,7 @@ export const ClientTable: React.FC<Props> = ({
           });
 
           groupedInBatch.forEach((g, pKey) => {
+            const creditUsd = Math.round(g.sum * creditRatio * 100) / 100;
             occurrences.push({
               clientId: client.id,
               date: act.dateStr || (client.createdAt || '').slice(0, 10),
@@ -721,7 +818,8 @@ export const ClientTable: React.FC<Props> = ({
               quantity: Math.round(g.qty * 100) / 100,
               totalPriceUsd: Math.round(g.sum * 100) / 100,
               paidUsd: Math.round(g.sum * paidRatio * 100) / 100,
-              creditUsd: Math.round(g.sum * creditRatio * 100) / 100,
+              creditUsd,
+              priorAdvanceUsd: creditUsd > 0 ? batchPriorAdvanceUsd : 0,
             });
           });
         });
@@ -781,6 +879,11 @@ export const ClientTable: React.FC<Props> = ({
         });
 
         fallbackGrouped.forEach((g, pKey) => {
+          const fallbackCreditUsd = Math.round(g.sum * fallbackCreditRatio * 100) / 100;
+          const fallbackPriorAdv =
+            fallbackCreditUsd > 0 && prodLogPriorAdvances.length === 0 && (client.currentAdvance || 0) > 0
+              ? Math.round((client.currentAdvance || 0) * 100) / 100
+              : 0;
           occurrences.push({
             clientId: client.id,
             date: (client.createdAt || new Date().toISOString()).slice(0, 10),
@@ -790,7 +893,8 @@ export const ClientTable: React.FC<Props> = ({
             quantity: Math.round(g.qty * 100) / 100,
             totalPriceUsd: Math.round(g.sum * 100) / 100,
             paidUsd: Math.round(g.sum * fallbackPaidRatio * 100) / 100,
-            creditUsd: Math.round(g.sum * fallbackCreditRatio * 100) / 100,
+            creditUsd: fallbackCreditUsd,
+            priorAdvanceUsd: fallbackPriorAdv,
           });
         });
       }
@@ -985,6 +1089,15 @@ export const ClientTable: React.FC<Props> = ({
         if (!matchesClient && !matchesProd) return;
       }
 
+      const priorAdvanceAtCreditUsd =
+        creditSumUsd > 0
+          ? Math.round(
+              relevantOccurrences
+                .filter((o) => o.creditUsd > 0)
+                .reduce((max, o) => Math.max(max, o.priorAdvanceUsd || 0), 0) * 100
+            ) / 100
+          : 0;
+
       rows.push({
         client,
         matchedProducts,
@@ -994,6 +1107,7 @@ export const ClientTable: React.FC<Props> = ({
         totalSumUsd,
         paidSumUsd,
         creditSumUsd,
+        priorAdvanceAtCreditUsd,
       });
     });
 
@@ -1178,6 +1292,7 @@ export const ClientTable: React.FC<Props> = ({
         paidSumUsd: r.paidSumUsd,
         creditSumUsd: r.creditSumUsd,
         totalSumUsd: r.totalSumUsd,
+        priorAdvanceAtCreditUsd: r.priorAdvanceAtCreditUsd,
       }));
 
       await exportClientProductAnalyticsToXLSX(exportRows, periodLabel);
@@ -2858,13 +2973,20 @@ export const ClientTable: React.FC<Props> = ({
                           </td>
 
                           {/* Nasiyaga sotilgan */}
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                          <td className="py-3.5 px-4 text-right">
                             {row.creditSumUsd > 0 ? (
-                              <span className="inline-block px-2.5 py-1 rounded-lg bg-rose-100/90 text-rose-900 font-mono font-bold text-xs border border-rose-200">
-                                {formatMoney(row.creditSumUsd)}
-                              </span>
+                              <div className="inline-flex flex-col items-end gap-0.5">
+                                <span className="inline-block px-2.5 py-1 rounded-lg bg-rose-100/90 text-rose-900 font-mono font-bold text-xs border border-rose-200 whitespace-nowrap">
+                                  {formatMoney(row.creditSumUsd)}
+                                </span>
+                                {row.priorAdvanceAtCreditUsd > 0 && (
+                                  <span className="text-[10px] font-semibold text-emerald-800 whitespace-normal text-right leading-tight max-w-[180px]">
+                                    (oldingi haqdorligi bor edi: {formatMoney(row.priorAdvanceAtCreditUsd)})
+                                  </span>
+                                )}
+                              </div>
                             ) : (
-                              <span className="text-neutral-400 font-mono">0 USD</span>
+                              <span className="text-neutral-400 font-mono whitespace-nowrap">0 USD</span>
                             )}
                           </td>
 
@@ -2988,9 +3110,14 @@ export const ClientTable: React.FC<Props> = ({
                         <span className="text-[10px] font-bold text-rose-900 block">
                           Nasiyaga:
                         </span>
-                        <span className="font-mono font-bold text-rose-800 text-[11px]">
+                        <span className="font-mono font-bold text-rose-800 text-[11px] block">
                           {formatMoney(row.creditSumUsd)}
                         </span>
+                        {row.creditSumUsd > 0 && row.priorAdvanceAtCreditUsd > 0 && (
+                          <span className="block text-[9px] font-semibold text-emerald-800 leading-tight mt-0.5">
+                            (oldingi haqdorligi bor edi: {formatMoney(row.priorAdvanceAtCreditUsd)})
+                          </span>
+                        )}
                       </div>
                       <div className="p-2 rounded-xl bg-indigo-50 border border-indigo-200">
                         <span className="text-[10px] font-bold text-indigo-900 block">Jami:</span>

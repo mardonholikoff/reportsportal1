@@ -336,6 +336,10 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
     let totalDeliveredSum = 0;
     let totalDeliveredPieces = 0;
+    let creditDeliveredSum = 0;
+    let creditDeliveredPieces = 0;
+    let paidDeliveredSum = 0;
+    let paidDeliveredPieces = 0;
     let totalReturnedSum = 0;
     let totalReturnedPieces = 0;
 
@@ -428,13 +432,47 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
           }
         }
 
-        // Delivered products
+        // Delivered products (with qarzga vs qarzsiz split)
         if (act.productsDelivered && act.productsDelivered.length > 0) {
+          let batchSum = 0;
+          let batchPieces = 0;
           act.productsDelivered.forEach((prod) => {
             const lineVal = prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0);
-            totalDeliveredSum += lineVal;
-            totalDeliveredPieces += prod.quantity || 0;
+            batchSum += lineVal;
+            batchPieces += prod.quantity || 0;
           });
+          totalDeliveredSum += batchSum;
+          totalDeliveredPieces += batchPieces;
+
+          const dp = act.deliveryPayment;
+          let paidRatio = 0;
+          let creditRatio = 1;
+          if (!dp || dp.paymentType === 'qarzga') {
+            paidRatio = 0;
+            creditRatio = 1;
+          } else if (dp.paidAmount !== undefined || dp.debtAmount !== undefined) {
+            const paid = Math.max(0, Number(dp.paidAmount) || 0);
+            const debt =
+              dp.debtAmount !== undefined
+                ? Math.max(0, Number(dp.debtAmount) || 0)
+                : Math.max(0, batchSum - paid);
+            const denom = paid + debt > 0 ? paid + debt : batchSum;
+            if (denom > 0) {
+              paidRatio = Math.min(1, paid / denom);
+              creditRatio = Math.max(0, 1 - paidRatio);
+            } else {
+              paidRatio = 1;
+              creditRatio = 0;
+            }
+          } else {
+            paidRatio = 1;
+            creditRatio = 0;
+          }
+
+          creditDeliveredSum += batchSum * creditRatio;
+          creditDeliveredPieces += batchPieces * creditRatio;
+          paidDeliveredSum += batchSum * paidRatio;
+          paidDeliveredPieces += batchPieces * paidRatio;
         }
 
         // Returned products
@@ -452,6 +490,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
       if (totalReceipts <= 0) return 0;
       return Math.round((amt / totalReceipts) * 100);
     };
+    const round2 = (n: number) => Math.round(n * 100) / 100;
 
     return {
       totalClients,
@@ -466,8 +505,12 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
         karta: { ...receiptsByType.karta, percent: getPct(receiptsByType.karta.amount) },
         qr: { ...receiptsByType.qr, percent: getPct(receiptsByType.qr.amount) },
       },
-      totalDeliveredSum,
-      totalDeliveredPieces,
+      totalDeliveredSum: round2(totalDeliveredSum),
+      totalDeliveredPieces: round2(totalDeliveredPieces),
+      creditDeliveredSum: round2(creditDeliveredSum),
+      creditDeliveredPieces: round2(creditDeliveredPieces),
+      paidDeliveredSum: round2(paidDeliveredSum),
+      paidDeliveredPieces: round2(paidDeliveredPieces),
       totalReturnedSum,
       totalReturnedPieces,
     };
@@ -777,72 +820,72 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                 <div
                   style={{ width: `${analytics.receiptsByType.naqd.percent}%` }}
                   className="bg-emerald-500 h-full"
-                  title={`Naqd: ${analytics.receiptsByType.naqd.percent}%`}
+                  title={`Naqd: ${formatMoney(analytics.receiptsByType.naqd.amount)} (${analytics.receiptsByType.naqd.percent}%)`}
                 />
                 <div
                   style={{ width: `${analytics.receiptsByType.bank.percent}%` }}
                   className="bg-blue-500 h-full"
-                  title={`Bank: ${analytics.receiptsByType.bank.percent}%`}
+                  title={`Bank: ${formatMoney(analytics.receiptsByType.bank.amount)} (${analytics.receiptsByType.bank.percent}%)`}
                 />
                 <div
                   style={{ width: `${analytics.receiptsByType.karta.percent}%` }}
                   className="bg-purple-500 h-full"
-                  title={`Karta: ${analytics.receiptsByType.karta.percent}%`}
+                  title={`Karta: ${formatMoney(analytics.receiptsByType.karta.amount)} (${analytics.receiptsByType.karta.percent}%)`}
                 />
                 <div
                   style={{ width: `${analytics.receiptsByType.qr.percent}%` }}
                   className="bg-amber-500 h-full"
-                  title={`QR: ${analytics.receiptsByType.qr.percent}%`}
+                  title={`QR: ${formatMoney(analytics.receiptsByType.qr.amount)} (${analytics.receiptsByType.qr.percent}%)`}
                 />
               </div>
             ) : null}
 
-            {/* List of 4 types with sums & percentages */}
-            <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px]">
-              <div className="flex items-center justify-between text-neutral-700">
+            {/* List of 4 types with exact USD sums */}
+            <div className="grid grid-cols-2 gap-x-2.5 gap-y-1 text-[10px]">
+              <div className="flex items-center justify-between gap-1 text-neutral-700">
                 <span className="flex items-center gap-1 truncate">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
                   Naqd:
                 </span>
-                <span className="font-mono font-bold text-neutral-900">
-                  {analytics.receiptsByType.naqd.percent}%
+                <span className="font-mono font-bold text-neutral-900 shrink-0">
+                  {formatMoney(analytics.receiptsByType.naqd.amount)}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between text-neutral-700">
+              <div className="flex items-center justify-between gap-1 text-neutral-700">
                 <span className="flex items-center gap-1 truncate">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
                   Bank:
                 </span>
-                <span className="font-mono font-bold text-neutral-900">
-                  {analytics.receiptsByType.bank.percent}%
+                <span className="font-mono font-bold text-neutral-900 shrink-0">
+                  {formatMoney(analytics.receiptsByType.bank.amount)}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between text-neutral-700">
+              <div className="flex items-center justify-between gap-1 text-neutral-700">
                 <span className="flex items-center gap-1 truncate">
                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
                   Karta:
                 </span>
-                <span className="font-mono font-bold text-neutral-900">
-                  {analytics.receiptsByType.karta.percent}%
+                <span className="font-mono font-bold text-neutral-900 shrink-0">
+                  {formatMoney(analytics.receiptsByType.karta.amount)}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between text-neutral-700">
+              <div className="flex items-center justify-between gap-1 text-neutral-700">
                 <span className="flex items-center gap-1 truncate">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
                   QR:
                 </span>
-                <span className="font-mono font-bold text-neutral-900">
-                  {analytics.receiptsByType.qr.percent}%
+                <span className="font-mono font-bold text-neutral-900 shrink-0">
+                  {formatMoney(analytics.receiptsByType.qr.amount)}
                 </span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* KARTA 3: Mahsulot berilishi (summasi bilan) */}
+        {/* KARTA 3: Mahsulot berilishi (summasi va qarzga / qarzsiz kesimida) */}
         <div className="p-4 sm:p-5 rounded-3xl bg-white border border-rose-100 shadow-xs flex flex-col justify-between min-h-[140px]">
           <div>
             <div className="flex items-center justify-between mb-1.5">
@@ -872,11 +915,25 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
               {formatMoney(analytics.totalDeliveredSum)}
             </div>
           </div>
-          <div className="text-[11px] text-neutral-500 pt-2 border-t border-neutral-100 flex items-center justify-between">
-            <span>Topshirilgan tovarlar:</span>
-            <span className="font-bold font-mono text-neutral-800">
-              {analytics.totalDeliveredPieces} dona
-            </span>
+          <div className="pt-2 border-t border-neutral-100 space-y-1 text-[10px]">
+            <div className="text-[11px] text-neutral-500 flex items-center justify-between">
+              <span>Jami topshirilgan:</span>
+              <span className="font-bold font-mono text-neutral-800">
+                {analytics.totalDeliveredPieces} dona
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2 text-rose-800 bg-rose-50/70 px-2 py-0.5 rounded-md">
+              <span className="font-semibold">Qarzga (nasiya):</span>
+              <span className="font-mono font-bold">
+                {analytics.creditDeliveredPieces} dona • {formatMoney(analytics.creditDeliveredSum)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2 text-emerald-800 bg-emerald-50/70 px-2 py-0.5 rounded-md">
+              <span className="font-semibold">Qarzsiz (to'langan):</span>
+              <span className="font-mono font-bold">
+                {analytics.paidDeliveredPieces} dona • {formatMoney(analytics.paidDeliveredSum)}
+              </span>
+            </div>
           </div>
         </div>
 

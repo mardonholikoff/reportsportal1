@@ -125,7 +125,27 @@ export const exportUzsConversionsToExcel = async (
     { key: 'authorNote', width: 38 },
   ];
 
+  const mixedClientIds = new Set<string>();
+  const clientStatus = new Map<string, { conv: boolean; pure: boolean }>();
+  items.forEach((it) => {
+    if (!it.clientId) return;
+    const st = clientStatus.get(it.clientId) || { conv: false, pure: false };
+    if (it.isConverted) st.conv = true;
+    else st.pure = true;
+    clientStatus.set(it.clientId, st);
+  });
+  clientStatus.forEach((st, cid) => {
+    if (st.conv && st.pure) mixedClientIds.add(cid);
+  });
+
   items.forEach((item, index) => {
+    const isMixedClient = mixedClientIds.has(item.clientId);
+    const convText = isMixedClient
+      ? '+ (sof dollar ham bor)'
+      : item.isConverted
+      ? '+'
+      : '-';
+
     const row = sheet.addRow([
       index + 1,
       formatDate(item.timestamp),
@@ -133,7 +153,7 @@ export const exportUzsConversionsToExcel = async (
       item.clientPhone || '-',
       item.purpose === 'product' ? 'Mahsulot uchun' : "Shunchaki to'lov",
       item.paymentMethodLabel,
-      item.isConverted ? '+' : '-',
+      convText,
       item.isConverted ? item.amountUzs : '-',
       item.isConverted ? item.exchangeRate : '-',
       item.amountUsd,
@@ -158,7 +178,7 @@ export const exportUzsConversionsToExcel = async (
             name: 'Calibri',
             size: 11,
             bold: true,
-            color: { argb: item.isConverted ? 'FF065F46' : 'FF6B7280' },
+            color: { argb: item.isConverted || isMixedClient ? 'FF065F46' : 'FF6B7280' },
           };
         }
       } else if (colNumber === 8 || colNumber === 9) {
