@@ -768,6 +768,7 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
           isOpen={Boolean(selectedProductForHistory)}
           onClose={() => setSelectedProductForHistory(null)}
           product={selectedProductForHistory}
+          userRole="admin"
         />
       </div>
     </div>

@@ -110,13 +110,17 @@ export const ClientDetailModal: React.FC<Props> = ({
     return fresh || propClient;
   }, [propClient, dailyPlans, isOpen]);
 
-  // Reset action filter and selected action detail when opening modal or switching client
+  // Reset action & product filters and selected action detail when opening modal or switching client
   React.useEffect(() => {
     if (isOpen) {
       setActionStartDate('');
       setActionEndDate('');
       setActionDateMode('range');
       setActiveActionPreset('all');
+      setProductStartDate('');
+      setProductEndDate('');
+      setProductDateMode('range');
+      setActiveProductPreset('all');
       setSelectedActionDetailId(null);
     }
   }, [propClient?.id, isOpen]);
@@ -210,11 +214,12 @@ export const ClientDetailModal: React.FC<Props> = ({
   >('all');
   const [selectedActionDetailId, setSelectedActionDetailId] = useState<string | null>(null);
 
-  // Delivered products date filter state
+  // Delivered products date filter state (supports both single day and date range)
   const [productStartDate, setProductStartDate] = useState('');
   const [productEndDate, setProductEndDate] = useState('');
+  const [productDateMode, setProductDateMode] = useState<'range' | 'single'>('range');
   const [activeProductPreset, setActiveProductPreset] = useState<
-    'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'custom'
+    'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'single' | 'custom'
   >('all');
 
   // Logs date filter state
@@ -240,6 +245,11 @@ export const ClientDetailModal: React.FC<Props> = ({
 
   const handleProductPresetChange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth') => {
     setActiveProductPreset(preset);
+    if (preset === 'today' || preset === 'yesterday') {
+      setProductDateMode('single');
+    } else if (preset === 'last7' || preset === 'thisMonth' || preset === 'all') {
+      setProductDateMode('range');
+    }
     const range = getPresetDateRange(preset);
     setProductStartDate(range.start);
     setProductEndDate(range.end);
@@ -276,6 +286,8 @@ export const ClientDetailModal: React.FC<Props> = ({
       totalPrice: number;
       paymentType: string;
       paymentLabel: string;
+      creditRatio: number;
+      paidRatio: number;
     }
 
     const list: DeliveredProductRow[] = [];
@@ -391,8 +403,35 @@ export const ClientDetailModal: React.FC<Props> = ({
 
         const dp = soldData.deliveryPayment || plan.deliveryPayment;
         const pType = dp?.paymentType || 'qarzga';
-        const isCredit = pType === 'qarzga' || Boolean(dp?.debtAmount && dp.debtAmount > 0);
-        const pLabel = isCredit ? 'Qarzga' : 'Naqdga';
+        const batchTotal = prods.reduce(
+          (s, item) =>
+            s +
+            (item.totalPrice !== undefined && item.totalPrice >= 0
+              ? Number(item.totalPrice)
+              : (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)),
+          0
+        );
+        let creditRatio = 0;
+        let paidRatio = 1;
+        if (!dp || pType === 'qarzga') {
+          creditRatio = 1;
+          paidRatio = 0;
+        } else if (dp.paidAmount !== undefined || dp.debtAmount !== undefined) {
+          const paid = Math.max(0, Number(dp.paidAmount) || 0);
+          const debt =
+            dp.debtAmount !== undefined
+              ? Math.max(0, Number(dp.debtAmount) || 0)
+              : Math.max(0, batchTotal - paid);
+          const denom = paid + debt > 0 ? paid + debt : batchTotal;
+          paidRatio = denom > 0 ? Math.min(1, paid / denom) : 1;
+          creditRatio = Math.max(0, 1 - paidRatio);
+        } else {
+          paidRatio = 1;
+          creditRatio = 0;
+        }
+        const isPartialCredit = creditRatio > 0.001 && creditRatio <= 0.999;
+        const isCredit = creditRatio > 0.999;
+        const pLabel = isPartialCredit ? 'Qisman qarzga' : isCredit ? 'Qarzga' : 'Naqdga';
 
         prods.forEach((p, pIdx) => {
           if (p.id) coveredProductIds.add(p.id);
@@ -429,6 +468,8 @@ export const ClientDetailModal: React.FC<Props> = ({
             totalPrice: tPrice,
             paymentType: pType,
             paymentLabel: pLabel,
+            creditRatio,
+            paidRatio,
           });
         });
 
@@ -478,6 +519,8 @@ export const ClientDetailModal: React.FC<Props> = ({
               totalPrice: tPrice,
               paymentType: pType,
               paymentLabel: pLabel,
+              creditRatio: 0,
+              paidRatio: 0,
             });
           });
         }
@@ -560,6 +603,8 @@ export const ClientDetailModal: React.FC<Props> = ({
           totalPrice: tPrice,
           paymentType: isCredit ? 'qarzga' : 'naqd',
           paymentLabel: pLabel,
+          creditRatio: isCredit ? 1 : 0,
+          paidRatio: isCredit ? 0 : 1,
         });
       });
     }
@@ -619,6 +664,8 @@ export const ClientDetailModal: React.FC<Props> = ({
           totalPrice: Math.round(remToMatch * ret.unitPrice * 100) / 100,
           paymentType: 'qaytarilgan',
           paymentLabel: 'Qaytarilgan',
+          creditRatio: 0,
+          paidRatio: 0,
         });
       }
     });
@@ -666,6 +713,94 @@ export const ClientDetailModal: React.FC<Props> = ({
   const totalReturnedProductsQty = useMemo(() => {
     return filteredDeliveredProducts.reduce((sum, p) => sum + (p.returnedQuantity || 0), 0);
   }, [filteredDeliveredProducts]);
+
+  // Breakdown of filtered delivered products: total value, credit part, non-credit (paid) part
+  const filteredProductsBreakdown = useMemo(() => {
+    let totalValue = 0;
+    let creditValue = 0;
+    let nonCreditValue = 0;
+
+    filteredDeliveredProducts.forEach((p) => {
+      if (p.status === 'returned') return;
+      const activeQty =
+        p.status === 'partial_returned'
+          ? Math.max(0, p.quantity - p.returnedQuantity)
+          : p.quantity;
+      const activeSum =
+        p.status === 'partial_returned'
+          ? Math.round(activeQty * p.unitPrice * 100) / 100
+          : p.totalPrice;
+      const rowCredit = Math.round(activeSum * (p.creditRatio ?? 1) * 100) / 100;
+      const rowNonCredit = Math.max(0, Math.round((activeSum - rowCredit) * 100) / 100);
+
+      totalValue = Math.round((totalValue + activeSum) * 100) / 100;
+      creditValue = Math.round((creditValue + rowCredit) * 100) / 100;
+      nonCreditValue = Math.round((nonCreditValue + rowNonCredit) * 100) / 100;
+    });
+
+    return { totalValue, creditValue, nonCreditValue };
+  }, [filteredDeliveredProducts]);
+
+  // Client's historical debt balance as of the selected date (or current debt if no date filter)
+  const clientDebtAtSelectedProductDate = useMemo(() => {
+    if (!client) {
+      return {
+        debt: 0,
+        advance: 0,
+        targetDate: '',
+        isSingleDay: false,
+        hasDateFilter: false,
+      };
+    }
+
+    const targetDate = productEndDate || productStartDate || '';
+    const hasDateFilter = Boolean(productStartDate || productEndDate);
+    const isSingleDay =
+      Boolean(productStartDate && productEndDate && productStartDate === productEndDate);
+
+    if (!targetDate) {
+      return {
+        debt: Math.round((Number(client.currentDebt) || 0) * 100) / 100,
+        advance: Math.round((Number(client.currentAdvance) || 0) * 100) / 100,
+        targetDate: '',
+        isSingleDay: false,
+        hasDateFilter: false,
+      };
+    }
+
+    let net = (Number(client.currentDebt) || 0) - (Number(client.currentAdvance) || 0);
+    const logs = Array.isArray(client.logs) ? client.logs : [];
+
+    logs.forEach((l) => {
+      const dStr = (l.timestamp || '').slice(0, 10);
+      const amt = Number(l.amountChanged) || 0;
+      if (!dStr || dStr <= targetDate || amt <= 0) return;
+
+      if (l.type === 'product_added') {
+        const isReturn =
+          String(l.id || '').endsWith('_ret') ||
+          (l.title || '').toLowerCase().includes('qaytarildi');
+        const delta = isReturn ? -amt : amt;
+        net = Math.round((net - delta) * 100) / 100;
+      } else if (l.type === 'payment') {
+        const text = `${l.title || ''} ${l.details || ''}`.toLowerCase();
+        const isDebtAddition =
+          text.includes("qarz qo'shildi") ||
+          text.includes("qarzdorlik qo'shildi") ||
+          String(l.id || '').endsWith('_whdebt');
+        const delta = isDebtAddition ? amt : -amt;
+        net = Math.round((net - delta) * 100) / 100;
+      }
+    });
+
+    return {
+      debt: net > 0 ? Math.round(net * 100) / 100 : 0,
+      advance: net < 0 ? Math.round(Math.abs(net) * 100) / 100 : 0,
+      targetDate,
+      isSingleDay,
+      hasDateFilter,
+    };
+  }, [client, productStartDate, productEndDate]);
 
   // Extract all agent actions & receipts for this client (visit/call actions + product/general receipts)
   const allAgentActions = useMemo(() => {
@@ -1749,36 +1884,176 @@ export const ClientDetailModal: React.FC<Props> = ({
               </div>
 
               <div className="flex items-center gap-1.5 flex-wrap">
-                <input
-                  type="date"
-                  value={productStartDate}
-                  onChange={(e) => {
-                    setProductStartDate(e.target.value);
-                    setActiveProductPreset('custom');
-                  }}
-                  className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
-                  title="Boshlanish sanasi"
-                />
-                <span className="text-neutral-400 font-bold">-</span>
-                <input
-                  type="date"
-                  value={productEndDate}
-                  onChange={(e) => {
-                    setProductEndDate(e.target.value);
-                    setActiveProductPreset('custom');
-                  }}
-                  className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
-                  title="Tugash sanasi"
-                />
+                <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductDateMode('single');
+                      if (productStartDate) {
+                        setProductEndDate(productStartDate);
+                        setActiveProductPreset('single');
+                      } else if (productEndDate) {
+                        setProductStartDate(productEndDate);
+                        setActiveProductPreset('single');
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
+                      productDateMode === 'single'
+                        ? 'bg-neutral-900 text-white'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Bir kun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductDateMode('range');
+                      if (activeProductPreset === 'single') {
+                        setActiveProductPreset('custom');
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
+                      productDateMode === 'range'
+                        ? 'bg-neutral-900 text-white'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Kunlar oralig&apos;i
+                  </button>
+                </div>
+
+                {productDateMode === 'single' ? (
+                  <input
+                    type="date"
+                    value={productStartDate}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setProductStartDate(val);
+                      setProductEndDate(val);
+                      setActiveProductPreset(val ? 'single' : 'all');
+                    }}
+                    className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                    title="Aniq bir kunni tanlash"
+                  />
+                ) : (
+                  <>
+                    <input
+                      type="date"
+                      value={productStartDate}
+                      onChange={(e) => {
+                        setProductStartDate(e.target.value);
+                        setActiveProductPreset('custom');
+                      }}
+                      className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                      title="Boshlanish sanasi"
+                    />
+                    <span className="text-neutral-400 font-bold">-</span>
+                    <input
+                      type="date"
+                      value={productEndDate}
+                      onChange={(e) => {
+                        setProductEndDate(e.target.value);
+                        setActiveProductPreset('custom');
+                      }}
+                      className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                      title="Tugash sanasi"
+                    />
+                  </>
+                )}
+
                 {(productStartDate || productEndDate) && (
                   <button
                     type="button"
-                    onClick={() => handleProductPresetChange('all')}
+                    onClick={() => {
+                      setProductDateMode('range');
+                      handleProductPresetChange('all');
+                    }}
                     className="text-[10.5px] text-rose-700 hover:text-rose-900 font-bold underline cursor-pointer px-1"
                   >
                     Tozalash
                   </button>
                 )}
+              </div>
+            </div>
+
+            {/* Summary KPI Cards for Selected Day / Range */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+              {/* 1. Umumiy qiymati */}
+              <div className="p-3 rounded-2xl bg-white border border-rose-200/80 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-neutral-600 uppercase">
+                    Umumiy qiymati
+                  </span>
+                  <Package className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-neutral-900 tabular-nums mt-1">
+                  {formatMoney(filteredProductsBreakdown.totalValue)}
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-neutral-100 text-[10px] text-neutral-600 font-medium">
+                  Faol mahsulotlar: <span className="font-bold text-neutral-900">{formatNumber(totalFilteredProductsQty)} dona</span>
+                </div>
+              </div>
+
+              {/* 2. Qarzga berilgani */}
+              <div className="p-3 rounded-2xl bg-rose-50/70 border border-rose-200 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-rose-900 uppercase">
+                    Qarzga berilgani
+                  </span>
+                  <FileText className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-rose-900 tabular-nums mt-1">
+                  {formatMoney(filteredProductsBreakdown.creditValue)}
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-rose-200/60 text-[10px] text-rose-800 font-medium">
+                  {filteredProductsBreakdown.totalValue > 0
+                    ? `Umumiydan ${Math.round((filteredProductsBreakdown.creditValue / filteredProductsBreakdown.totalValue) * 100)}% qarzga`
+                    : "Qarzga mahsulot yo'q"}
+                </div>
+              </div>
+
+              {/* 3. Qarzga emas (to'langan) */}
+              <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-emerald-900 uppercase">
+                    Qarzga emas
+                  </span>
+                  <CreditCard className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-emerald-900 tabular-nums mt-1">
+                  {formatMoney(filteredProductsBreakdown.nonCreditValue)}
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-emerald-200/60 text-[10px] text-emerald-800 font-medium">
+                  {filteredProductsBreakdown.totalValue > 0
+                    ? `Umumiydan ${Math.round((filteredProductsBreakdown.nonCreditValue / filteredProductsBreakdown.totalValue) * 100)}% naqd/to'langan`
+                    : "To'langan mahsulot yo'q"}
+                </div>
+              </div>
+
+              {/* 4. Tanlangan kunda mijoz qarzdorlik miqdori */}
+              <div className="p-3 rounded-2xl bg-amber-50/70 border border-amber-200 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-amber-900 uppercase">
+                    Mijoz qarzdorligi
+                  </span>
+                  <History className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-amber-950 tabular-nums mt-1">
+                  {formatMoney(clientDebtAtSelectedProductDate.debt)}
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-amber-200/60 text-[10px] text-amber-900 font-medium flex flex-col gap-0.5">
+                  <span>
+                    {clientDebtAtSelectedProductDate.targetDate
+                      ? `${formatDateDMY(clientDebtAtSelectedProductDate.targetDate)} kungi holat`
+                      : 'Hozirgi joriy qarzdorlik'}
+                  </span>
+                  {clientDebtAtSelectedProductDate.advance > 0 && (
+                    <span className="text-emerald-800 font-bold">
+                      Haqdorlik: {formatMoney(clientDebtAtSelectedProductDate.advance)}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1952,6 +2227,10 @@ export const ClientDetailModal: React.FC<Props> = ({
                               {isFullyReturned ? (
                                 <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
                                   Qaytarilgan
+                                </span>
+                              ) : p.paymentLabel === 'Qisman qarzga' ? (
+                                <span className="inline-block px-2.5 py-0.5 rounded-md text-[10.5px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                  Qisman qarzga
                                 </span>
                               ) : p.paymentLabel === 'Qarzga' ? (
                                 <span className="inline-block px-2.5 py-0.5 rounded-md text-[10.5px] font-bold bg-rose-100 text-rose-900 border border-rose-300">

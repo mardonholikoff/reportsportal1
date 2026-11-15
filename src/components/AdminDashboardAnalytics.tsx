@@ -5936,6 +5936,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
         product={historyProduct}
         dailyPlans={internalPlans}
         clients={internalClients}
+        userRole="admin"
       />
     </div>
   );

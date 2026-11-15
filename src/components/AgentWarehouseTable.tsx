@@ -847,6 +847,7 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
         isOpen={Boolean(selectedProductForHistory)}
         onClose={() => setSelectedProductForHistory(null)}
         product={selectedProductForHistory}
+        userRole="agent"
       />
     </div>
   );

@@ -34,6 +34,7 @@ import {
   formatPiecesForWarehouseProduct,
 } from '../utils/warehouseChronology';
 import { StickyTableWrapper } from './StickyTableWrapper';
+import { useAuth } from '../hooks/useAuth';
 
 export interface ProductDeliveryRecord {
   id: string;
@@ -62,6 +63,7 @@ interface Props {
   product: WarehouseProduct | null;
   dailyPlans?: DailyPlanItem[];
   clients?: Client[];
+  userRole?: 'admin' | 'agent';
 }
 
 export const ProductDeliveryHistoryModal: React.FC<Props> = ({
@@ -70,7 +72,11 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
   product,
   dailyPlans: propDailyPlans,
   clients: propClients,
+  userRole,
 }) => {
+  const { user } = useAuth();
+  const effectiveUserRole = userRole || user?.role || 'agent';
+  const isAdmin = effectiveUserRole === 'admin';
   const [searchQuery, setSearchQuery] = useState('');
   // Date filter: 'all' | 'today' | 'yesterday' | 'this_month' | 'custom'
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'yesterday' | 'this_month' | 'custom'>('all');
@@ -213,7 +219,8 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
   }, [activeProduct, previewNewCurrentPieces]);
 
   const handleSaveInitialStockChange = () => {
-    if (!activeProduct || !chronology) return;
+    if (!isAdmin || !activeProduct || !chronology) return;
+    const editorUsername = user?.username || 'adminc';
     const oldInitPieces = chronology.initialPieces;
     const updated = storageService.updateWarehouseInitialStock(
       activeProduct.id,
@@ -224,13 +231,13 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
         oldInitialPiecesOverride: oldInitPieces,
         netSoldPiecesUpToToday: netSoldUpToTodayPieces,
       },
-      'adminc'
+      editorUsername
     );
     if (!updated) return;
 
     syncWarehouseProductToFirestore(updated);
     addSystemLog({
-      userId: 'adminc',
+      userId: editorUsername,
       userRole: 'admin',
       actionType: 'ombor_kirimi',
       actionTitle: `Ombor mahsuloti bosh qoldig'i tahrirlandi: ${updated.brand} - ${updated.name}`,
@@ -946,7 +953,7 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                   </div>
                 </div>
 
-                {saveSuccessMsg && (
+                {isAdmin && saveSuccessMsg && (
                   <div className="p-2 rounded-xl bg-emerald-100 border border-emerald-300 text-emerald-950 text-xs font-bold flex items-center justify-between gap-2 animate-in fade-in">
                     <div className="flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
@@ -962,130 +969,132 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-2 items-center">
-                  {/* 1. Birlik tanlash (Agar korobka/qadoq bo'lsa) */}
-                  {hasPackageForInit && (
-                    <div className="lg:col-span-3">
-                      <div className="grid grid-cols-2 gap-1 p-0.5 rounded-xl bg-white border border-indigo-200">
+                {isAdmin && (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-2 items-center">
+                    {/* 1. Birlik tanlash (Agar korobka/qadoq bo'lsa) */}
+                    {hasPackageForInit && (
+                      <div className="lg:col-span-3">
+                        <div className="grid grid-cols-2 gap-1 p-0.5 rounded-xl bg-white border border-indigo-200">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (editInitUnitType !== 'package') {
+                                setEditInitUnitType('package');
+                                setEditInitQtyStr(
+                                  String(
+                                    Math.round((previewNewInitialPieces / piecesPerPkgForInit) * 100) /
+                                      100
+                                  )
+                                );
+                              }
+                            }}
+                            className={`py-1 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                              editInitUnitType === 'package'
+                                ? 'bg-indigo-700 text-white shadow-2xs'
+                                : 'text-indigo-900 hover:bg-indigo-50'
+                            }`}
+                          >
+                            {activeProduct.packageUnitName} (1={piecesPerPkgForInit})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (editInitUnitType !== 'piece') {
+                                setEditInitUnitType('piece');
+                                setEditInitQtyStr(String(previewNewInitialPieces));
+                              }
+                            }}
+                            className={`py-1 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                              editInitUnitType === 'piece'
+                                ? 'bg-indigo-700 text-white shadow-2xs'
+                                : 'text-indigo-900 hover:bg-indigo-50'
+                            }`}
+                          >
+                            {activeProduct.pieceUnitName || 'dona'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 2. Bazaga kiritilgandagi sonini yozish */}
+                    <div className={hasPackageForInit ? 'lg:col-span-3' : 'lg:col-span-4'}>
+                      <div className="flex items-center gap-1">
                         <button
                           type="button"
                           onClick={() => {
-                            if (editInitUnitType !== 'package') {
-                              setEditInitUnitType('package');
-                              setEditInitQtyStr(
-                                String(
-                                  Math.round((previewNewInitialPieces / piecesPerPkgForInit) * 100) /
-                                    100
-                                )
-                              );
+                            const next = Math.max(0, (parseFloat(editInitQtyStr) || 0) - 1);
+                            setEditInitQtyStr(String(next));
+                            setSaveSuccessMsg(null);
+                          }}
+                          className="w-8 h-8 rounded-xl bg-white hover:bg-indigo-100 border border-indigo-300 text-indigo-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
+                          title="Kamaytirish (-1)"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={editInitQtyStr}
+                          onChange={(e) => {
+                            setEditInitQtyStr(e.target.value);
+                            setSaveSuccessMsg(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleSaveInitialStockChange();
                             }
                           }}
-                          className={`py-1 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
-                            editInitUnitType === 'package'
-                              ? 'bg-indigo-700 text-white shadow-2xs'
-                              : 'text-indigo-900 hover:bg-indigo-50'
-                          }`}
-                        >
-                          {activeProduct.packageUnitName} (1={piecesPerPkgForInit})
-                        </button>
+                          className="w-full h-8 px-2.5 rounded-xl border border-indigo-400 bg-white font-mono font-extrabold text-xs text-indigo-950 text-center focus:outline-none focus:border-indigo-700"
+                        />
                         <button
                           type="button"
                           onClick={() => {
-                            if (editInitUnitType !== 'piece') {
-                              setEditInitUnitType('piece');
-                              setEditInitQtyStr(String(previewNewInitialPieces));
-                            }
+                            const next = (parseFloat(editInitQtyStr) || 0) + 1;
+                            setEditInitQtyStr(String(next));
+                            setSaveSuccessMsg(null);
                           }}
-                          className={`py-1 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
-                            editInitUnitType === 'piece'
-                              ? 'bg-indigo-700 text-white shadow-2xs'
-                              : 'text-indigo-900 hover:bg-indigo-50'
-                          }`}
+                          className="w-8 h-8 rounded-xl bg-white hover:bg-indigo-100 border border-indigo-300 text-indigo-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
+                          title="Ko'paytirish (+1)"
                         >
-                          {activeProduct.pieceUnitName || 'dona'}
+                          <Plus className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
-                  )}
 
-                  {/* 2. Bazaga kiritilgandagi sonini yozish */}
-                  <div className={hasPackageForInit ? 'lg:col-span-3' : 'lg:col-span-4'}>
-                    <div className="flex items-center gap-1">
+                    {/* 3. Natija oldindan ko'rinishi (Yangi bosh qoldiq -> Yangi hozirgi qoldiq) */}
+                    <div className={hasPackageForInit ? 'lg:col-span-4' : 'lg:col-span-5'}>
+                      <div className="px-2.5 py-1.5 rounded-xl bg-white border border-indigo-200 text-[10.5px] flex flex-wrap items-center justify-between gap-1.5">
+                        <div>
+                          <span className="text-neutral-500 mr-1">Yangi bosh:</span>
+                          <span className="font-mono font-extrabold text-indigo-950">
+                            {previewNewInitialFormatted.primary} ({previewNewInitialPieces})
+                          </span>
+                        </div>
+                        <ArrowRight className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                        <div>
+                          <span className="text-emerald-800 font-bold mr-1">Hozirgi:</span>
+                          <span className="font-mono font-extrabold text-emerald-700">
+                            {previewNewCurrentFormatted.primary} ({previewNewCurrentPieces})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 4. Saqlash tugmasi */}
+                    <div className={hasPackageForInit ? 'lg:col-span-2' : 'lg:col-span-3'}>
                       <button
                         type="button"
-                        onClick={() => {
-                          const next = Math.max(0, (parseFloat(editInitQtyStr) || 0) - 1);
-                          setEditInitQtyStr(String(next));
-                          setSaveSuccessMsg(null);
-                        }}
-                        className="w-8 h-8 rounded-xl bg-white hover:bg-indigo-100 border border-indigo-300 text-indigo-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
-                        title="Kamaytirish (-1)"
+                        onClick={handleSaveInitialStockChange}
+                        className="w-full h-8 px-3 rounded-xl bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-950 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition cursor-pointer"
                       >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <input
-                        type="number"
-                        min="0"
-                        step="any"
-                        value={editInitQtyStr}
-                        onChange={(e) => {
-                          setEditInitQtyStr(e.target.value);
-                          setSaveSuccessMsg(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleSaveInitialStockChange();
-                          }
-                        }}
-                        className="w-full h-8 px-2.5 rounded-xl border border-indigo-400 bg-white font-mono font-extrabold text-xs text-indigo-950 text-center focus:outline-none focus:border-indigo-700"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = (parseFloat(editInitQtyStr) || 0) + 1;
-                          setEditInitQtyStr(String(next));
-                          setSaveSuccessMsg(null);
-                        }}
-                        className="w-8 h-8 rounded-xl bg-white hover:bg-indigo-100 border border-indigo-300 text-indigo-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
-                        title="Ko'paytirish (+1)"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
+                        <Save className="w-3.5 h-3.5 shrink-0" />
+                        <span>Saqlash</span>
                       </button>
                     </div>
                   </div>
-
-                  {/* 3. Natija oldindan ko'rinishi (Yangi bosh qoldiq -> Yangi hozirgi qoldiq) */}
-                  <div className={hasPackageForInit ? 'lg:col-span-4' : 'lg:col-span-5'}>
-                    <div className="px-2.5 py-1.5 rounded-xl bg-white border border-indigo-200 text-[10.5px] flex flex-wrap items-center justify-between gap-1.5">
-                      <div>
-                        <span className="text-neutral-500 mr-1">Yangi bosh:</span>
-                        <span className="font-mono font-extrabold text-indigo-950">
-                          {previewNewInitialFormatted.primary} ({previewNewInitialPieces})
-                        </span>
-                      </div>
-                      <ArrowRight className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                      <div>
-                        <span className="text-emerald-800 font-bold mr-1">Hozirgi:</span>
-                        <span className="font-mono font-extrabold text-emerald-700">
-                          {previewNewCurrentFormatted.primary} ({previewNewCurrentPieces})
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 4. Saqlash tugmasi */}
-                  <div className={hasPackageForInit ? 'lg:col-span-2' : 'lg:col-span-3'}>
-                    <button
-                      type="button"
-                      onClick={handleSaveInitialStockChange}
-                      className="w-full h-8 px-3 rounded-xl bg-indigo-700 hover:bg-indigo-800 active:bg-indigo-950 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition cursor-pointer"
-                    >
-                      <Save className="w-3.5 h-3.5 shrink-0" />
-                      <span>Saqlash</span>
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
