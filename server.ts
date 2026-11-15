@@ -6,7 +6,17 @@ import { createServer as createViteServer } from 'vite';
 const PORT = 3000;
 const DATA_DIR = path.join(process.cwd(), '.data');
 const STATE_FILE = path.join(DATA_DIR, 'shared_state.json');
-const DB_WIPE_CUTOFF_TS = 1794665500000;
+const DB_WIPE_CUTOFF_TS = 1794400000000;
+const SHARED_CLOUD_DOC_ID = 'shared_cloud_state_v1';
+
+let firebaseCfg: any = null;
+try {
+  firebaseCfg = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8')
+  );
+} catch {
+  // ignore if missing
+}
 
 interface SharedStateStore {
   clients: Record<string, any>;
@@ -22,20 +32,23 @@ interface SharedStateStore {
 
 function isLegacyWipedRecord(id?: string | null): boolean {
   if (!id) return false;
-  const matches = String(id).match(/179[34]\d{9}/g);
-  if (matches && matches.length > 0) {
-    return matches.some((m) => Number(m) < DB_WIPE_CUTOFF_TS);
-  }
+  const strId = String(id);
   if (
-    id === 'cli_1' ||
-    id === 'cli_2' ||
-    id === 'cli_3' ||
-    id === 'wh_1' ||
-    id === 'wh_2' ||
-    id === 'month_plan_seed_1' ||
-    String(id).startsWith('log_seed_')
+    strId === 'cli_1' ||
+    strId === 'cli_2' ||
+    strId === 'cli_3' ||
+    strId === 'wh_1' ||
+    strId === 'wh_2' ||
+    strId === 'month_plan_seed_1' ||
+    strId.startsWith('log_seed_') ||
+    strId.startsWith('shared_cloud_state_') ||
+    strId.startsWith('test_')
   ) {
     return true;
+  }
+  const matches = strId.match(/179[34]\d{9}/g);
+  if (matches && matches.length > 0) {
+    return matches.some((m) => Number(m) < DB_WIPE_CUTOFF_TS);
   }
   return false;
 }
@@ -84,8 +97,94 @@ function loadState(): SharedStateStore {
 
 const sharedState: SharedStateStore = loadState();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let cloudPushInFlight = false;
+let cloudPushQueued = false;
 
-function scheduleSaveState(): void {
+async function pushServerStateToFirestoreCloud(): Promise<void> {
+  if (!firebaseCfg || !firebaseCfg.projectId || !firebaseCfg.apiKey) return;
+  if (cloudPushInFlight) {
+    cloudPushQueued = true;
+    return;
+  }
+  cloudPushInFlight = true;
+  try {
+    do {
+      cloudPushQueued = false;
+      const snapshot = serializeStateResponse();
+      if (
+        snapshot.clients.length === 0 &&
+        snapshot.warehouseProducts.length === 0 &&
+        snapshot.dailyPlans.length === 0 &&
+        snapshot.deletedClientIds.length === 0 &&
+        snapshot.deletedWarehouseIds.length === 0
+      ) {
+        break;
+      }
+      const compactClients = (snapshot.clients || []).map((c: any) => ({
+        ...c,
+        logs: Array.isArray(c.logs) && c.logs.length > 35 ? c.logs.slice(0, 35) : c.logs || [],
+      }));
+      const compactWh = (snapshot.warehouseProducts || []).map((w: any) => ({
+        ...w,
+        stockHistory:
+          Array.isArray(w.stockHistory) && w.stockHistory.length > 40
+            ? w.stockHistory.slice(0, 40)
+            : w.stockHistory || [],
+      }));
+      const serialized = JSON.stringify({
+        ...snapshot,
+        clients: compactClients,
+        warehouseProducts: compactWh,
+        systemLogs: (snapshot.systemLogs || []).slice(0, 120),
+        updatedAt: new Date().toISOString(),
+      });
+      const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${SHARED_CLOUD_DOC_ID}?key=${firebaseCfg.apiKey}`;
+      const bodyStr = JSON.stringify({
+        fields: {
+          id: { stringValue: SHARED_CLOUD_DOC_ID },
+          monthKey: { stringValue: '__sync_snapshot__' },
+          payloadJson: { stringValue: serialized },
+          updatedAt: { stringValue: new Date().toISOString() },
+        },
+      });
+      for (let attempt = 1; attempt <= 25; attempt++) {
+        try {
+          const r = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: bodyStr,
+          });
+          if (r.status === 200) break;
+        } catch {
+          // ignore
+        }
+        if (cloudPushQueued) break;
+        await new Promise((res) => setTimeout(res, 180));
+      }
+    } while (cloudPushQueued);
+  } finally {
+    cloudPushInFlight = false;
+  }
+}
+
+async function pullServerStateFromFirestoreCloud(): Promise<void> {
+  if (!firebaseCfg || !firebaseCfg.projectId || !firebaseCfg.apiKey) return;
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${SHARED_CLOUD_DOC_ID}?key=${firebaseCfg.apiKey}&_t=${Date.now()}`;
+    const r = await fetch(url);
+    if (!r.ok) return;
+    const docData: any = await r.json();
+    const rawJson = docData?.fields?.payloadJson?.stringValue;
+    if (rawJson && typeof rawJson === 'string') {
+      const parsed = JSON.parse(rawJson);
+      mergePayloadIntoState(parsed, false);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function scheduleSaveState(triggerCloudPush = true): void {
   sharedState.updatedAt = Date.now();
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
@@ -96,6 +195,9 @@ function scheduleSaveState(): void {
       fs.writeFileSync(STATE_FILE, JSON.stringify(sharedState), 'utf8');
     } catch (err) {
       console.error('Failed to write shared_state.json:', err);
+    }
+    if (triggerCloudPush) {
+      pushServerStateToFirestoreCloud();
     }
   }, 150);
 }
@@ -115,7 +217,7 @@ function getRecordTimestamp(item: any): number {
   return isNaN(ms) ? 0 : ms;
 }
 
-function mergePayloadIntoState(payload: any): void {
+function mergePayloadIntoState(payload: any, triggerCloudPush = true): void {
   if (!payload || typeof payload !== 'object') return;
 
   const delClientsSet = new Set<string>(sharedState.deletedClientIds);
@@ -259,7 +361,7 @@ function mergePayloadIntoState(payload: any): void {
     }
   }
 
-  scheduleSaveState();
+  scheduleSaveState(triggerCloudPush);
 }
 
 function serializeStateResponse() {
@@ -301,6 +403,12 @@ function serializeStateResponse() {
 }
 
 async function startServer() {
+  // Initial pull from Firestore cloud snapshot on startup
+  pullServerStateFromFirestoreCloud();
+  setInterval(() => {
+    pullServerStateFromFirestoreCloud();
+  }, 4000);
+
   const app = express();
   app.use(express.json({ limit: '50mb' }));
 
@@ -311,7 +419,7 @@ async function startServer() {
 
   app.post('/api/sync-state', (req, res) => {
     try {
-      mergePayloadIntoState(req.body);
+      mergePayloadIntoState(req.body, true);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.json(serializeStateResponse());
     } catch (err) {
@@ -322,7 +430,11 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
