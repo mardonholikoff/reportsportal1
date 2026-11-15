@@ -3,6 +3,19 @@ import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 
+if (typeof window !== 'undefined' && 'caches' in window) {
+  caches
+    .keys()
+    .then((names) => {
+      for (const name of names) {
+        if (name.includes('workbox') || name.includes('html-pages-cache')) {
+          caches.delete(name).catch(() => {});
+        }
+      }
+    })
+    .catch(() => {});
+}
+
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   let refreshing = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {

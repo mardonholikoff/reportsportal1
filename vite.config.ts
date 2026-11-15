@@ -10,6 +10,7 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
+        selfDestroying: true,
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
         manifest: {
@@ -40,29 +41,6 @@ export default defineConfig(() => {
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
-            },
-          ],
-        },
-        workbox: {
-          globPatterns: ['**/*.{js,css,ico,png,svg,woff,woff2}'],
-          maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
-          cleanupOutdatedCaches: true,
-          skipWaiting: true,
-          clientsClaim: true,
-          navigateFallback: null,
-          navigateFallbackDenylist: [/^\/api\//],
-          runtimeCaching: [
-            {
-              urlPattern: ({request}) => request.mode === 'navigate',
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'html-pages-cache',
-                networkTimeoutSeconds: 4,
-              },
-            },
-            {
-              urlPattern: ({url}) => url.pathname.startsWith('/api/'),
-              handler: 'NetworkOnly',
             },
           ],
         },

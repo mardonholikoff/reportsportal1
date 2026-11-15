@@ -623,8 +623,18 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
     restResult = null;
   }
 
+  const restHasExpectedClients =
+    !restResult?._metaClientChunks || (restResult?.clients.length || 0) > 0;
+  const restHasExpectedWh =
+    !restResult?._metaWarehouseChunks || (restResult?.warehouseProducts.length || 0) > 0;
+  const restHasExpectedPlans =
+    !restResult?._metaPlanChunks || (restResult?.dailyPlans.length || 0) > 0;
+
   if (
     restResult &&
+    restHasExpectedClients &&
+    restHasExpectedWh &&
+    restHasExpectedPlans &&
     (restResult.clients.length > 0 ||
       restResult.warehouseProducts.length > 0 ||
       restResult.dailyPlans.length > 0)
