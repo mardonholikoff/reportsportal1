@@ -36,24 +36,26 @@ export const APP_INITIALIZED_KEY = 'savdo_app_initialized_v1';
 // Yopilgan rejalar 7 kundan keyin avtomatik tozalanishi va barchada ko'rinmasligi uchun
 export const CLOSED_PLAN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 kun
 
-export const DB_WIPE_CUTOFF_TS = 1794665500000;
+export const DB_WIPE_CUTOFF_TS = 1794400000000;
 
 export function isLegacyWipedRecord(id?: string | null): boolean {
   if (!id) return false;
-  const matches = String(id).match(/179[34]\d{9}/g);
-  if (matches && matches.length > 0) {
-    return matches.some((m) => Number(m) < DB_WIPE_CUTOFF_TS);
-  }
+  const strId = String(id);
   if (
-    id === 'cli_1' ||
-    id === 'cli_2' ||
-    id === 'cli_3' ||
-    id === 'wh_1' ||
-    id === 'wh_2' ||
-    id === 'month_plan_seed_1' ||
-    String(id).startsWith('log_seed_')
+    strId === 'cli_1' ||
+    strId === 'cli_2' ||
+    strId === 'cli_3' ||
+    strId === 'wh_1' ||
+    strId === 'wh_2' ||
+    strId === 'month_plan_seed_1' ||
+    strId.startsWith('log_seed_') ||
+    strId.startsWith('shared_cloud_state_')
   ) {
     return true;
+  }
+  const matches = strId.match(/179[34]\d{9}/g);
+  if (matches && matches.length > 0) {
+    return matches.some((m) => Number(m) < DB_WIPE_CUTOFF_TS);
   }
   return false;
 }
