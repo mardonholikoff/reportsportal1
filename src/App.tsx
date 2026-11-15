@@ -102,15 +102,16 @@ import {
   Target,
   Calendar,
   Lock,
+  Activity,
 } from 'lucide-react';
 
 export default function App() {
   const { user, isAuthenticated, isLoading, error, login, logout } = useAuth();
   const isOnline = useOnlineStatus();
 
-  // Agent active navigation tab (tahlil agentlar uchun olib tashlangan)
+  // Agent active navigation tab
   const [agentActiveTab, setAgentActiveTab] = useState<
-    'reja' | 'eslatmalar' | 'mijozlar' | 'ombor' | 'oylik_reja'
+    'reja' | 'eslatmalar' | 'mijozlar' | 'ombor' | 'amallar' | 'oylik_reja'
   >('reja');
 
   // System audit logs state (adminc1 va adminlar nazorati)
@@ -2005,7 +2006,7 @@ export default function App() {
         {isAgent && (
           <div className="space-y-4">
             {/* Top Segmented Navigation Tabs (Mobile-optimized, 100% responsive, fits without hidden tabs) */}
-            <div className="bg-white rounded-2xl p-1 sm:p-1.5 border border-rose-100 shadow-xs grid grid-cols-5 gap-1 w-full">
+            <div className="bg-white rounded-2xl p-1 sm:p-1.5 border border-rose-100 shadow-xs grid grid-cols-3 sm:grid-cols-6 gap-1 w-full">
               <button
                 type="button"
                 onClick={() => setAgentActiveTab('reja')}
@@ -2092,6 +2093,20 @@ export default function App() {
                 >
                   {warehouseProducts.length}
                 </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAgentActiveTab('amallar')}
+                className={`py-2 sm:py-2.5 px-1 sm:px-3 rounded-xl font-bold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 cursor-pointer min-w-0 ${
+                  agentActiveTab === 'amallar'
+                    ? 'bg-rose-700 text-white shadow-xs'
+                    : 'text-neutral-700 hover:bg-rose-50/50'
+                }`}
+                title="Agent amallari va tushumlar"
+              >
+                <Activity className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                <span className="text-[10px] sm:text-xs md:text-sm truncate">Amallar</span>
               </button>
 
               <button
@@ -2226,6 +2241,18 @@ export default function App() {
                 </div>
 
                 <AgentWarehouseTable products={warehouseProducts} />
+              </div>
+            )}
+
+            {/* Tab 4b: Agent amallari va tushumlar (4-Blok) */}
+            {agentActiveTab === 'amallar' && (
+              <div className="animate-in fade-in duration-150">
+                <AdminDashboardAnalytics
+                  clients={clients}
+                  dailyPlans={dailyPlans}
+                  warehouseProducts={warehouseProducts}
+                  forcedBlockView="block4"
+                />
               </div>
             )}
 

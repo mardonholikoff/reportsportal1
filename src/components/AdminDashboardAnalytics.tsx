@@ -77,6 +77,7 @@ interface Props {
   dailyPlans?: DailyPlanItem[];
   warehouseProducts?: WarehouseProduct[];
   onDeleteWarehouseProduct?: (id: string) => void;
+  forcedBlockView?: 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6';
 }
 
 type StockSortMode = 'none' | 'desc' | 'asc';
@@ -116,11 +117,13 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   dailyPlans: propPlans,
   warehouseProducts: propProducts,
   onDeleteWarehouseProduct,
+  forcedBlockView,
 }) => {
   // Navigation between blocks: 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
   const [activeBlockView, setActiveBlockView] = useState<
     'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
-  >('block1');
+  >(forcedBlockView || 'block1');
+  const effectiveBlockView = forcedBlockView || activeBlockView;
 
   // =========================================================================
   // 1-BLOK DATA & STATES (Ombordagi mahsulotlar soni tahliliy jadvali)
@@ -2606,90 +2609,92 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* TOP NAVIGATION TABS FOR BLOCKS 1, 2, 3, 4, 5 & 6          */}
       {/* ========================================================= */}
-      <div className="bg-white rounded-2xl p-1.5 border border-rose-100 shadow-2xs flex items-center gap-1.5 flex-wrap">
-        <button
-          type="button"
-          onClick={() => setActiveBlockView('block1')}
-          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeBlockView === 'block1'
-              ? 'bg-rose-700 text-white shadow-xs'
-              : 'text-neutral-700 hover:bg-rose-50'
-          }`}
-        >
-          <Package className="w-4 h-4" />
-          <span>1-Blok: Ombor mahsulotlari</span>
-        </button>
+      {!forcedBlockView && (
+        <div className="bg-white rounded-2xl p-1.5 border border-rose-100 shadow-2xs flex items-center gap-1.5 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setActiveBlockView('block1')}
+            className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+              effectiveBlockView === 'block1'
+                ? 'bg-rose-700 text-white shadow-xs'
+                : 'text-neutral-700 hover:bg-rose-50'
+            }`}
+          >
+            <Package className="w-4 h-4" />
+            <span>1-Blok: Ombor mahsulotlari</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveBlockView('block2')}
-          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeBlockView === 'block2'
-              ? 'bg-rose-700 text-white shadow-xs'
-              : 'text-neutral-700 hover:bg-rose-50'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          <span>2-Blok: 1 yillik qarz / haq</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => setActiveBlockView('block2')}
+            className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+              effectiveBlockView === 'block2'
+                ? 'bg-rose-700 text-white shadow-xs'
+                : 'text-neutral-700 hover:bg-rose-50'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            <span>2-Blok: 1 yillik qarz / haq</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveBlockView('block3')}
-          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeBlockView === 'block3'
-              ? 'bg-rose-700 text-white shadow-xs'
-              : 'text-neutral-700 hover:bg-rose-50'
-          }`}
-        >
-          <ShoppingBag className="w-4 h-4" />
-          <span>3-Blok: Berilgan mahsulotlar</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => setActiveBlockView('block3')}
+            className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+              effectiveBlockView === 'block3'
+                ? 'bg-rose-700 text-white shadow-xs'
+                : 'text-neutral-700 hover:bg-rose-50'
+            }`}
+          >
+            <ShoppingBag className="w-4 h-4" />
+            <span>3-Blok: Berilgan mahsulotlar</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveBlockView('block4')}
-          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeBlockView === 'block4'
-              ? 'bg-rose-700 text-white shadow-xs'
-              : 'text-neutral-700 hover:bg-rose-50'
-          }`}
-        >
-          <Activity className="w-4 h-4" />
-          <span>4-Blok: Agentlar amallari & tushumlar</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => setActiveBlockView('block4')}
+            className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+              effectiveBlockView === 'block4'
+                ? 'bg-rose-700 text-white shadow-xs'
+                : 'text-neutral-700 hover:bg-rose-50'
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            <span>4-Blok: Agentlar amallari & tushumlar</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveBlockView('block5')}
-          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeBlockView === 'block5'
-              ? 'bg-amber-700 text-white shadow-xs'
-              : 'text-amber-900 bg-amber-50/70 hover:bg-amber-100 border border-amber-200/80'
-          }`}
-        >
-          <Calculator className="w-4 h-4" />
-          <span>5-Blok: To'lovlar va konvertatsiya ({allUzsConversionItems.length})</span>
-        </button>
+          <button
+            type="button"
+            onClick={() => setActiveBlockView('block5')}
+            className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+              effectiveBlockView === 'block5'
+                ? 'bg-amber-700 text-white shadow-xs'
+                : 'text-amber-900 bg-amber-50/70 hover:bg-amber-100 border border-amber-200/80'
+            }`}
+          >
+            <Calculator className="w-4 h-4" />
+            <span>5-Blok: To'lovlar va konvertatsiya ({allUzsConversionItems.length})</span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveBlockView('block6')}
-          className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeBlockView === 'block6'
-              ? 'bg-teal-700 text-white shadow-xs'
-              : 'text-teal-900 bg-teal-50/80 hover:bg-teal-100 border border-teal-200/90'
-          }`}
-        >
-          <Calendar className="w-4 h-4" />
-          <span>6-Blok: Kunlik amallar matritsasi (t / b / t+b)</span>
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => setActiveBlockView('block6')}
+            className={`flex-1 sm:flex-initial px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+              effectiveBlockView === 'block6'
+                ? 'bg-teal-700 text-white shadow-xs'
+                : 'text-teal-900 bg-teal-50/80 hover:bg-teal-100 border border-teal-200/90'
+            }`}
+          >
+            <Calendar className="w-4 h-4" />
+            <span>6-Blok: Kunlik amallar matritsasi (t / b / t+b)</span>
+          </button>
+        </div>
+      )}
 
       {/* ========================================================= */}
       {/* 1-BLOK: OMBORDAGI MAHSULOTLAR SONI                       */}
       {/* ========================================================= */}
-      {activeBlockView === 'block1' && (
+      {effectiveBlockView === 'block1' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           <div className="p-4 sm:p-6 bg-gradient-to-r from-neutral-900 via-neutral-850 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
@@ -3066,7 +3071,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 2-BLOK: 1 YILLIK QARZDORLIK VA HAQDORLIK                  */}
       {/* ========================================================= */}
-      {activeBlockView === 'block2' && (
+      {effectiveBlockView === 'block2' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           <div className="p-4 sm:p-6 bg-gradient-to-r from-rose-950 via-rose-900 to-rose-950 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
@@ -3708,7 +3713,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 3-BLOK: BERILGAN MAHSULOTLAR (QARZGA VA QARZSIZ)          */}
       {/* ========================================================= */}
-      {activeBlockView === 'block3' && (
+      {effectiveBlockView === 'block3' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           <div className="p-4 sm:p-6 bg-gradient-to-r from-neutral-900 via-rose-950 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
@@ -3878,7 +3883,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 4-BLOK: AGENTLAR AMALLARI, TUSHUMLAR VA MAHSULOT HARAKATI */}
       {/* ========================================================= */}
-      {activeBlockView === 'block4' && (
+      {effectiveBlockView === 'block4' && (
         <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
           {/* Banner */}
           <div className="p-4 sm:p-6 bg-gradient-to-r from-neutral-950 via-rose-950 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -5067,7 +5072,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 5-BLOK: TO'LOVLAR VA KONVERTATSIYA TAHLILI                */}
       {/* ========================================================= */}
-      {activeBlockView === 'block5' && (
+      {effectiveBlockView === 'block5' && (
         <div className="bg-white rounded-3xl border border-amber-200 shadow-xs overflow-hidden">
           {/* Header */}
           <div className="p-4 sm:p-6 bg-gradient-to-r from-amber-900 via-amber-800 to-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -5464,7 +5469,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       {/* ========================================================= */}
       {/* 6-BLOK: MIJOZLAR BO'YICHA KUNLIK BAJARILIB YOPILGAN AMALLAR MATRITSASI (MAKS. 31 KUN) */}
       {/* ========================================================= */}
-      {activeBlockView === 'block6' && (
+      {effectiveBlockView === 'block6' && (
         <div className="bg-white rounded-3xl border border-teal-200 shadow-xs overflow-hidden">
           {/* Header */}
           <div className="p-4 sm:p-6 bg-gradient-to-r from-teal-900 via-teal-800 to-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">

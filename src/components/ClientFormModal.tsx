@@ -21,6 +21,7 @@ import {
   DollarSign,
   FileSpreadsheet,
   UserPlus,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface Props {
@@ -90,6 +91,11 @@ export const ClientFormModal: React.FC<Props> = ({
 
   // Nakladnoy preview modal state
   const [nakladnoyData, setNakladnoyData] = useState<NakladnoyData | null>(null);
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   // Load warehouse products so user can select from existing stock
   const warehouseProducts = useMemo<WarehouseProduct[]>(() => {
@@ -677,7 +683,13 @@ export const ClientFormModal: React.FC<Props> = ({
                         {phones.length > 1 && (
                           <button
                             type="button"
-                            onClick={() => handleRemovePhone(idx)}
+                            onClick={() =>
+                              setConfirmDeleteModal({
+                                title: "Rostanmi? Telefon raqamini o'chirish",
+                                description: `${ph || `#${idx + 1} raqam`} o'chirilsinmi?`,
+                                onConfirm: () => handleRemovePhone(idx),
+                              })
+                            }
                             className="p-2 rounded-xl text-neutral-400 hover:text-rose-600 hover:bg-rose-50 border border-neutral-200 transition cursor-pointer"
                             title="Raqamni o'chirish"
                           >
@@ -804,7 +816,13 @@ export const ClientFormModal: React.FC<Props> = ({
                         </span>
                         <button
                           type="button"
-                          onClick={() => handleRemoveProduct(idx)}
+                          onClick={() =>
+                            setConfirmDeleteModal({
+                              title: "Rostanmi? Mahsulot qatorini o'chirish",
+                              description: `${prod.name ? `"${prod.name}"` : `Mahsulot #${idx + 1}`} qatorini o'chirmoqchimisiz?`,
+                              onConfirm: () => handleRemoveProduct(idx),
+                            })
+                          }
                           className="p-1 rounded-md text-neutral-400 hover:text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer"
                           title="Qatorni o'chirish"
                         >
@@ -1269,6 +1287,52 @@ export const ClientFormModal: React.FC<Props> = ({
         onClose={() => setNakladnoyData(null)}
         data={nakladnoyData}
       />
+
+      {/* O'chirish tasdiqlash modali */}
+      {confirmDeleteModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-rose-100 space-y-4">
+            <div className="flex items-center gap-3 text-rose-700">
+              <div className="w-11 h-11 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                <AlertTriangle className="w-5 h-5 text-rose-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  {confirmDeleteModal.title}
+                </h3>
+                <p className="text-xs text-neutral-600 mt-0.5">
+                  {confirmDeleteModal.description}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteModal(null)}
+                className="px-4 py-2 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[40px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmDeleteModal.onConfirm();
+                  setConfirmDeleteModal(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs min-h-[40px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ha, o&apos;chirish</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };

@@ -11,6 +11,7 @@ import {
   Search,
   Trash2,
   AlertCircle,
+  AlertTriangle,
   Filter,
 } from 'lucide-react';
 
@@ -72,6 +73,13 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'kutilmoqda' | 'bajarildi'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [confirmDeleteReminder, setConfirmDeleteReminder] = useState<{
+    id: string;
+    clientId: string;
+    clientName: string;
+    date: string;
+    note: string;
+  } | null>(null);
 
   const clientsMap = useMemo(() => {
     const map = new Map<string, Client>();
@@ -571,7 +579,15 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
                     <td className="py-3 px-3.5 text-center">
                       <button
                         type="button"
-                        onClick={() => onDeleteReminder(rem.id, rem.clientId)}
+                        onClick={() =>
+                          setConfirmDeleteReminder({
+                            id: rem.id,
+                            clientId: rem.clientId,
+                            clientName: client?.name || rem.clientName || 'Mijoz',
+                            date: formatYMDToUz(rem.reminderDate),
+                            note: rem.note || '',
+                          })
+                        }
                         className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 transition-colors cursor-pointer inline-flex items-center justify-center"
                         title="Eslatmani o'chirish"
                       >
@@ -584,6 +600,66 @@ export const AgentRemindersSection: React.FC<AgentRemindersSectionProps> = ({
             </tbody>
           </table>
         </StickyTableWrapper>
+      )}
+
+      {/* Eslatmani o'chirish tasdiqlash modali */}
+      {confirmDeleteReminder && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-rose-100 space-y-4">
+            <div className="flex items-center gap-3 text-rose-700">
+              <div className="w-11 h-11 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                <AlertTriangle className="w-5 h-5 text-rose-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  Rostanmi? Eslatmani o&apos;chirish
+                </h3>
+                <p className="text-xs text-neutral-500">
+                  Haqiqatan ham ushbu eslatmani o&apos;chirmoqchimisiz?
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-1">
+              <div className="font-bold text-neutral-900">
+                Mijoz: {confirmDeleteReminder.clientName}
+              </div>
+              <div className="text-neutral-600 font-mono text-[11px]">
+                Sana: {confirmDeleteReminder.date}
+              </div>
+              {confirmDeleteReminder.note && (
+                <div className="text-neutral-700 pt-1 border-t border-rose-200/70">
+                  Izoh: {confirmDeleteReminder.note}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteReminder(null)}
+                className="px-4 py-2 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[40px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteReminder(confirmDeleteReminder.id, confirmDeleteReminder.clientId);
+                  setConfirmDeleteReminder(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs min-h-[40px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ha, o&apos;chirish</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

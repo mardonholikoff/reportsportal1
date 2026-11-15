@@ -18,6 +18,7 @@ import {
   Trash2,
   X,
   Edit3,
+  AlertTriangle,
 } from 'lucide-react';
 
 export type ImportedWarehouseProductPayload = Omit<WarehouseProduct, 'id' | 'createdAt'>;
@@ -348,6 +349,10 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
   const [excludedRecordIndices, setExcludedRecordIndices] = useState<Set<number>>(new Set());
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [confirmClearField, setConfirmClearField] = useState<{
+    key: WarehouseFieldKey;
+    label: string;
+  } | null>(null);
 
   const currentSheet = sheets[selectedSheetIdx] || null;
 
@@ -1224,7 +1229,12 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
 
                             <button
                               type="button"
-                              onClick={() => handleClearFieldColumns(field.key)}
+                              onClick={() =>
+                                setConfirmClearField({
+                                  key: field.key,
+                                  label: field.label,
+                                })
+                              }
                               className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-neutral-200 transition cursor-pointer shrink-0"
                               title="Tanlangan ustunlarni tozalash"
                             >
@@ -1468,6 +1478,52 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
           <span>Tanlangan mahsulotlarni omborga yuklash ({summaryTotals.count} ta)</span>
         </button>
       </div>
+
+      {/* Ustun tanlovini o'chirish tasdiqlash modali */}
+      {confirmClearField && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-rose-100 space-y-4">
+            <div className="flex items-center gap-3 text-rose-700">
+              <div className="w-11 h-11 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
+                <AlertTriangle className="w-5 h-5 text-rose-700" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold font-display text-neutral-900">
+                  Rostanmi? Tanlangan ustunlarni tozalash
+                </h3>
+                <p className="text-xs text-neutral-600 mt-0.5">
+                  &quot;{confirmClearField.label}&quot; maydoni uchun tanlangan ustunlar olib tashlansinmi?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmClearField(null)}
+                className="px-4 py-2 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[40px] cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleClearFieldColumns(confirmClearField.key);
+                  setConfirmClearField(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs min-h-[40px] flex items-center gap-1.5 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ha, o&apos;chirish</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
