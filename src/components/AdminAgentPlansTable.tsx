@@ -1438,23 +1438,16 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     </div>
                   </div>
 
-                  {/* Financial Grid */}
-                  <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-neutral-100 text-[11px]">
-                    <div className="bg-rose-50/60 border border-rose-100 rounded-xl p-2">
-                      <div className="text-[10px] uppercase font-bold text-rose-700">
-                        Joriy qarz / Haqdorlik:
-                      </div>
-                      <div className="mt-0.5 font-mono font-extrabold">
-                        {lastOps.currentDebt > 0 ? (
-                          <span className="text-rose-700">{formatMoney(lastOps.currentDebt)}</span>
-                        ) : lastOps.currentAdvance > 0 ? (
-                          <span className="text-emerald-700">+{formatMoney(lastOps.currentAdvance)} (Haqdor)</span>
-                        ) : (
-                          <span className="text-neutral-500">0 USD</span>
-                        )}
-                      </div>
+                  {/* Status Close Reason on Mobile if closed */}
+                  {isClosed && item.closeReason && (
+                    <div className="mt-2 px-2.5 py-1.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] text-rose-900 font-semibold whitespace-normal break-words">
+                      <span className="font-bold">Sabab: </span>
+                      {item.closeReason}
                     </div>
+                  )}
 
+                  {/* Oxirgi pul bergan */}
+                  <div className="mt-2.5 pt-2.5 border-t border-neutral-100 text-[11px]">
                     <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-2">
                       <div className="text-[10px] uppercase font-bold text-emerald-800">
                         Oxirgi pul bergan:
@@ -1467,18 +1460,11 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
 
                   {/* Reja va Amal summary */}
                   <div className="mt-2.5 bg-neutral-50 rounded-xl p-2 space-y-1.5 text-xs">
-                    {(item.plannedAction || (item.plannedAmount !== undefined && item.plannedAmount > 0)) && (
+                    {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
                       <div className="flex flex-wrap items-center gap-1 text-[11px]">
-                        {item.plannedAction && (
-                          <span className="font-bold text-amber-950 bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-200">
-                            Rejadagi amal: {formatActionLabel(item.plannedAction)}
-                          </span>
-                        )}
-                        {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
-                          <span className="font-mono font-bold text-emerald-900 bg-emerald-100/70 px-1.5 py-0.5 rounded border border-emerald-200">
-                            Undirish: {formatMoney(item.plannedAmount)}
-                          </span>
-                        )}
+                        <span className="font-mono font-bold text-emerald-900 bg-emerald-100/70 px-1.5 py-0.5 rounded border border-emerald-200">
+                          Undirish: {formatMoney(item.plannedAmount)}
+                        </span>
                       </div>
                     )}
 
@@ -1623,7 +1609,6 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                 <th className="py-3 px-3">Qaysi agent orqali qo'shilgan</th>
                 <th className="py-3 px-3">Mijoz & Telefon</th>
                 <th className="py-3 px-3">Manzili</th>
-                <th className="py-3 px-3">Joriy qarz / Haqdorlik</th>
                 <th className="py-3 px-3">Oxirgi pul bergan va mahsulot sanasi</th>
                 <th className="py-3 px-3">Reja izohi</th>
                 <th className="py-3 px-3">Holati</th>
@@ -1777,37 +1762,6 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                       </div>
                     </td>
 
-                    {/* Joriy qarz / Haqdorlik (Alohida ustun) */}
-                    <td className="py-3 px-3 min-w-[140px]">
-                      <div className="space-y-1 text-[10.5px]">
-                        {lastOps.currentDebt > 0 && (
-                          <div className="bg-rose-50 border border-rose-200 rounded-lg px-2 py-1">
-                            <div className="text-[9.5px] font-bold uppercase text-rose-800">
-                              Qarzdorlik:
-                            </div>
-                            <div className="font-mono font-extrabold text-rose-700">
-                              {formatMoney(lastOps.currentDebt)}
-                            </div>
-                          </div>
-                        )}
-                        {lastOps.currentAdvance > 0 && (
-                          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1">
-                            <div className="text-[9.5px] font-bold uppercase text-emerald-800">
-                              Haqdorlik:
-                            </div>
-                            <div className="font-mono font-extrabold text-emerald-700">
-                              {formatMoney(lastOps.currentAdvance)}
-                            </div>
-                          </div>
-                        )}
-                        {lastOps.currentDebt <= 0 && lastOps.currentAdvance <= 0 && (
-                          <span className="inline-block px-2 py-0.5 rounded-md bg-neutral-100 text-neutral-500 font-mono text-[10px] border border-neutral-200">
-                            0 USD
-                          </span>
-                        )}
-                      </div>
-                    </td>
-
                     {/* Oxirgi pul bergan va mahsulot amaliyoti sanasi (d/m/y soatlarsiz) */}
                     <td className="py-3 px-3 min-w-[190px]">
                       <div className="space-y-1.5 text-[10.5px]">
@@ -1848,24 +1802,18 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     </td>
 
                     {/* Reja izohi va Undirish maqsadi */}
-                    <td className="py-3 px-3 max-w-[170px] text-[11px]" title={item.planNote}>
+                    <td className="py-3 px-3 max-w-[190px] text-[11px]" title={item.planNote}>
                       <div className="space-y-1">
-                        {item.plannedAction && (
-                          <span className="font-bold text-amber-950 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 block truncate">
-                            Tanlangan: {formatActionLabel(item.plannedAction)}
-                          </span>
-                        )}
                         {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
                           <span className="font-mono font-bold text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 block truncate">
                             Undirish rejasi: {formatMoney(item.plannedAmount)}
                           </span>
                         )}
                         {item.planNote ? (
-                          <span className="font-medium text-neutral-800 bg-neutral-100 px-2 py-0.5 rounded border border-neutral-200 block truncate">
+                          <span className="font-medium text-neutral-800 bg-neutral-100 px-2 py-0.5 rounded border border-neutral-200 block whitespace-normal break-words">
                             Izoh: {item.planNote}
                           </span>
                         ) : (
-                          !item.plannedAction &&
                           !(item.plannedAmount && item.plannedAmount > 0) && (
                             <span className="text-neutral-400 italic">-</span>
                           )
@@ -1874,16 +1822,16 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                     </td>
 
                     {/* HOLATI + QAYTA OCHISH IZOHI (Faqat admin panelda ko'rinadi) */}
-                    <td className="py-3 px-3.5 whitespace-nowrap">
+                    <td className="py-3 px-3.5 min-w-[210px] max-w-[280px] align-top">
                       {isCompleted ? (
                         <div className="space-y-1">
                           {isPlanClosedWithoutAction(item) ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 whitespace-nowrap">
                               <Lock className="w-3.5 h-3.5 text-amber-700" />
                               <span>Bajarilmasdan yopilgan</span>
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 whitespace-nowrap">
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
                               <span>Bajarib yopilgan</span>
                             </span>
@@ -1899,7 +1847,7 @@ export const AdminAgentPlansTable: React.FC<Props> = ({
                           </span>
                           {isClosed && item.closeReason && (
                             <span
-                              className="text-[10px] text-rose-800 font-bold block max-w-[190px] truncate bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200"
+                              className="text-[10.5px] text-rose-800 font-bold block bg-rose-50 px-2 py-1 rounded border border-rose-200 whitespace-normal break-words leading-snug"
                               title={`Yopilish sababi: ${item.closeReason}`}
                             >
                               Sabab: {item.closeReason}
