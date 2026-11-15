@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Receipt,
   BarChart3,
+  PhoneCall,
 } from 'lucide-react';
 import { StickyTableWrapper } from './StickyTableWrapper';
 
@@ -102,6 +103,24 @@ interface PaymentRecordRow {
   details: string;
 }
 
+interface ActionAnalysisRow {
+  id: string;
+  date: string;
+  timeStr: string;
+  sortKey: string;
+  author: string;
+  actionType: 'joyiga borildi' | 'telefon qilindi' | 'telefon qilindi + joyiga borildi' | 'planned';
+  actionLabel: string;
+  status: 'bajarilgan' | 'bajarilmagan';
+  isClosedWithoutAction?: boolean;
+  productReceiptUsd: number;
+  productMethodLabel: string;
+  simpleReceiptUsd: number;
+  simpleMethodLabel: string;
+  totalReceiptUsd: number;
+  note: string;
+}
+
 export const SpecialClientAnalysisModal: React.FC<SpecialClientAnalysisModalProps> = ({
   isOpen,
   onClose,
@@ -114,6 +133,11 @@ export const SpecialClientAnalysisModal: React.FC<SpecialClientAnalysisModalProp
   const [activePayPreset, setActivePayPreset] = useState<
     'all' | 'today' | 'last7' | 'thisMonth' | 'custom'
   >('all');
+  const [actStartDate, setActStartDate] = useState<string>('');
+  const [actEndDate, setActEndDate] = useState<string>('');
+  const [activeActPreset, setActiveActPreset] = useState<
+    'all' | 'today' | 'last7' | 'thisMonth' | 'custom'
+  >('all');
 
   useEffect(() => {
     if (isOpen) {
@@ -121,6 +145,9 @@ export const SpecialClientAnalysisModal: React.FC<SpecialClientAnalysisModalProp
       setPayStartDate('');
       setPayEndDate('');
       setActivePayPreset('all');
+      setActStartDate('');
+      setActEndDate('');
+      setActiveActPreset('all');
     }
   }, [isOpen, client?.id]);
 
@@ -817,6 +844,257 @@ export const SpecialClientAnalysisModal: React.FC<SpecialClientAnalysisModalProp
     }
   };
 
+  // 4. All agent plan actions (executed & unexecuted) for Section 3
+  const allAgentPlanActions = useMemo(() => {
+    if (!client) return [] as ActionAnalysisRow[];
+    const rows: ActionAnalysisRow[] = [];
+
+    const getActionLabel = (actType?: string): string => {
+      if (actType === 'telefon qilindi') return 'Telefon qilish';
+      if (actType === 'joyiga borildi') return 'Joyiga borish';
+      if (actType === 'telefon qilindi + joyiga borildi') return 'Joyiga borish + Telefon qilish';
+      return 'Rejalashtirilgan';
+    };
+
+    const normalizeActionType = (
+      actType?: string
+    ): 'joyiga borildi' | 'telefon qilindi' | 'telefon qilindi + joyiga borildi' | 'planned' => {
+      if (
+        actType === 'joyiga borildi' ||
+        actType === 'telefon qilindi' ||
+        actType === 'telefon qilindi + joyiga borildi'
+      ) {
+        return actType;
+      }
+      return 'planned';
+    };
+
+    clientPlans.forEach((plan) => {
+      const planDateKey =
+        getClosedDateKey(plan) ||
+        (plan as any).lastClosedDateKey ||
+        getPlanDateKey(plan) ||
+        toLocalYMD(plan.planDate || plan.createdAt);
+
+      const hasTopLevelOps = Boolean(
+        plan.actionDone ||
+          (plan.financialAction && plan.financialAction.amount > 0) ||
+          (plan.productsDelivered && plan.productsDelivered.length > 0) ||
+          (plan.deliveryPayment && plan.deliveryPayment.paidAmount > 0) ||
+          (plan.productsReturned && plan.productsReturned.length > 0)
+      );
+
+      const hasActionsHistory = Boolean(plan.actionsHistory && plan.actionsHistory.length > 0);
+
+      if (hasActionsHistory || (hasTopLevelOps && !plan.closedWithoutAction)) {
+        const planActions = hasActionsHistory
+          ? plan.actionsHistory!
+          : [
+              {
+                timestamp:
+                  plan.lastExecutedAt || plan.completedAt || plan.closedAt || plan.createdAt,
+                author: plan.lastExecutedBy || plan.closedBy || plan.agentUsername || 'agentp1',
+                actionDone: plan.actionDone || ('joyiga borildi' as const),
+                financialAction: plan.financialAction,
+                deliveryPayment: plan.deliveryPayment,
+                productsDelivered: plan.productsDelivered,
+                reportNote: plan.reportNote,
+              },
+            ];
+
+        const anyActHasDeliveryPay = planActions.some((a) => Boolean(a.deliveryPayment));
+
+        planActions.forEach((act, actIdx) => {
+          const rawTs = act.timestamp || plan.lastExecutedAt || plan.completedAt || plan.createdAt;
+          const dateStr =
+            planActions.length === 1 && planDateKey
+              ? planDateKey
+              : toLocalYMD(rawTs, planDateKey);
+          const timeStr = extractTimeHM(rawTs);
+          const author = act.author || plan.lastExecutedBy || plan.agentUsername || 'agentp1';
+          const actType = normalizeActionType(act.actionDone || plan.actionDone || 'joyiga borildi');
+
+          let simpleReceiptUsd = 0;
+          let simpleMethodLabel = '';
+          const fin = act.financialAction;
+          if (fin) {
+            if (Array.isArray(fin.splits) && fin.splits.length > 0) {
+              const splitSum = fin.splits.reduce((s, sp) => s + (Number(sp.amount) || 0), 0);
+              simpleReceiptUsd =
+                Math.round((Number(fin.amount) > 0 ? Number(fin.amount) : splitSum) * 100) / 100;
+              simpleMethodLabel = fin.splits
+                .filter((sp) => (Number(sp.amount) || 0) > 0)
+                .map((sp) => `${sp.methodLabel || sp.method}: ${formatMoney(sp.amount)}`)
+                .join(', ');
+            } else if ((Number(fin.amount) || 0) > 0) {
+              simpleReceiptUsd = Math.round(Number(fin.amount) * 100) / 100;
+              simpleMethodLabel = fin.methodLabel || fin.method || 'Naqd';
+            }
+          }
+
+          let productReceiptUsd = 0;
+          let productMethodLabel = '';
+          const dp =
+            act.deliveryPayment ||
+            (!anyActHasDeliveryPay && actIdx === planActions.length - 1
+              ? plan.deliveryPayment
+              : undefined);
+          if (dp) {
+            if (Array.isArray(dp.splits) && dp.splits.length > 0) {
+              const splitSum = dp.splits.reduce((s, sp) => s + (Number(sp.amount) || 0), 0);
+              productReceiptUsd =
+                Math.round((Number(dp.paidAmount) > 0 ? Number(dp.paidAmount) : splitSum) * 100) /
+                100;
+              productMethodLabel = dp.splits
+                .filter((sp) => (Number(sp.amount) || 0) > 0)
+                .map((sp) => `${sp.methodLabel || sp.method}: ${formatMoney(sp.amount)}`)
+                .join(', ');
+            } else if ((Number(dp.paidAmount) || 0) > 0) {
+              productReceiptUsd = Math.round(Number(dp.paidAmount) * 100) / 100;
+              productMethodLabel = dp.paymentLabel || dp.paymentType || 'Naqd';
+            }
+          }
+
+          const totalReceiptUsd = Math.round((productReceiptUsd + simpleReceiptUsd) * 100) / 100;
+
+          const noteParts: string[] = [];
+          const rawActNote = (
+            act.reportNote ||
+            (planActions.length === 1 ? plan.reportNote : '') ||
+            ''
+          ).trim();
+          if (rawActNote) noteParts.push(rawActNote);
+          if (fin?.note && fin.note.trim() && fin.note.trim() !== rawActNote) {
+            noteParts.push(fin.note.trim());
+          }
+          if (planActions.length === 1 && plan.planNote && plan.planNote.trim() && !noteParts.includes(plan.planNote.trim())) {
+            noteParts.push(`Reja izohi: ${plan.planNote.trim()}`);
+          }
+          if (plan.isClosed && plan.closeReason && plan.closeReason.trim()) {
+            const cr = plan.closeReason.trim();
+            if (!noteParts.includes(cr)) {
+              noteParts.push(`Yopilish: ${cr}`);
+            }
+          }
+
+          rows.push({
+            id: `plan_act_${plan.id}_${actIdx}`,
+            date: dateStr,
+            timeStr,
+            sortKey: `${dateStr}T${timeStr || '00:00'}`,
+            author,
+            actionType: actType,
+            actionLabel: getActionLabel(actType),
+            status: 'bajarilgan',
+            productReceiptUsd,
+            productMethodLabel,
+            simpleReceiptUsd,
+            simpleMethodLabel,
+            totalReceiptUsd,
+            note: noteParts.join(' · '),
+          });
+        });
+      } else {
+        // Bajarilmagan reja (planned or closedWithoutAction)
+        const actType = normalizeActionType(plan.plannedAction || plan.actionDone);
+        const noteParts: string[] = [];
+        if (plan.planNote && plan.planNote.trim()) {
+          noteParts.push(plan.planNote.trim());
+        }
+        if (plan.reportNote && plan.reportNote.trim() && !noteParts.includes(plan.reportNote.trim())) {
+          noteParts.push(plan.reportNote.trim());
+        }
+        if (plan.closeReason && plan.closeReason.trim()) {
+          noteParts.push(`Sabab: ${plan.closeReason.trim()}`);
+        }
+
+        rows.push({
+          id: `plan_unexec_${plan.id}`,
+          date: planDateKey,
+          timeStr: extractTimeHM(plan.closedAt || plan.createdAt),
+          sortKey: `${planDateKey}T00:00`,
+          author: plan.closedBy || plan.agentUsername || 'agentp1',
+          actionType: actType,
+          actionLabel: getActionLabel(actType),
+          status: 'bajarilmagan',
+          isClosedWithoutAction: Boolean(plan.closedWithoutAction || plan.isClosed),
+          productReceiptUsd: 0,
+          productMethodLabel: '',
+          simpleReceiptUsd: 0,
+          simpleMethodLabel: '',
+          totalReceiptUsd: 0,
+          note: noteParts.join(' · '),
+        });
+      }
+    });
+
+    rows.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+    return rows;
+  }, [client, clientPlans]);
+
+  const filteredAgentPlanActions = useMemo(() => {
+    return allAgentPlanActions.filter((row) => {
+      if (actStartDate && row.date < actStartDate) return false;
+      if (actEndDate && row.date > actEndDate) return false;
+      return true;
+    });
+  }, [allAgentPlanActions, actStartDate, actEndDate]);
+
+  const agentPlanActionsSummary = useMemo(() => {
+    let executedCount = 0;
+    let unexecutedCount = 0;
+    let visitOnlyCount = 0;
+    let phoneOnlyCount = 0;
+    let bothCount = 0;
+    let totalReceiptUsd = 0;
+    let productReceiptUsd = 0;
+    let simpleReceiptUsd = 0;
+
+    filteredAgentPlanActions.forEach((row) => {
+      if (row.status === 'bajarilgan') {
+        executedCount++;
+        if (row.actionType === 'joyiga borildi') visitOnlyCount++;
+        else if (row.actionType === 'telefon qilindi') phoneOnlyCount++;
+        else if (row.actionType === 'telefon qilindi + joyiga borildi') bothCount++;
+      } else {
+        unexecutedCount++;
+      }
+
+      totalReceiptUsd = Math.round((totalReceiptUsd + row.totalReceiptUsd) * 100) / 100;
+      productReceiptUsd = Math.round((productReceiptUsd + row.productReceiptUsd) * 100) / 100;
+      simpleReceiptUsd = Math.round((simpleReceiptUsd + row.simpleReceiptUsd) * 100) / 100;
+    });
+
+    return {
+      executedCount,
+      unexecutedCount,
+      visitOnlyCount,
+      phoneOnlyCount,
+      bothCount,
+      totalReceiptUsd,
+      productReceiptUsd,
+      simpleReceiptUsd,
+    };
+  }, [filteredAgentPlanActions]);
+
+  const handleActPreset = (preset: 'all' | 'today' | 'last7' | 'thisMonth') => {
+    setActiveActPreset(preset);
+    const today = getTodayYMD();
+    if (preset === 'all') {
+      setActStartDate('');
+      setActEndDate('');
+    } else if (preset === 'today') {
+      setActStartDate(today);
+      setActEndDate(today);
+    } else if (preset === 'last7') {
+      setActStartDate(getOffsetYMD(-7));
+      setActEndDate(today);
+    } else if (preset === 'thisMonth') {
+      setActStartDate(getMonthStartYMD());
+      setActEndDate(today);
+    }
+  };
+
   if (!isOpen || !client) return null;
 
   const todayYmd = getTodayYMD();
@@ -1341,6 +1619,277 @@ export const SpecialClientAnalysisModal: React.FC<SpecialClientAnalysisModalProp
                         <td className="py-2.5 px-3 text-[11px] text-neutral-600 font-normal">
                           Mahsulot: {formatMoney(paymentsSummary.productPaid)} · Shunchaki:{' '}
                           {formatMoney(paymentsSummary.simplePaid)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </StickyTableWrapper>
+              </div>
+            )}
+          </section>
+
+          {/* SECTION 3: MAXSUS SANA ORALIG'IDA AGENT AMALLARI VA XULOSA */}
+          <section className="space-y-4 pt-6 border-t border-neutral-200">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-neutral-900">
+                  3. Agentlar tomonidan qilingan amallar va xulosa
+                </h3>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Telefon qilish, joyiga borish yoki joyiga borish + telefon qilish, bajarilgan/bajarilmagan holati va tushumlar
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1 p-1 bg-neutral-100 rounded-lg">
+                  {(
+                    [
+                      { key: 'all', label: 'Barchasi' },
+                      { key: 'today', label: 'Bugun' },
+                      { key: 'last7', label: 'Oxirgi 7 kun' },
+                      { key: 'thisMonth', label: 'Bu oy' },
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => handleActPreset(item.key)}
+                      className={`px-2.5 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap shrink-0 transition cursor-pointer ${
+                        activeActPreset === item.key
+                          ? 'bg-white text-neutral-900 shadow-xs'
+                          : 'text-neutral-600 hover:text-neutral-900'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <input
+                    type="date"
+                    value={actStartDate}
+                    onChange={(e) => {
+                      setActStartDate(e.target.value);
+                      setActiveActPreset('custom');
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                    title="Boshlanish sanasi"
+                  />
+                  <span className="text-neutral-400 font-bold">—</span>
+                  <input
+                    type="date"
+                    value={actEndDate}
+                    onChange={(e) => {
+                      setActEndDate(e.target.value);
+                      setActiveActPreset('custom');
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                    title="Tugash sanasi"
+                  />
+                  {(actStartDate || actEndDate) && (
+                    <button
+                      type="button"
+                      onClick={() => handleActPreset('all')}
+                      className="text-xs text-rose-700 hover:text-rose-900 font-semibold underline px-1 cursor-pointer"
+                    >
+                      Tozalash
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Xulosa (Summary) Strip */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="p-3.5 rounded-xl bg-neutral-50 border border-neutral-200 flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-neutral-700">
+                    Bajarilgan amallar soni
+                  </span>
+                  <PhoneCall className="w-4 h-4 text-rose-700 shrink-0" />
+                </div>
+                <div className="text-xl font-bold font-mono tabular-nums text-neutral-900 mt-1">
+                  {agentPlanActionsSummary.executedCount} marta
+                </div>
+                <div className="text-[11px] text-neutral-600 mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+                  <span>Joyiga: {agentPlanActionsSummary.visitOnlyCount}</span>
+                  <span>·</span>
+                  <span>Tel: {agentPlanActionsSummary.phoneOnlyCount}</span>
+                  <span>·</span>
+                  <span>Joyi+Tel: {agentPlanActionsSummary.bothCount}</span>
+                  {agentPlanActionsSummary.unexecutedCount > 0 && (
+                    <>
+                      <span>·</span>
+                      <span className="text-rose-700 font-semibold">
+                        Bajarilmagan: {agentPlanActionsSummary.unexecutedCount}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-emerald-900">Jami tushum</span>
+                  <Receipt className="w-4 h-4 text-emerald-700 shrink-0" />
+                </div>
+                <div className="text-xl font-bold font-mono tabular-nums text-emerald-950 mt-1">
+                  {formatMoney(agentPlanActionsSummary.totalReceiptUsd)}
+                </div>
+                <div className="text-[11px] text-emerald-800 mt-1">
+                  Tanlangan davrdagi amallar tushumi
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-white border border-neutral-200 flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-neutral-700">Mahsulot uchun</span>
+                  <Package className="w-4 h-4 text-amber-700 shrink-0" />
+                </div>
+                <div className="text-xl font-bold font-mono tabular-nums text-neutral-900 mt-1">
+                  {formatMoney(agentPlanActionsSummary.productReceiptUsd)}
+                </div>
+                <div className="text-[11px] text-neutral-500 mt-1">
+                  Amallar davomida mahsulotga to&apos;langan
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-white border border-neutral-200 flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-neutral-700">
+                    Shunchaki to&apos;lov
+                  </span>
+                  <CreditCard className="w-4 h-4 text-indigo-700 shrink-0" />
+                </div>
+                <div className="text-xl font-bold font-mono tabular-nums text-neutral-900 mt-1">
+                  {formatMoney(agentPlanActionsSummary.simpleReceiptUsd)}
+                </div>
+                <div className="text-[11px] text-neutral-500 mt-1">
+                  Amallar davomida qarz/avansga to&apos;langan
+                </div>
+              </div>
+            </div>
+
+            {/* Agent Actions Table */}
+            {filteredAgentPlanActions.length === 0 ? (
+              <div className="p-6 text-center rounded-xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-500">
+                Tanlangan sana oralig&apos;ida agent amallari topilmadi.
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-xl border border-neutral-200">
+                <StickyTableWrapper maxHeightClassName="max-h-72">
+                  <table className="w-full min-w-[840px] text-left text-xs">
+                    <thead className="bg-neutral-100 text-neutral-700 border-b border-neutral-200 sticky top-0 z-10 font-bold text-[11px] whitespace-nowrap">
+                      <tr>
+                        <th className="py-2.5 px-3 w-10 text-center">#</th>
+                        <th className="py-2.5 px-3">Sana</th>
+                        <th className="py-2.5 px-3">Agent</th>
+                        <th className="py-2.5 px-3">Qilingan amal</th>
+                        <th className="py-2.5 px-3">Holati</th>
+                        <th className="py-2.5 px-3 text-right">Mahsulot uchun</th>
+                        <th className="py-2.5 px-3 text-right">Shunchaki to&apos;lov</th>
+                        <th className="py-2.5 px-3">Izoh</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {filteredAgentPlanActions.map((row, idx) => (
+                        <tr
+                          key={row.id || idx}
+                          className={
+                            row.status === 'bajarilmagan'
+                              ? 'bg-rose-50/30 hover:bg-rose-50/50'
+                              : 'bg-white hover:bg-neutral-50'
+                          }
+                        >
+                          <td className="py-2.5 px-3 text-center text-neutral-400 font-mono">
+                            {idx + 1}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono tabular-nums whitespace-nowrap">
+                            <span className="font-bold text-neutral-900">
+                              {row.date ? formatDateDMY(row.date) : '-'}
+                            </span>
+                            {row.timeStr && (
+                              <span className="text-neutral-500"> · {row.timeStr}</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 font-medium text-neutral-800 whitespace-nowrap">
+                            {getAgentDisplayName(row.author)}
+                          </td>
+                          <td className="py-2.5 px-3 whitespace-nowrap font-bold">
+                            {row.actionType === 'joyiga borildi' ? (
+                              <span className="text-rose-800">Joyiga borish</span>
+                            ) : row.actionType === 'telefon qilindi' ? (
+                              <span className="text-sky-800">Telefon qilish</span>
+                            ) : row.actionType === 'telefon qilindi + joyiga borildi' ? (
+                              <span className="text-indigo-800">Joyiga borish + Telefon qilish</span>
+                            ) : (
+                              <span className="text-neutral-600">{row.actionLabel}</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 whitespace-nowrap font-bold">
+                            {row.status === 'bajarilgan' ? (
+                              <span className="text-emerald-800">Bajarilgan</span>
+                            ) : (
+                              <span className="text-rose-800">
+                                {row.isClosedWithoutAction ? 'Bajarilmagan (yopilgan)' : 'Bajarilmagan'}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                            {row.productReceiptUsd > 0 ? (
+                              <div className="flex flex-col items-end">
+                                <span className="font-bold text-amber-900 whitespace-nowrap">
+                                  {formatMoney(row.productReceiptUsd)}
+                                </span>
+                                {row.productMethodLabel && (
+                                  <span className="text-[10px] text-neutral-500 font-sans">
+                                    {row.productMethodLabel}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400">-</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                            {row.simpleReceiptUsd > 0 ? (
+                              <div className="flex flex-col items-end">
+                                <span className="font-bold text-indigo-900 whitespace-nowrap">
+                                  {formatMoney(row.simpleReceiptUsd)}
+                                </span>
+                                {row.simpleMethodLabel && (
+                                  <span className="text-[10px] text-neutral-500 font-sans">
+                                    {row.simpleMethodLabel}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-neutral-400">-</span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-neutral-600 whitespace-pre-wrap">
+                            {row.note || '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-neutral-50 font-bold border-t-2 border-neutral-200 sticky bottom-0 z-10 text-xs">
+                      <tr>
+                        <td colSpan={5} className="py-2.5 px-3 text-neutral-900">
+                          XULOSA: Bajarilgan {agentPlanActionsSummary.executedCount} marta
+                          {agentPlanActionsSummary.unexecutedCount > 0
+                            ? ` · Bajarilmagan ${agentPlanActionsSummary.unexecutedCount} ta`
+                            : ''}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono tabular-nums text-amber-900">
+                          {formatMoney(agentPlanActionsSummary.productReceiptUsd)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono tabular-nums text-indigo-900">
+                          {formatMoney(agentPlanActionsSummary.simpleReceiptUsd)}
+                        </td>
+                        <td className="py-2.5 px-3 text-[11px] font-bold text-emerald-900 font-mono tabular-nums">
+                          Jami: {formatMoney(agentPlanActionsSummary.totalReceiptUsd)}
                         </td>
                       </tr>
                     </tfoot>
