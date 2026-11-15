@@ -8,6 +8,7 @@ import {
   doc,
   onSnapshot,
   getDocFromServer,
+  getDocsFromServer,
   writeBatch,
   Firestore,
 } from 'firebase/firestore';
@@ -454,11 +455,85 @@ function chunkArrayByByteSize<T>(items: T[], maxBytes = 320_000): T[][] {
   return chunks;
 }
 
+let latestOnSnapshotCloudPayload: CloudStatePayload | null = null;
+
+function parseMonthlySnapshotDocs(
+  docs: Array<{ id: string; data: () => any }>
+): CloudStatePayload | null {
+  try {
+    let meta: any = null;
+    const clientChunks = new Map<number, any[]>();
+    const whChunks = new Map<number, any[]>();
+    const planChunks = new Map<number, any[]>();
+    let legacySnap: CloudStatePayload | null = null;
+
+    for (const d of docs) {
+      const data = d.data();
+      if (!data || typeof data.payloadJson !== 'string') continue;
+      if (d.id === SNAP_META_DOC_ID) {
+        meta = JSON.parse(data.payloadJson);
+      } else if (d.id.startsWith('sync_snap_v2_clients_')) {
+        const idx = Number(d.id.replace('sync_snap_v2_clients_', ''));
+        const parsed = JSON.parse(data.payloadJson);
+        if (!isNaN(idx) && Array.isArray(parsed?.items)) clientChunks.set(idx, parsed.items);
+      } else if (d.id.startsWith('sync_snap_v2_warehouse_')) {
+        const idx = Number(d.id.replace('sync_snap_v2_warehouse_', ''));
+        const parsed = JSON.parse(data.payloadJson);
+        if (!isNaN(idx) && Array.isArray(parsed?.items)) whChunks.set(idx, parsed.items);
+      } else if (d.id.startsWith('sync_snap_v2_plans_')) {
+        const idx = Number(d.id.replace('sync_snap_v2_plans_', ''));
+        const parsed = JSON.parse(data.payloadJson);
+        if (!isNaN(idx) && Array.isArray(parsed?.items)) planChunks.set(idx, parsed.items);
+      } else if (d.id === SHARED_CLOUD_DOC_ID) {
+        legacySnap = JSON.parse(data.payloadJson) as CloudStatePayload;
+      }
+    }
+
+    if (meta || clientChunks.size > 0 || whChunks.size > 0 || planChunks.size > 0) {
+      const clients: Client[] = [];
+      Array.from(clientChunks.keys())
+        .sort((a, b) => a - b)
+        .forEach((k) => clients.push(...(clientChunks.get(k) || [])));
+
+      const warehouseProducts: WarehouseProduct[] = [];
+      Array.from(whChunks.keys())
+        .sort((a, b) => a - b)
+        .forEach((k) => warehouseProducts.push(...(whChunks.get(k) || [])));
+
+      const dailyPlans: any[] = [];
+      Array.from(planChunks.keys())
+        .sort((a, b) => a - b)
+        .forEach((k) => dailyPlans.push(...(planChunks.get(k) || [])));
+
+      return {
+        clients,
+        warehouseProducts,
+        dailyPlans,
+        systemLogs: Array.isArray(meta?.systemLogs) ? meta.systemLogs : [],
+        deletedClientIds: Array.isArray(meta?.deletedClientIds) ? meta.deletedClientIds : [],
+        deletedWarehouseIds: Array.isArray(meta?.deletedWarehouseIds)
+          ? meta.deletedWarehouseIds
+          : [],
+        deletedPlanIds: Array.isArray(meta?.deletedPlanIds) ? meta.deletedPlanIds : [],
+        updatedAt: meta?.updatedAt || new Date().toISOString(),
+        _metaClientChunks: Number(meta?.clientChunksCount) || 0,
+        _metaWarehouseChunks: Number(meta?.warehouseChunksCount) || 0,
+        _metaPlanChunks: Number(meta?.planChunksCount) || 0,
+      };
+    }
+
+    return legacySnap;
+  } catch {
+    return null;
+  }
+}
+
 async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
   if (typeof window === 'undefined') return null;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return null;
+  let restResult: CloudStatePayload | null = null;
   try {
-    // 1. Try reading chunked v2 metadata + chunks first (with self-healing probe of chunk 0 if meta was zeroed by an older client)
+    // 1. Try reading chunked v2 metadata + chunks via REST first
     const meta = await readFirestoreDocJson(SNAP_META_DOC_ID);
     if (meta && typeof meta === 'object') {
       const metaClientChunks = Number(meta.clientChunksCount) || 0;
@@ -505,7 +580,7 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
         else if (r.type === 'plans') dailyPlans.push(...r.items);
       }
 
-      return {
+      restResult = {
         clients,
         warehouseProducts,
         dailyPlans,
@@ -518,37 +593,57 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
         _metaWarehouseChunks: metaWarehouseChunks,
         _metaPlanChunks: metaPlanChunks,
       };
+    } else {
+      // 2. If meta is missing, probe chunk 0 docs or legacy snapshot directly
+      const [c0, w0, p0, legacy] = await Promise.all([
+        readFirestoreDocJson('sync_snap_v2_clients_0'),
+        readFirestoreDocJson('sync_snap_v2_warehouse_0'),
+        readFirestoreDocJson('sync_snap_v2_plans_0'),
+        readFirestoreDocJson(SHARED_CLOUD_DOC_ID),
+      ]);
+      if (c0 || w0 || p0) {
+        restResult = {
+          clients: Array.isArray(c0?.items) ? c0.items : [],
+          warehouseProducts: Array.isArray(w0?.items) ? w0.items : [],
+          dailyPlans: Array.isArray(p0?.items) ? p0.items : [],
+          systemLogs: [],
+          deletedClientIds: [],
+          deletedWarehouseIds: [],
+          deletedPlanIds: [],
+          updatedAt: new Date().toISOString(),
+          _metaClientChunks: 0,
+          _metaWarehouseChunks: 0,
+          _metaPlanChunks: 0,
+        };
+      } else if (legacy && typeof legacy === 'object') {
+        restResult = legacy as CloudStatePayload;
+      }
     }
-
-    // 2. If meta is missing, probe chunk 0 docs or legacy snapshot directly
-    const [c0, w0, p0, legacy] = await Promise.all([
-      readFirestoreDocJson('sync_snap_v2_clients_0'),
-      readFirestoreDocJson('sync_snap_v2_warehouse_0'),
-      readFirestoreDocJson('sync_snap_v2_plans_0'),
-      readFirestoreDocJson(SHARED_CLOUD_DOC_ID),
-    ]);
-    if (c0 || w0 || p0) {
-      return {
-        clients: Array.isArray(c0?.items) ? c0.items : [],
-        warehouseProducts: Array.isArray(w0?.items) ? w0.items : [],
-        dailyPlans: Array.isArray(p0?.items) ? p0.items : [],
-        systemLogs: [],
-        deletedClientIds: [],
-        deletedWarehouseIds: [],
-        deletedPlanIds: [],
-        updatedAt: new Date().toISOString(),
-        _metaClientChunks: 0,
-        _metaWarehouseChunks: 0,
-        _metaPlanChunks: 0,
-      };
-    }
-    if (legacy && typeof legacy === 'object') {
-      return legacy as CloudStatePayload;
-    }
-    return null;
   } catch {
-    return null;
+    restResult = null;
   }
+
+  if (
+    restResult &&
+    (restResult.clients.length > 0 ||
+      restResult.warehouseProducts.length > 0 ||
+      restResult.dailyPlans.length > 0)
+  ) {
+    return restResult;
+  }
+
+  // 3. SDK WebChannel fallback via getDocsFromServer (works even if REST fetch is blocked on mobile network/browser)
+  try {
+    const sdkSnap = await getDocsFromServer(collection(db, 'monthlyPlans'));
+    const sdkParsed = parseMonthlySnapshotDocs(sdkSnap.docs);
+    if (sdkParsed) {
+      return sdkParsed;
+    }
+  } catch {
+    // ignore SDK read fallback error
+  }
+
+  return restResult || latestOnSnapshotCloudPayload;
 }
 
 let isWritingCloudSnapshot = false;
@@ -1323,9 +1418,24 @@ export function subscribeToFirestoreData(callbacks: {
         }
       });
       if (hasV2Update) {
-        readFirestoreCloudSnapshot().then((parsed) => {
-          if (parsed) applyIncomingStateToCallbacks(parsed, callbacks);
-        });
+        const directSnap = parseMonthlySnapshotDocs(snapshot.docs);
+        if (
+          directSnap &&
+          (directSnap.clients.length > 0 ||
+            directSnap.warehouseProducts.length > 0 ||
+            directSnap.dailyPlans.length > 0)
+        ) {
+          latestOnSnapshotCloudPayload = directSnap;
+          applyIncomingStateToCallbacks(directSnap, callbacks);
+          hasCompletedInitialCloudMerge = true;
+        } else {
+          readFirestoreCloudSnapshot().then((parsed) => {
+            if (parsed) {
+              applyIncomingStateToCallbacks(parsed, callbacks);
+              hasCompletedInitialCloudMerge = true;
+            }
+          });
+        }
       }
       if (callbacks.onMonthlyPlansChange) {
         callbacks.onMonthlyPlansChange(monthlyList);

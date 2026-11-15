@@ -4,6 +4,20 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
 
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    try {
+      const lastReload = Number(sessionStorage.getItem('sw_reloaded_ts') || '0');
+      if (Date.now() - lastReload < 15000) return;
+      sessionStorage.setItem('sw_reloaded_ts', String(Date.now()));
+    } catch {
+      // ignore sessionStorage errors
+    }
+    refreshing = true;
+    window.location.reload();
+  });
+
   navigator.serviceWorker
     .getRegistrations()
     .then((registrations) => {
