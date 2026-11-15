@@ -33,9 +33,22 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
 
   navigator.serviceWorker
     .getRegistrations()
-    .then((registrations) => {
+    .then(async (registrations) => {
       for (const reg of registrations) {
-        reg.update().catch(() => {});
+        try {
+          await reg.update();
+          const unregistered = await reg.unregister();
+          if (unregistered && navigator.serviceWorker.controller) {
+            const lastReload = Number(sessionStorage.getItem('sw_reloaded_ts') || '0');
+            if (Date.now() - lastReload >= 15000) {
+              sessionStorage.setItem('sw_reloaded_ts', String(Date.now()));
+              window.location.reload();
+              return;
+            }
+          }
+        } catch {
+          // ignore sw cleanup errors
+        }
       }
     })
     .catch(() => {});

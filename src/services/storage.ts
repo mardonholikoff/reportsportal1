@@ -2906,9 +2906,19 @@ class StorageService {
     this.notify();
   }
 
+  private cloudSyncRunner:
+    | (() => Promise<{ success: boolean; message: string; count: number }>)
+    | null = null;
+
+  public registerCloudSyncRunner(
+    runner: () => Promise<{ success: boolean; message: string; count: number }>
+  ): void {
+    this.cloudSyncRunner = runner;
+  }
+
   public async syncWithCloud(): Promise<{ success: boolean; message: string; count: number }> {
     const queue = this.getSyncQueue();
-    if (!navigator.onLine) {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
       return {
         success: false,
         message: "Hozir oflayn rejimdasiz. Internetga ulanganda avtomatik sinxronlanadi.",
@@ -2916,7 +2926,21 @@ class StorageService {
       };
     }
 
-    await new Promise((res) => setTimeout(res, 600));
+    if (this.cloudSyncRunner) {
+      try {
+        const res = await this.cloudSyncRunner();
+        if (res.success && queue.length > 0) {
+          this.clearSyncQueue();
+        }
+        return res;
+      } catch (err: any) {
+        return {
+          success: false,
+          message: err?.message || "Bulut bilan sinxronlashda xatolik yuz berdi.",
+          count: queue.length,
+        };
+      }
+    }
 
     const count = queue.length;
     this.clearSyncQueue();

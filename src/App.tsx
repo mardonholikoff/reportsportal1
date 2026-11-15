@@ -1795,6 +1795,13 @@ export default function App() {
   const handleTriggerSync = async () => {
     setIsSyncing(true);
     const res = await storageService.syncWithCloud();
+    storageService.invalidateAllCaches();
+    setClients([...storageService.getClients()]);
+    setWarehouseProducts([...storageService.getWarehouseProducts()]);
+    setDailyPlans([
+      ...storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined),
+    ]);
+    setSystemLogs([...getLocalSystemLogs()]);
     setIsSyncing(false);
     showToast(res.message);
     setPendingSyncCount(storageService.getSyncQueue().length);
@@ -2968,10 +2975,13 @@ export default function App() {
         isOpen={isFirebaseModalOpen}
         onClose={() => setIsFirebaseModalOpen(false)}
         onSyncCompleted={() => {
-          setClients(storageService.getClients());
-          setDailyPlans(
-            storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined)
-          );
+          storageService.invalidateAllCaches();
+          setClients([...storageService.getClients()]);
+          setWarehouseProducts([...storageService.getWarehouseProducts()]);
+          setDailyPlans([
+            ...storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined),
+          ]);
+          setSystemLogs([...getLocalSystemLogs()]);
           setPendingSyncCount(storageService.getSyncQueue().length);
         }}
       />

@@ -37,6 +37,7 @@ try {
     app,
     {
       ignoreUndefinedProperties: true,
+      experimentalAutoDetectLongPolling: true,
       localCache: persistentLocalCache({
         tabManager: persistentMultipleTabManager(),
       }),
@@ -345,7 +346,24 @@ let firestoreCooldownUntil = 0;
 let firestoreQuotaHit = false;
 let firestoreConsecutive429s = 0;
 let hasCompletedInitialCloudMerge = false;
-let isBidirectionalSyncRunning = false;
+let activeBidirectionalSyncPromise: Promise<boolean> | null = null;
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 12000
+): Promise<Response> {
+  if (typeof AbortController === 'undefined') {
+    return fetch(url, options);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export function isFirestoreQuotaLimited(): boolean {
   return firestoreQuotaHit && Date.now() < firestoreCooldownUntil;
@@ -354,11 +372,15 @@ export function isFirestoreQuotaLimited(): boolean {
 export async function pushToServerRelay(payload: Record<string, any>): Promise<any | null> {
   if (typeof window === 'undefined') return null;
   try {
-    const res = await fetch('/api/sync-state', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cleanFirestoreData(payload)),
-    });
+    const res = await fetchWithTimeout(
+      '/api/sync-state',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleanFirestoreData(payload)),
+      },
+      12000
+    );
     const ct = res.headers.get('content-type') || '';
     if (res.ok && ct.includes('application/json')) {
       return await res.json();
@@ -387,7 +409,7 @@ interface CloudStatePayload {
 async function readFirestoreDocJson(docId: string): Promise<any | null> {
   try {
     const url = `${FIRESTORE_REST_BASE}/monthlyPlans/${docId}?key=${firebaseConfig.apiKey}`;
-    const res = await fetch(url, { cache: 'no-store' });
+    const res = await fetchWithTimeout(url, { cache: 'no-store' }, 12000);
     if (!res.ok) return null;
     const docData = await res.json();
     const rawJson = docData?.fields?.payloadJson?.stringValue;
@@ -410,11 +432,15 @@ async function patchFirestoreDocJson(docId: string, jsonStr: string): Promise<'o
         updatedAt: { stringValue: new Date().toISOString() },
       },
     });
-    const res = await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: bodyStr,
-    });
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: bodyStr,
+      },
+      15000
+    );
     if (res.status === 200) {
       firestoreQuotaHit = false;
       firestoreConsecutive429s = 0;
@@ -1437,7 +1463,9 @@ export function subscribeToFirestoreData(callbacks: {
         ) {
           latestOnSnapshotCloudPayload = directSnap;
           applyIncomingStateToCallbacks(directSnap, callbacks);
-          hasCompletedInitialCloudMerge = true;
+          if (!snapshot.metadata.fromCache) {
+            hasCompletedInitialCloudMerge = true;
+          }
         } else {
           readFirestoreCloudSnapshot().then((parsed) => {
             if (parsed) {
@@ -1499,193 +1527,210 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
 }): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return false;
-  if (isBidirectionalSyncRunning) return true;
-
-  isBidirectionalSyncRunning = true;
-  try {
-    // 1. Read both Firestore Cloud Snapshot and Server Relay in parallel
-    const [cloudSnap, relayData] = await Promise.all([
-      readFirestoreCloudSnapshot(),
-      fetch('/api/sync-state', { cache: 'no-store' })
-        .then(async (r) => {
-          const ct = r.headers.get('content-type') || '';
-          if (r.ok && ct.includes('application/json')) return await r.json();
-          return null;
-        })
-        .catch(() => null),
-    ]);
-
-    // 2. Union deleted IDs across Local + Cloud Snapshot + Server Relay
-    const allDeletedClients = new Set<string>(getDeletedClientIds());
-    const allDeletedWh = new Set<string>(getDeletedWarehouseIds());
-    const allDeletedPlans = new Set<string>(getDeletedPlanIds());
-
-    for (const src of [cloudSnap, relayData]) {
-      if (!src) continue;
-      if (Array.isArray(src.deletedClientIds)) {
-        src.deletedClientIds.forEach((id: string) => {
-          allDeletedClients.add(id);
-          markClientAsDeleted(id);
-        });
-      }
-      if (Array.isArray(src.deletedWarehouseIds)) {
-        src.deletedWarehouseIds.forEach((id: string) => {
-          allDeletedWh.add(id);
-          markWarehouseProductAsDeleted(id);
-        });
-      }
-      if (Array.isArray(src.deletedPlanIds)) {
-        src.deletedPlanIds.forEach((id: string) => {
-          allDeletedPlans.add(id);
-          markPlanAsDeleted(id);
-        });
-      }
-    }
-
-    // 3. Merge Clients (Local + Cloud Snapshot + Server Relay)
-    const clientsMap = new Map<string, Client>();
-    const mergeClientItem = (c: Client) => {
-      if (!c || !c.id || allDeletedClients.has(c.id) || isLegacyWipedRecord(c.id)) return;
-      const existing = clientsMap.get(c.id);
-      if (!existing) {
-        clientsMap.set(c.id, c);
-        return;
-      }
-      const exMs = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
-      const newMs = c.updatedAt ? new Date(c.updatedAt).getTime() : 0;
-      const exLogs = Array.isArray(existing.logs) ? existing.logs.length : 0;
-      const newLogs = Array.isArray(c.logs) ? c.logs.length : 0;
-      if (newMs > exMs || (newMs === exMs && newLogs > exLogs)) {
-        clientsMap.set(c.id, c);
-      }
-    };
-
-    (cloudSnap?.clients || []).forEach(mergeClientItem);
-    (relayData?.clients || []).forEach(mergeClientItem);
-    storageService.getClients().forEach(mergeClientItem);
-
-    // 4. Merge Warehouse Products (Local + Cloud Snapshot + Server Relay)
-    const whMap = new Map<string, WarehouseProduct>();
-    const mergeWhItem = (w: WarehouseProduct) => {
-      if (!w || !w.id || allDeletedWh.has(w.id) || isLegacyWipedRecord(w.id)) return;
-      const existing = whMap.get(w.id);
-      if (!existing) {
-        whMap.set(w.id, w);
-        return;
-      }
-      const exUpd = (existing as any).updatedAt ? new Date((existing as any).updatedAt).getTime() : 0;
-      const newUpd = (w as any).updatedAt ? new Date((w as any).updatedAt).getTime() : 0;
-      const exEdits = existing.initialEditCount || 0;
-      const newEdits = w.initialEditCount || 0;
-      const exHist = Array.isArray(existing.stockHistory) ? existing.stockHistory.length : 0;
-      const newHist = Array.isArray(w.stockHistory) ? w.stockHistory.length : 0;
-      if (newUpd > exUpd || newEdits > exEdits || newHist > exHist) {
-        whMap.set(w.id, w);
-      }
-    };
-
-    (cloudSnap?.warehouseProducts || []).forEach(mergeWhItem);
-    (relayData?.warehouseProducts || []).forEach(mergeWhItem);
-    storageService.getWarehouseProducts().forEach(mergeWhItem);
-
-    // 5. Merge Daily Plans (Local + Cloud Snapshot + Server Relay)
-    const plansMap = new Map<string, DailyPlanItem>();
-    const mergePlanItem = (raw: any) => {
-      const p = normalizeIncomingPlanFromFirestore(raw);
-      if (
-        !p ||
-        !p.id ||
-        !p.clientId ||
-        allDeletedClients.has(p.clientId) ||
-        allDeletedPlans.has(p.id) ||
-        isLegacyWipedRecord(p.id) ||
-        isLegacyWipedRecord(p.clientId) ||
-        isClosedPlanExpired7Days(p)
-      ) {
-        return;
-      }
-      const existing = plansMap.get(p.id);
-      if (!existing) {
-        plansMap.set(p.id, p);
-        return;
-      }
-      const getLatestPlanMs = (item: DailyPlanItem) => {
-        const t1 = item.lastExecutedAt ? new Date(item.lastExecutedAt).getTime() : 0;
-        const t2 = item.closedAt ? new Date(item.closedAt).getTime() : 0;
-        const t3 = item.reopenedAt ? new Date(item.reopenedAt).getTime() : 0;
-        const t4 = item.createdAt ? new Date(item.createdAt).getTime() : 0;
-        return Math.max(t1 || 0, t2 || 0, t3 || 0, t4 || 0);
-      };
-      if (getLatestPlanMs(p) >= getLatestPlanMs(existing)) {
-        plansMap.set(p.id, p);
-      }
-    };
-
-    (cloudSnap?.dailyPlans || []).forEach(mergePlanItem);
-    (relayData?.dailyPlans || []).forEach(mergePlanItem);
-    storageService.getDailyPlans().forEach(mergePlanItem);
-
-    // 6. Merge System Logs
-    const logsMap = new Map<string, SystemLog>();
-    const mergeLogItem = (l: SystemLog) => {
-      if (!l || !l.id || isLegacyWipedRecord(l.id)) return;
-      logsMap.set(l.id, l);
-    };
-    (cloudSnap?.systemLogs || []).forEach(mergeLogItem);
-    (relayData?.systemLogs || []).forEach(mergeLogItem);
-    getLocalSystemLogs().forEach(mergeLogItem);
-
-    const mergedClients = Array.from(clientsMap.values());
-    const mergedWh = Array.from(whMap.values());
-    const mergedPlans = Array.from(plansMap.values());
-    const mergedLogs = Array.from(logsMap.values()).sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
-
-    const mergedPayload: CloudStatePayload = {
-      clients: mergedClients,
-      warehouseProducts: mergedWh,
-      dailyPlans: mergedPlans.map((p) => preparePlanPayloadForFirestore(p)),
-      systemLogs: mergedLogs.slice(0, 150),
-      deletedClientIds: Array.from(allDeletedClients),
-      deletedWarehouseIds: Array.from(allDeletedWh),
-      deletedPlanIds: Array.from(allDeletedPlans),
-      updatedAt: new Date().toISOString(),
-    };
-
-    // 7. Apply merged state to local UI callbacks & mark initial hydration complete
-    applyIncomingStateToCallbacks(mergedPayload, callbacks);
-    hasCompletedInitialCloudMerge = true;
-
-    // 8. Check if our merged state has data missing from Firestore Cloud Snapshot or if meta was zeroed
-    const snapSig = cloudSnap ? computeStateSignature(cloudSnap) : '';
-    const mergedSig = computeStateSignature(mergedPayload);
-    const metaNeedsRepair = Boolean(
-      cloudSnap &&
-        ((Number(cloudSnap._metaClientChunks) === 0 && mergedClients.length > 0) ||
-          (Number(cloudSnap._metaWarehouseChunks) === 0 && mergedWh.length > 0) ||
-          (Number(cloudSnap._metaPlanChunks) === 0 && mergedPlans.length > 0))
-    );
-
-    if (
-      (mergedSig !== snapSig || metaNeedsRepair) &&
-      (mergedClients.length > 0 ||
-        mergedWh.length > 0 ||
-        mergedPlans.length > 0 ||
-        allDeletedClients.size > 0 ||
-        allDeletedWh.size > 0 ||
-        allDeletedPlans.size > 0)
-    ) {
-      pushToServerRelay(mergedPayload);
-      writeFirestoreCloudSnapshot(mergedPayload);
-    }
-
-    return true;
-  } catch {
-    return false;
-  } finally {
-    isBidirectionalSyncRunning = false;
+  if (activeBidirectionalSyncPromise) {
+    return activeBidirectionalSyncPromise;
   }
+
+  activeBidirectionalSyncPromise = (async () => {
+    try {
+      // 1. Read both Firestore Cloud Snapshot and Server Relay in parallel
+      const [cloudSnap, relayData] = await Promise.all([
+        readFirestoreCloudSnapshot(),
+        fetchWithTimeout('/api/sync-state', { cache: 'no-store' }, 12000)
+          .then(async (r) => {
+            const ct = r.headers.get('content-type') || '';
+            if (r.ok && ct.includes('application/json')) return await r.json();
+            return null;
+          })
+          .catch(() => null),
+      ]);
+
+      // 2. Union deleted IDs across Local + Cloud Snapshot + Server Relay
+      const allDeletedClients = new Set<string>(getDeletedClientIds());
+      const allDeletedWh = new Set<string>(getDeletedWarehouseIds());
+      const allDeletedPlans = new Set<string>(getDeletedPlanIds());
+
+      for (const src of [cloudSnap, relayData]) {
+        if (!src) continue;
+        if (Array.isArray(src.deletedClientIds)) {
+          src.deletedClientIds.forEach((id: string) => {
+            allDeletedClients.add(id);
+            markClientAsDeleted(id);
+          });
+        }
+        if (Array.isArray(src.deletedWarehouseIds)) {
+          src.deletedWarehouseIds.forEach((id: string) => {
+            allDeletedWh.add(id);
+            markWarehouseProductAsDeleted(id);
+          });
+        }
+        if (Array.isArray(src.deletedPlanIds)) {
+          src.deletedPlanIds.forEach((id: string) => {
+            allDeletedPlans.add(id);
+            markPlanAsDeleted(id);
+          });
+        }
+      }
+
+      // 3. Merge Clients (Local + Cloud Snapshot + Server Relay)
+      const clientsMap = new Map<string, Client>();
+      const mergeClientItem = (c: Client) => {
+        if (!c || !c.id || allDeletedClients.has(c.id) || isLegacyWipedRecord(c.id)) return;
+        const existing = clientsMap.get(c.id);
+        if (!existing) {
+          clientsMap.set(c.id, c);
+          return;
+        }
+        const exMs = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+        const newMs = c.updatedAt ? new Date(c.updatedAt).getTime() : 0;
+        const exLogs = Array.isArray(existing.logs) ? existing.logs.length : 0;
+        const newLogs = Array.isArray(c.logs) ? c.logs.length : 0;
+        if (newMs > exMs || (newMs === exMs && newLogs > exLogs)) {
+          clientsMap.set(c.id, c);
+        }
+      };
+
+      (cloudSnap?.clients || []).forEach(mergeClientItem);
+      (relayData?.clients || []).forEach(mergeClientItem);
+      storageService.getClients().forEach(mergeClientItem);
+
+      // 4. Merge Warehouse Products (Local + Cloud Snapshot + Server Relay)
+      const whMap = new Map<string, WarehouseProduct>();
+      const mergeWhItem = (w: WarehouseProduct) => {
+        if (!w || !w.id || allDeletedWh.has(w.id) || isLegacyWipedRecord(w.id)) return;
+        const existing = whMap.get(w.id);
+        if (!existing) {
+          whMap.set(w.id, w);
+          return;
+        }
+        const exUpd = (existing as any).updatedAt ? new Date((existing as any).updatedAt).getTime() : 0;
+        const newUpd = (w as any).updatedAt ? new Date((w as any).updatedAt).getTime() : 0;
+        const exEdits = existing.initialEditCount || 0;
+        const newEdits = w.initialEditCount || 0;
+        const exHist = Array.isArray(existing.stockHistory) ? existing.stockHistory.length : 0;
+        const newHist = Array.isArray(w.stockHistory) ? w.stockHistory.length : 0;
+        if (newUpd > exUpd || newEdits > exEdits || newHist > exHist) {
+          whMap.set(w.id, w);
+        }
+      };
+
+      (cloudSnap?.warehouseProducts || []).forEach(mergeWhItem);
+      (relayData?.warehouseProducts || []).forEach(mergeWhItem);
+      storageService.getWarehouseProducts().forEach(mergeWhItem);
+
+      // 5. Merge Daily Plans (Local + Cloud Snapshot + Server Relay)
+      const plansMap = new Map<string, DailyPlanItem>();
+      const mergePlanItem = (raw: any) => {
+        const p = normalizeIncomingPlanFromFirestore(raw);
+        if (
+          !p ||
+          !p.id ||
+          !p.clientId ||
+          allDeletedClients.has(p.clientId) ||
+          allDeletedPlans.has(p.id) ||
+          isLegacyWipedRecord(p.id) ||
+          isLegacyWipedRecord(p.clientId) ||
+          isClosedPlanExpired7Days(p)
+        ) {
+          return;
+        }
+        const existing = plansMap.get(p.id);
+        if (!existing) {
+          plansMap.set(p.id, p);
+          return;
+        }
+        const getLatestPlanMs = (item: DailyPlanItem) => {
+          const t1 = item.lastExecutedAt ? new Date(item.lastExecutedAt).getTime() : 0;
+          const t2 = item.closedAt ? new Date(item.closedAt).getTime() : 0;
+          const t3 = item.reopenedAt ? new Date(item.reopenedAt).getTime() : 0;
+          const t4 = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+          return Math.max(t1 || 0, t2 || 0, t3 || 0, t4 || 0);
+        };
+        if (getLatestPlanMs(p) >= getLatestPlanMs(existing)) {
+          plansMap.set(p.id, p);
+        }
+      };
+
+      (cloudSnap?.dailyPlans || []).forEach(mergePlanItem);
+      (relayData?.dailyPlans || []).forEach(mergePlanItem);
+      storageService.getDailyPlans().forEach(mergePlanItem);
+
+      // 6. Merge System Logs
+      const logsMap = new Map<string, SystemLog>();
+      const mergeLogItem = (l: SystemLog) => {
+        if (!l || !l.id || isLegacyWipedRecord(l.id)) return;
+        logsMap.set(l.id, l);
+      };
+      (cloudSnap?.systemLogs || []).forEach(mergeLogItem);
+      (relayData?.systemLogs || []).forEach(mergeLogItem);
+      getLocalSystemLogs().forEach(mergeLogItem);
+
+      const mergedClients = Array.from(clientsMap.values());
+      const mergedWh = Array.from(whMap.values());
+      const mergedPlans = Array.from(plansMap.values());
+      const mergedLogs = Array.from(logsMap.values()).sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+
+      const mergedPayload: CloudStatePayload = {
+        clients: mergedClients,
+        warehouseProducts: mergedWh,
+        dailyPlans: mergedPlans.map((p) => preparePlanPayloadForFirestore(p)),
+        systemLogs: mergedLogs.slice(0, 150),
+        deletedClientIds: Array.from(allDeletedClients),
+        deletedWarehouseIds: Array.from(allDeletedWh),
+        deletedPlanIds: Array.from(allDeletedPlans),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // 7. Apply merged state directly to storage + callbacks & mark initial hydration complete
+      if (!callbacks.onClientsChange) {
+        storageService.saveClients(mergedClients);
+      }
+      if (!callbacks.onWarehouseChange) {
+        storageService.saveWarehouseProducts(mergedWh);
+      }
+      if (!callbacks.onPlansChange) {
+        storageService.saveDailyPlans(mergedPlans);
+      }
+      if (!callbacks.onLogsChange) {
+        saveLocalSystemLogs(mergedPayload.systemLogs);
+      }
+      applyIncomingStateToCallbacks(mergedPayload, callbacks);
+      hasCompletedInitialCloudMerge = true;
+
+      // 8. Check if our merged state has data missing from Firestore Cloud Snapshot or if meta was zeroed
+      const snapSig = cloudSnap ? computeStateSignature(cloudSnap) : '';
+      const mergedSig = computeStateSignature(mergedPayload);
+      const metaNeedsRepair = Boolean(
+        cloudSnap &&
+          ((Number(cloudSnap._metaClientChunks) === 0 && mergedClients.length > 0) ||
+            (Number(cloudSnap._metaWarehouseChunks) === 0 && mergedWh.length > 0) ||
+            (Number(cloudSnap._metaPlanChunks) === 0 && mergedPlans.length > 0))
+      );
+
+      if (
+        (mergedSig !== snapSig || metaNeedsRepair) &&
+        (mergedClients.length > 0 ||
+          mergedWh.length > 0 ||
+          mergedPlans.length > 0 ||
+          allDeletedClients.size > 0 ||
+          allDeletedWh.size > 0 ||
+          allDeletedPlans.size > 0)
+      ) {
+        pushToServerRelay(mergedPayload);
+        writeFirestoreCloudSnapshot(mergedPayload);
+      }
+
+      return Boolean(cloudSnap || relayData || mergedClients.length > 0 || mergedWh.length > 0);
+    } catch {
+      return false;
+    } finally {
+      activeBidirectionalSyncPromise = null;
+    }
+  })();
+
+  return activeBidirectionalSyncPromise;
 }
 
 // Active Server Pull: Ensures PWA & Web on any device stay 100% in sync with Firestore Cloud Snapshot & Server Relay
@@ -1698,4 +1743,48 @@ export async function pullAllFromFirestoreServer(callbacks: {
 }): Promise<void> {
   if (typeof navigator !== 'undefined' && !navigator.onLine) return;
   await syncBidirectionalCloudAndRelay(callbacks);
+}
+
+export async function forceCloudSyncNow(callbacks?: {
+  onClientsChange?: (clients: Client[]) => void;
+  onPlansChange?: (plans: DailyPlanItem[]) => void;
+  onWarehouseChange?: (products: WarehouseProduct[]) => void;
+  onLogsChange?: (logs: SystemLog[]) => void;
+  onMonthlyPlansChange?: (plans: MonthlyPlan[]) => void;
+}): Promise<{ success: boolean; message: string; count: number }> {
+  const queueCount = storageService.getSyncQueue().length;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return {
+      success: false,
+      message: "Hozir oflayn rejimdasiz. Internetga ulanganda avtomatik sinxronlanadi.",
+      count: queueCount,
+    };
+  }
+
+  // Wait if another sync is in flight, then run one fresh bidirectional pull+merge
+  if (activeBidirectionalSyncPromise) {
+    await activeBidirectionalSyncPromise;
+  }
+  const ok = await syncBidirectionalCloudAndRelay(callbacks || {});
+  const clientsCount = storageService.getClients().length;
+  const whCount = storageService.getWarehouseProducts().length;
+  const plansCount = storageService.getDailyPlans().length;
+
+  if (!ok) {
+    return {
+      success: false,
+      message: "Bulut serveriga ulanib bo'lmadi. Internet aloqasini tekshiring.",
+      count: queueCount,
+    };
+  }
+
+  return {
+    success: true,
+    message: `Bulut bilan sinxronlandi: ${clientsCount} ta mijoz, ${whCount} ta ombor mahsuloti, ${plansCount} ta reja.`,
+    count: queueCount,
+  };
+}
+
+if (typeof window !== 'undefined') {
+  storageService.registerCloudSyncRunner(() => forceCloudSyncNow());
 }
