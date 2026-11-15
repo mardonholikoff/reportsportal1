@@ -158,8 +158,8 @@ async function patchServerFirestoreDoc(docId: string, jsonStr: string): Promise<
 
 async function readServerFirestoreDoc(docId: string): Promise<any | null> {
   try {
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${docId}?key=${firebaseCfg.apiKey}&_t=${Date.now()}`;
-    const r = await fetch(url);
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${docId}?key=${firebaseCfg.apiKey}`;
+    const r = await fetch(url, { cache: 'no-store' });
     if (!r.ok) return null;
     const docData: any = await r.json();
     const rawJson = docData?.fields?.payloadJson?.stringValue;
@@ -172,6 +172,8 @@ async function readServerFirestoreDoc(docId: string): Promise<any | null> {
   return null;
 }
 
+let serverHasPulledCloudOnce = false;
+
 async function pushServerStateToFirestoreCloud(): Promise<void> {
   if (!firebaseCfg || !firebaseCfg.projectId || !firebaseCfg.apiKey) return;
   if (Date.now() < serverFirestoreCooldownUntil) return;
@@ -181,9 +183,13 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
   }
   cloudPushInFlight = true;
   try {
+    if (!serverHasPulledCloudOnce) {
+      await pullServerStateFromFirestoreCloud();
+    }
     do {
       cloudPushQueued = false;
       if (Date.now() < serverFirestoreCooldownUntil) break;
+      await pullServerStateFromFirestoreCloud();
       const snapshot = serializeStateResponse();
       if (
         snapshot.clients.length === 0 &&
@@ -258,9 +264,9 @@ async function pullServerStateFromFirestoreCloud(): Promise<void> {
   try {
     const meta = await readServerFirestoreDoc(SNAP_META_DOC_ID);
     if (meta && typeof meta === 'object') {
-      const clientChunksCount = Number(meta.clientChunksCount) || 0;
-      const warehouseChunksCount = Number(meta.warehouseChunksCount) || 0;
-      const planChunksCount = Number(meta.planChunksCount) || 0;
+      const clientChunksCount = Math.max(Number(meta.clientChunksCount) || 0, 1);
+      const warehouseChunksCount = Math.max(Number(meta.warehouseChunksCount) || 0, 1);
+      const planChunksCount = Math.max(Number(meta.planChunksCount) || 0, 1);
       const clients: any[] = [];
       const warehouseProducts: any[] = [];
       const dailyPlans: any[] = [];
@@ -288,12 +294,14 @@ async function pullServerStateFromFirestoreCloud(): Promise<void> {
         },
         false
       );
+      serverHasPulledCloudOnce = true;
       return;
     }
     const legacy = await readServerFirestoreDoc(SHARED_CLOUD_DOC_ID);
     if (legacy && typeof legacy === 'object') {
       mergePayloadIntoState(legacy, false);
     }
+    serverHasPulledCloudOnce = true;
   } catch {
     // ignore
   }

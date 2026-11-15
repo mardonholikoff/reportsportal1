@@ -343,6 +343,8 @@ let isFirestoreSdkQuotaExhausted = true; // Use compact chunked REST snapshots i
 let firestoreCooldownUntil = 0;
 let firestoreQuotaHit = false;
 let firestoreConsecutive429s = 0;
+let hasCompletedInitialCloudMerge = false;
+let isBidirectionalSyncRunning = false;
 
 export function isFirestoreQuotaLimited(): boolean {
   return firestoreQuotaHit && Date.now() < firestoreCooldownUntil;
@@ -356,11 +358,12 @@ export async function pushToServerRelay(payload: Record<string, any>): Promise<a
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cleanFirestoreData(payload)),
     });
-    if (res.ok) {
+    const ct = res.headers.get('content-type') || '';
+    if (res.ok && ct.includes('application/json')) {
       return await res.json();
     }
   } catch {
-    // ignore transient offline errors
+    // ignore transient offline errors or static hosts without /api
   }
   return null;
 }
@@ -375,11 +378,14 @@ interface CloudStatePayload {
   deletedWarehouseIds: string[];
   deletedPlanIds: string[];
   updatedAt: string;
+  _metaClientChunks?: number;
+  _metaWarehouseChunks?: number;
+  _metaPlanChunks?: number;
 }
 
 async function readFirestoreDocJson(docId: string): Promise<any | null> {
   try {
-    const url = `${FIRESTORE_REST_BASE}/monthlyPlans/${docId}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`;
+    const url = `${FIRESTORE_REST_BASE}/monthlyPlans/${docId}?key=${firebaseConfig.apiKey}`;
     const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) return null;
     const docData = await res.json();
@@ -452,15 +458,19 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
   if (typeof window === 'undefined') return null;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return null;
   try {
-    // 1. Try reading chunked v2 metadata + chunks first
+    // 1. Try reading chunked v2 metadata + chunks first (with self-healing probe of chunk 0 if meta was zeroed by an older client)
     const meta = await readFirestoreDocJson(SNAP_META_DOC_ID);
     if (meta && typeof meta === 'object') {
-      const clientChunksCount = Number(meta.clientChunksCount) || 0;
-      const warehouseChunksCount = Number(meta.warehouseChunksCount) || 0;
-      const planChunksCount = Number(meta.planChunksCount) || 0;
+      const metaClientChunks = Number(meta.clientChunksCount) || 0;
+      const metaWarehouseChunks = Number(meta.warehouseChunksCount) || 0;
+      const metaPlanChunks = Number(meta.planChunksCount) || 0;
+
+      const clientChunksToRead = Math.max(metaClientChunks, 1);
+      const warehouseChunksToRead = Math.max(metaWarehouseChunks, 1);
+      const planChunksToRead = Math.max(metaPlanChunks, 1);
 
       const fetchPromises: Promise<{ type: string; items: any[] }>[] = [];
-      for (let i = 0; i < clientChunksCount; i++) {
+      for (let i = 0; i < clientChunksToRead; i++) {
         fetchPromises.push(
           readFirestoreDocJson(`sync_snap_v2_clients_${i}`).then((d) => ({
             type: 'clients',
@@ -468,7 +478,7 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
           }))
         );
       }
-      for (let i = 0; i < warehouseChunksCount; i++) {
+      for (let i = 0; i < warehouseChunksToRead; i++) {
         fetchPromises.push(
           readFirestoreDocJson(`sync_snap_v2_warehouse_${i}`).then((d) => ({
             type: 'warehouse',
@@ -476,7 +486,7 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
           }))
         );
       }
-      for (let i = 0; i < planChunksCount; i++) {
+      for (let i = 0; i < planChunksToRead; i++) {
         fetchPromises.push(
           readFirestoreDocJson(`sync_snap_v2_plans_${i}`).then((d) => ({
             type: 'plans',
@@ -504,11 +514,34 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
         deletedWarehouseIds: Array.isArray(meta.deletedWarehouseIds) ? meta.deletedWarehouseIds : [],
         deletedPlanIds: Array.isArray(meta.deletedPlanIds) ? meta.deletedPlanIds : [],
         updatedAt: meta.updatedAt || new Date().toISOString(),
+        _metaClientChunks: metaClientChunks,
+        _metaWarehouseChunks: metaWarehouseChunks,
+        _metaPlanChunks: metaPlanChunks,
       };
     }
 
-    // 2. Fallback to legacy single-doc snapshot if present
-    const legacy = await readFirestoreDocJson(SHARED_CLOUD_DOC_ID);
+    // 2. If meta is missing, probe chunk 0 docs or legacy snapshot directly
+    const [c0, w0, p0, legacy] = await Promise.all([
+      readFirestoreDocJson('sync_snap_v2_clients_0'),
+      readFirestoreDocJson('sync_snap_v2_warehouse_0'),
+      readFirestoreDocJson('sync_snap_v2_plans_0'),
+      readFirestoreDocJson(SHARED_CLOUD_DOC_ID),
+    ]);
+    if (c0 || w0 || p0) {
+      return {
+        clients: Array.isArray(c0?.items) ? c0.items : [],
+        warehouseProducts: Array.isArray(w0?.items) ? w0.items : [],
+        dailyPlans: Array.isArray(p0?.items) ? p0.items : [],
+        systemLogs: [],
+        deletedClientIds: [],
+        deletedWarehouseIds: [],
+        deletedPlanIds: [],
+        updatedAt: new Date().toISOString(),
+        _metaClientChunks: 0,
+        _metaWarehouseChunks: 0,
+        _metaPlanChunks: 0,
+      };
+    }
     if (legacy && typeof legacy === 'object') {
       return legacy as CloudStatePayload;
     }
@@ -521,6 +554,122 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
 let isWritingCloudSnapshot = false;
 let queuedCloudSnapshotPayload: CloudStatePayload | null = null;
 let lastSavedCloudSignature = '';
+
+function mergeTwoCloudPayloads(
+  baseSnap: Partial<CloudStatePayload> | null,
+  overlayPayload: CloudStatePayload
+): CloudStatePayload {
+  const deletedClientSet = new Set<string>([
+    ...(baseSnap?.deletedClientIds || []),
+    ...(overlayPayload.deletedClientIds || []),
+    ...Array.from(getDeletedClientIds()),
+  ]);
+  const deletedWhSet = new Set<string>([
+    ...(baseSnap?.deletedWarehouseIds || []),
+    ...(overlayPayload.deletedWarehouseIds || []),
+    ...Array.from(getDeletedWarehouseIds()),
+  ]);
+  const deletedPlanSet = new Set<string>([
+    ...(baseSnap?.deletedPlanIds || []),
+    ...(overlayPayload.deletedPlanIds || []),
+    ...Array.from(getDeletedPlanIds()),
+  ]);
+
+  const clientsMap = new Map<string, Client>();
+  const addClient = (c: Client) => {
+    if (!c || !c.id || deletedClientSet.has(c.id) || isLegacyWipedRecord(c.id)) return;
+    const ex = clientsMap.get(c.id);
+    if (!ex) {
+      clientsMap.set(c.id, c);
+      return;
+    }
+    const exMs = ex.updatedAt ? new Date(ex.updatedAt).getTime() : 0;
+    const newMs = c.updatedAt ? new Date(c.updatedAt).getTime() : 0;
+    const exLogs = Array.isArray(ex.logs) ? ex.logs.length : 0;
+    const newLogs = Array.isArray(c.logs) ? c.logs.length : 0;
+    if (newMs > exMs || (newMs === exMs && newLogs >= exLogs)) {
+      clientsMap.set(c.id, c);
+    }
+  };
+  (baseSnap?.clients || []).forEach(addClient);
+  (overlayPayload.clients || []).forEach(addClient);
+
+  const whMap = new Map<string, WarehouseProduct>();
+  const addWh = (w: WarehouseProduct) => {
+    if (!w || !w.id || deletedWhSet.has(w.id) || isLegacyWipedRecord(w.id)) return;
+    const ex = whMap.get(w.id);
+    if (!ex) {
+      whMap.set(w.id, w);
+      return;
+    }
+    const exUpd = (ex as any).updatedAt ? new Date((ex as any).updatedAt).getTime() : 0;
+    const newUpd = (w as any).updatedAt ? new Date((w as any).updatedAt).getTime() : 0;
+    const exEdits = ex.initialEditCount || 0;
+    const newEdits = w.initialEditCount || 0;
+    const exHist = Array.isArray(ex.stockHistory) ? ex.stockHistory.length : 0;
+    const newHist = Array.isArray(w.stockHistory) ? w.stockHistory.length : 0;
+    if (newUpd > exUpd || newEdits > exEdits || newHist >= exHist) {
+      whMap.set(w.id, w);
+    }
+  };
+  (baseSnap?.warehouseProducts || []).forEach(addWh);
+  (overlayPayload.warehouseProducts || []).forEach(addWh);
+
+  const plansMap = new Map<string, any>();
+  const addPlan = (raw: any) => {
+    const p = normalizeIncomingPlanFromFirestore(raw);
+    if (
+      !p ||
+      !p.id ||
+      !p.clientId ||
+      deletedClientSet.has(p.clientId) ||
+      deletedPlanSet.has(p.id) ||
+      isLegacyWipedRecord(p.id) ||
+      isLegacyWipedRecord(p.clientId) ||
+      isClosedPlanExpired7Days(p)
+    ) {
+      return;
+    }
+    const ex = plansMap.get(p.id);
+    if (!ex) {
+      plansMap.set(p.id, p);
+      return;
+    }
+    const latestMs = (item: any) =>
+      Math.max(
+        item.lastExecutedAt ? new Date(item.lastExecutedAt).getTime() : 0,
+        item.closedAt ? new Date(item.closedAt).getTime() : 0,
+        item.reopenedAt ? new Date(item.reopenedAt).getTime() : 0,
+        item.createdAt ? new Date(item.createdAt).getTime() : 0
+      );
+    if (latestMs(p) >= latestMs(ex)) {
+      plansMap.set(p.id, p);
+    }
+  };
+  (baseSnap?.dailyPlans || []).forEach(addPlan);
+  (overlayPayload.dailyPlans || []).forEach(addPlan);
+
+  const logsMap = new Map<string, SystemLog>();
+  const addLog = (l: SystemLog) => {
+    if (!l || !l.id || isLegacyWipedRecord(l.id)) return;
+    logsMap.set(l.id, l);
+  };
+  (baseSnap?.systemLogs || []).forEach(addLog);
+  (overlayPayload.systemLogs || []).forEach(addLog);
+
+  return {
+    clients: Array.from(clientsMap.values()),
+    warehouseProducts: Array.from(whMap.values()),
+    dailyPlans: Array.from(plansMap.values()).map((p) => preparePlanPayloadForFirestore(p)),
+    systemLogs: Array.from(logsMap.values()).sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    ),
+    deletedClientIds: Array.from(deletedClientSet),
+    deletedWarehouseIds: Array.from(deletedWhSet),
+    deletedPlanIds: Array.from(deletedPlanSet),
+    updatedAt: new Date().toISOString(),
+  };
+}
 
 function computeStateSignature(state: CloudStatePayload): string {
   const cSig = (state.clients || [])
@@ -557,7 +706,7 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
   if (Date.now() < firestoreCooldownUntil) return false;
 
   const sig = computeStateSignature(payload);
-  if (sig === lastSavedCloudSignature) {
+  if (sig === lastSavedCloudSignature && hasCompletedInitialCloudMerge) {
     return true;
   }
 
@@ -571,16 +720,45 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
 
   try {
     while (queuedCloudSnapshotPayload) {
-      const currentPayload = queuedCloudSnapshotPayload;
+      let currentPayload = queuedCloudSnapshotPayload;
       queuedCloudSnapshotPayload = null;
-      const currentSig = computeStateSignature(currentPayload);
-      if (currentSig === lastSavedCloudSignature) {
-        lastSuccess = true;
-        continue;
-      }
+
       if (Date.now() < firestoreCooldownUntil) {
         lastSuccess = false;
         break;
+      }
+
+      // Safety merge: ALWAYS verify remote snapshot before overwriting sync_snap_v2_meta
+      // so an un-hydrated or empty device can NEVER wipe existing clients/warehouse/plans!
+      const remoteSnap = await readFirestoreCloudSnapshot();
+      if (remoteSnap) {
+        currentPayload = mergeTwoCloudPayloads(remoteSnap, currentPayload);
+      } else if (
+        !hasCompletedInitialCloudMerge &&
+        currentPayload.clients.length === 0 &&
+        currentPayload.warehouseProducts.length === 0 &&
+        currentPayload.dailyPlans.length === 0
+      ) {
+        lastSuccess = false;
+        continue;
+      }
+
+      const currentSig = computeStateSignature(currentPayload);
+      const remoteNeedsMetaHeal = Boolean(
+        remoteSnap &&
+          ((Number(remoteSnap._metaClientChunks) === 0 && remoteSnap.clients.length > 0) ||
+            (Number(remoteSnap._metaWarehouseChunks) === 0 &&
+              remoteSnap.warehouseProducts.length > 0) ||
+            (Number(remoteSnap._metaPlanChunks) === 0 && remoteSnap.dailyPlans.length > 0))
+      );
+      if (
+        !remoteNeedsMetaHeal &&
+        currentSig === lastSavedCloudSignature &&
+        remoteSnap &&
+        currentPayload.systemLogs.length <= remoteSnap.systemLogs.length
+      ) {
+        lastSuccess = true;
+        continue;
       }
 
       const compactClients = cleanFirestoreData(
@@ -650,6 +828,7 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
         break;
       }
 
+      const newUpdatedAt = new Date().toISOString();
       const metaJson = JSON.stringify(
         cleanFirestoreData({
           clientChunksCount: clientChunks.length,
@@ -659,7 +838,7 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
           deletedClientIds: currentPayload.deletedClientIds || [],
           deletedWarehouseIds: currentPayload.deletedWarehouseIds || [],
           deletedPlanIds: currentPayload.deletedPlanIds || [],
-          updatedAt: new Date().toISOString(),
+          updatedAt: newUpdatedAt,
         })
       );
 
@@ -724,6 +903,15 @@ export function scheduleCloudStatePush(delayMs = 150): void {
     pushDebounceTimer = null;
     const payload = buildLocalCloudStatePayload();
     pushToServerRelay(payload);
+    // Never push an un-hydrated device snapshot over cloud state before initial merge finishes
+    if (
+      !hasCompletedInitialCloudMerge &&
+      payload.clients.length === 0 &&
+      payload.warehouseProducts.length === 0 &&
+      payload.dailyPlans.length === 0
+    ) {
+      return;
+    }
     writeFirestoreCloudSnapshot(payload);
   }, delayMs);
 }
@@ -1191,13 +1379,19 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
 }): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return false;
+  if (isBidirectionalSyncRunning) return true;
 
+  isBidirectionalSyncRunning = true;
   try {
     // 1. Read both Firestore Cloud Snapshot and Server Relay in parallel
     const [cloudSnap, relayData] = await Promise.all([
       readFirestoreCloudSnapshot(),
       fetch('/api/sync-state', { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : null))
+        .then(async (r) => {
+          const ct = r.headers.get('content-type') || '';
+          if (r.ok && ct.includes('application/json')) return await r.json();
+          return null;
+        })
         .catch(() => null),
     ]);
 
@@ -1339,15 +1533,22 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
       updatedAt: new Date().toISOString(),
     };
 
-    // 7. Apply merged state to local UI callbacks
+    // 7. Apply merged state to local UI callbacks & mark initial hydration complete
     applyIncomingStateToCallbacks(mergedPayload, callbacks);
+    hasCompletedInitialCloudMerge = true;
 
-    // 8. Check if our merged state has data missing from Firestore Cloud Snapshot or Server Relay
+    // 8. Check if our merged state has data missing from Firestore Cloud Snapshot or if meta was zeroed
     const snapSig = cloudSnap ? computeStateSignature(cloudSnap) : '';
     const mergedSig = computeStateSignature(mergedPayload);
+    const metaNeedsRepair = Boolean(
+      cloudSnap &&
+        ((Number(cloudSnap._metaClientChunks) === 0 && mergedClients.length > 0) ||
+          (Number(cloudSnap._metaWarehouseChunks) === 0 && mergedWh.length > 0) ||
+          (Number(cloudSnap._metaPlanChunks) === 0 && mergedPlans.length > 0))
+    );
 
     if (
-      mergedSig !== snapSig &&
+      (mergedSig !== snapSig || metaNeedsRepair) &&
       (mergedClients.length > 0 ||
         mergedWh.length > 0 ||
         mergedPlans.length > 0 ||
@@ -1362,6 +1563,8 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
     return true;
   } catch {
     return false;
+  } finally {
+    isBidirectionalSyncRunning = false;
   }
 }
 
