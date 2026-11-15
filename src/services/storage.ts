@@ -50,6 +50,7 @@ export function isLegacyWipedRecord(id?: string | null): boolean {
     strId === 'month_plan_seed_1' ||
     strId.startsWith('log_seed_') ||
     strId.startsWith('shared_cloud_state_') ||
+    strId.startsWith('sync_snap_') ||
     strId.startsWith('test_')
   ) {
     return true;

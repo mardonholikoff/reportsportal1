@@ -42,6 +42,7 @@ function isLegacyWipedRecord(id?: string | null): boolean {
     strId === 'month_plan_seed_1' ||
     strId.startsWith('log_seed_') ||
     strId.startsWith('shared_cloud_state_') ||
+    strId.startsWith('sync_snap_') ||
     strId.startsWith('test_')
   ) {
     return true;
@@ -99,9 +100,81 @@ const sharedState: SharedStateStore = loadState();
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let cloudPushInFlight = false;
 let cloudPushQueued = false;
+let serverFirestoreCooldownUntil = 0;
+let serverFirestoreConsecutive429s = 0;
+const SNAP_META_DOC_ID = 'sync_snap_v2_meta';
+
+function chunkItemsBySize<T>(items: T[], maxBytes = 320_000): T[][] {
+  if (!items || items.length === 0) return [];
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 2;
+  for (const item of items) {
+    const len = JSON.stringify(item).length + 1;
+    if (current.length > 0 && currentBytes + len > maxBytes) {
+      chunks.push(current);
+      current = [item];
+      currentBytes = 2 + len;
+    } else {
+      current.push(item);
+      currentBytes += len;
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+async function patchServerFirestoreDoc(docId: string, jsonStr: string): Promise<'ok' | 'quota' | 'error'> {
+  if (Date.now() < serverFirestoreCooldownUntil) return 'quota';
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${docId}?key=${firebaseCfg.apiKey}`;
+    const r = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: {
+          id: { stringValue: docId },
+          monthKey: { stringValue: '__sync_snapshot__' },
+          payloadJson: { stringValue: jsonStr },
+          updatedAt: { stringValue: new Date().toISOString() },
+        },
+      }),
+    });
+    if (r.status === 200) {
+      serverFirestoreCooldownUntil = 0;
+      serverFirestoreConsecutive429s = 0;
+      return 'ok';
+    }
+    if (r.status === 429) {
+      serverFirestoreConsecutive429s += 1;
+      serverFirestoreCooldownUntil = Date.now() + Math.min(300_000, 60_000 * serverFirestoreConsecutive429s);
+      return 'quota';
+    }
+    return 'error';
+  } catch {
+    return 'error';
+  }
+}
+
+async function readServerFirestoreDoc(docId: string): Promise<any | null> {
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${docId}?key=${firebaseCfg.apiKey}&_t=${Date.now()}`;
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const docData: any = await r.json();
+    const rawJson = docData?.fields?.payloadJson?.stringValue;
+    if (rawJson && typeof rawJson === 'string') {
+      return JSON.parse(rawJson);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 async function pushServerStateToFirestoreCloud(): Promise<void> {
   if (!firebaseCfg || !firebaseCfg.projectId || !firebaseCfg.apiKey) return;
+  if (Date.now() < serverFirestoreCooldownUntil) return;
   if (cloudPushInFlight) {
     cloudPushQueued = true;
     return;
@@ -110,6 +183,7 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
   try {
     do {
       cloudPushQueued = false;
+      if (Date.now() < serverFirestoreCooldownUntil) break;
       const snapshot = serializeStateResponse();
       if (
         snapshot.clients.length === 0 &&
@@ -122,45 +196,57 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
       }
       const compactClients = (snapshot.clients || []).map((c: any) => ({
         ...c,
-        logs: Array.isArray(c.logs) && c.logs.length > 35 ? c.logs.slice(0, 35) : c.logs || [],
+        logs: Array.isArray(c.logs) && c.logs.length > 30 ? c.logs.slice(0, 30) : c.logs || [],
       }));
       const compactWh = (snapshot.warehouseProducts || []).map((w: any) => ({
         ...w,
         stockHistory:
-          Array.isArray(w.stockHistory) && w.stockHistory.length > 40
-            ? w.stockHistory.slice(0, 40)
+          Array.isArray(w.stockHistory) && w.stockHistory.length > 35
+            ? w.stockHistory.slice(0, 35)
             : w.stockHistory || [],
       }));
-      const serialized = JSON.stringify({
-        ...snapshot,
-        clients: compactClients,
-        warehouseProducts: compactWh,
-        systemLogs: (snapshot.systemLogs || []).slice(0, 120),
-        updatedAt: new Date().toISOString(),
-      });
-      const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${SHARED_CLOUD_DOC_ID}?key=${firebaseCfg.apiKey}`;
-      const bodyStr = JSON.stringify({
-        fields: {
-          id: { stringValue: SHARED_CLOUD_DOC_ID },
-          monthKey: { stringValue: '__sync_snapshot__' },
-          payloadJson: { stringValue: serialized },
-          updatedAt: { stringValue: new Date().toISOString() },
-        },
-      });
-      for (let attempt = 1; attempt <= 25; attempt++) {
-        try {
-          const r = await fetch(url, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: bodyStr,
-          });
-          if (r.status === 200) break;
-        } catch {
-          // ignore
+      const compactPlans = snapshot.dailyPlans || [];
+
+      const clientChunks = chunkItemsBySize(compactClients, 320_000);
+      const warehouseChunks = chunkItemsBySize(compactWh, 320_000);
+      const planChunks = chunkItemsBySize(compactPlans, 320_000);
+
+      let aborted = false;
+      for (let i = 0; i < clientChunks.length; i++) {
+        if ((await patchServerFirestoreDoc(`sync_snap_v2_clients_${i}`, JSON.stringify({ items: clientChunks[i] }))) === 'quota') {
+          aborted = true;
+          break;
         }
-        if (cloudPushQueued) break;
-        await new Promise((res) => setTimeout(res, 180));
       }
+      if (aborted) break;
+      for (let i = 0; i < warehouseChunks.length; i++) {
+        if ((await patchServerFirestoreDoc(`sync_snap_v2_warehouse_${i}`, JSON.stringify({ items: warehouseChunks[i] }))) === 'quota') {
+          aborted = true;
+          break;
+        }
+      }
+      if (aborted) break;
+      for (let i = 0; i < planChunks.length; i++) {
+        if ((await patchServerFirestoreDoc(`sync_snap_v2_plans_${i}`, JSON.stringify({ items: planChunks[i] }))) === 'quota') {
+          aborted = true;
+          break;
+        }
+      }
+      if (aborted) break;
+
+      await patchServerFirestoreDoc(
+        SNAP_META_DOC_ID,
+        JSON.stringify({
+          clientChunksCount: clientChunks.length,
+          warehouseChunksCount: warehouseChunks.length,
+          planChunksCount: planChunks.length,
+          systemLogs: (snapshot.systemLogs || []).slice(0, 80),
+          deletedClientIds: snapshot.deletedClientIds || [],
+          deletedWarehouseIds: snapshot.deletedWarehouseIds || [],
+          deletedPlanIds: snapshot.deletedPlanIds || [],
+          updatedAt: new Date().toISOString(),
+        })
+      );
     } while (cloudPushQueued);
   } finally {
     cloudPushInFlight = false;
@@ -170,14 +256,43 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
 async function pullServerStateFromFirestoreCloud(): Promise<void> {
   if (!firebaseCfg || !firebaseCfg.projectId || !firebaseCfg.apiKey) return;
   try {
-    const url = `https://firestore.googleapis.com/v1/projects/${firebaseCfg.projectId}/databases/${firebaseCfg.firestoreDatabaseId}/documents/monthlyPlans/${SHARED_CLOUD_DOC_ID}?key=${firebaseCfg.apiKey}&_t=${Date.now()}`;
-    const r = await fetch(url);
-    if (!r.ok) return;
-    const docData: any = await r.json();
-    const rawJson = docData?.fields?.payloadJson?.stringValue;
-    if (rawJson && typeof rawJson === 'string') {
-      const parsed = JSON.parse(rawJson);
-      mergePayloadIntoState(parsed, false);
+    const meta = await readServerFirestoreDoc(SNAP_META_DOC_ID);
+    if (meta && typeof meta === 'object') {
+      const clientChunksCount = Number(meta.clientChunksCount) || 0;
+      const warehouseChunksCount = Number(meta.warehouseChunksCount) || 0;
+      const planChunksCount = Number(meta.planChunksCount) || 0;
+      const clients: any[] = [];
+      const warehouseProducts: any[] = [];
+      const dailyPlans: any[] = [];
+      for (let i = 0; i < clientChunksCount; i++) {
+        const d = await readServerFirestoreDoc(`sync_snap_v2_clients_${i}`);
+        if (Array.isArray(d?.items)) clients.push(...d.items);
+      }
+      for (let i = 0; i < warehouseChunksCount; i++) {
+        const d = await readServerFirestoreDoc(`sync_snap_v2_warehouse_${i}`);
+        if (Array.isArray(d?.items)) warehouseProducts.push(...d.items);
+      }
+      for (let i = 0; i < planChunksCount; i++) {
+        const d = await readServerFirestoreDoc(`sync_snap_v2_plans_${i}`);
+        if (Array.isArray(d?.items)) dailyPlans.push(...d.items);
+      }
+      mergePayloadIntoState(
+        {
+          clients,
+          warehouseProducts,
+          dailyPlans,
+          systemLogs: Array.isArray(meta.systemLogs) ? meta.systemLogs : [],
+          deletedClientIds: Array.isArray(meta.deletedClientIds) ? meta.deletedClientIds : [],
+          deletedWarehouseIds: Array.isArray(meta.deletedWarehouseIds) ? meta.deletedWarehouseIds : [],
+          deletedPlanIds: Array.isArray(meta.deletedPlanIds) ? meta.deletedPlanIds : [],
+        },
+        false
+      );
+      return;
+    }
+    const legacy = await readServerFirestoreDoc(SHARED_CLOUD_DOC_ID);
+    if (legacy && typeof legacy === 'object') {
+      mergePayloadIntoState(legacy, false);
     }
   } catch {
     // ignore

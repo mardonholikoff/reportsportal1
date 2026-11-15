@@ -49,6 +49,13 @@ export default defineConfig(() => {
           cleanupOutdatedCaches: true,
           skipWaiting: true,
           clientsClaim: true,
+          navigateFallbackDenylist: [/^\/api\//],
+          runtimeCaching: [
+            {
+              urlPattern: ({url}) => url.pathname.startsWith('/api/'),
+              handler: 'NetworkOnly',
+            },
+          ],
         },
         devOptions: {
           enabled: false,

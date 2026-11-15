@@ -333,12 +333,20 @@ export function deleteLocalSystemLogs(logIds: string[]): void {
 }
 
 // -------------------------------------------------------------
-// Multi-Device Cloud Snapshot + Server Relay Sync Engine
+// Multi-Device Chunked Cloud Snapshot + Server Relay Sync Engine
 // -------------------------------------------------------------
 const SHARED_CLOUD_DOC_ID = 'shared_cloud_state_v1';
+const SNAP_META_DOC_ID = 'sync_snap_v2_meta';
 const FIRESTORE_REST_BASE = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents`;
 
-let isFirestoreSdkQuotaExhausted = true; // Use single-doc REST snapshot instead of 400-doc gRPC batches
+let isFirestoreSdkQuotaExhausted = true; // Use compact chunked REST snapshots instead of 400-doc gRPC batches
+let firestoreCooldownUntil = 0;
+let firestoreQuotaHit = false;
+let firestoreConsecutive429s = 0;
+
+export function isFirestoreQuotaLimited(): boolean {
+  return firestoreQuotaHit && Date.now() < firestoreCooldownUntil;
+}
 
 export async function pushToServerRelay(payload: Record<string, any>): Promise<any | null> {
   if (typeof window === 'undefined') return null;
@@ -369,17 +377,142 @@ interface CloudStatePayload {
   updatedAt: string;
 }
 
-async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
-  if (typeof window === 'undefined') return null;
-  if (typeof navigator !== 'undefined' && !navigator.onLine) return null;
+async function readFirestoreDocJson(docId: string): Promise<any | null> {
   try {
-    const url = `${FIRESTORE_REST_BASE}/monthlyPlans/${SHARED_CLOUD_DOC_ID}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`;
+    const url = `${FIRESTORE_REST_BASE}/monthlyPlans/${docId}?key=${firebaseConfig.apiKey}&_t=${Date.now()}`;
     const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) return null;
     const docData = await res.json();
     const rawJson = docData?.fields?.payloadJson?.stringValue;
     if (!rawJson || typeof rawJson !== 'string') return null;
-    return JSON.parse(rawJson) as CloudStatePayload;
+    return JSON.parse(rawJson);
+  } catch {
+    return null;
+  }
+}
+
+async function patchFirestoreDocJson(docId: string, jsonStr: string): Promise<'ok' | 'quota' | 'error'> {
+  if (Date.now() < firestoreCooldownUntil) return 'quota';
+  try {
+    const url = `${FIRESTORE_REST_BASE}/monthlyPlans/${docId}?key=${firebaseConfig.apiKey}`;
+    const bodyStr = JSON.stringify({
+      fields: {
+        id: { stringValue: docId },
+        monthKey: { stringValue: '__sync_snapshot__' },
+        payloadJson: { stringValue: jsonStr },
+        updatedAt: { stringValue: new Date().toISOString() },
+      },
+    });
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: bodyStr,
+    });
+    if (res.status === 200) {
+      firestoreQuotaHit = false;
+      firestoreConsecutive429s = 0;
+      firestoreCooldownUntil = 0;
+      return 'ok';
+    }
+    if (res.status === 429) {
+      firestoreQuotaHit = true;
+      firestoreConsecutive429s += 1;
+      const backoffMs = Math.min(300_000, 60_000 * firestoreConsecutive429s);
+      firestoreCooldownUntil = Date.now() + backoffMs;
+      return 'quota';
+    }
+    return 'error';
+  } catch {
+    return 'error';
+  }
+}
+
+function chunkArrayByByteSize<T>(items: T[], maxBytes = 320_000): T[][] {
+  if (!items || items.length === 0) return [];
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 2; // "[]"
+  for (const item of items) {
+    const serialized = JSON.stringify(item);
+    const len = serialized.length + 1;
+    if (current.length > 0 && currentBytes + len > maxBytes) {
+      chunks.push(current);
+      current = [item];
+      currentBytes = 2 + len;
+    } else {
+      current.push(item);
+      currentBytes += len;
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
+  if (typeof window === 'undefined') return null;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return null;
+  try {
+    // 1. Try reading chunked v2 metadata + chunks first
+    const meta = await readFirestoreDocJson(SNAP_META_DOC_ID);
+    if (meta && typeof meta === 'object') {
+      const clientChunksCount = Number(meta.clientChunksCount) || 0;
+      const warehouseChunksCount = Number(meta.warehouseChunksCount) || 0;
+      const planChunksCount = Number(meta.planChunksCount) || 0;
+
+      const fetchPromises: Promise<{ type: string; items: any[] }>[] = [];
+      for (let i = 0; i < clientChunksCount; i++) {
+        fetchPromises.push(
+          readFirestoreDocJson(`sync_snap_v2_clients_${i}`).then((d) => ({
+            type: 'clients',
+            items: Array.isArray(d?.items) ? d.items : [],
+          }))
+        );
+      }
+      for (let i = 0; i < warehouseChunksCount; i++) {
+        fetchPromises.push(
+          readFirestoreDocJson(`sync_snap_v2_warehouse_${i}`).then((d) => ({
+            type: 'warehouse',
+            items: Array.isArray(d?.items) ? d.items : [],
+          }))
+        );
+      }
+      for (let i = 0; i < planChunksCount; i++) {
+        fetchPromises.push(
+          readFirestoreDocJson(`sync_snap_v2_plans_${i}`).then((d) => ({
+            type: 'plans',
+            items: Array.isArray(d?.items) ? d.items : [],
+          }))
+        );
+      }
+
+      const results = await Promise.all(fetchPromises);
+      const clients: Client[] = [];
+      const warehouseProducts: WarehouseProduct[] = [];
+      const dailyPlans: any[] = [];
+      for (const r of results) {
+        if (r.type === 'clients') clients.push(...r.items);
+        else if (r.type === 'warehouse') warehouseProducts.push(...r.items);
+        else if (r.type === 'plans') dailyPlans.push(...r.items);
+      }
+
+      return {
+        clients,
+        warehouseProducts,
+        dailyPlans,
+        systemLogs: Array.isArray(meta.systemLogs) ? meta.systemLogs : [],
+        deletedClientIds: Array.isArray(meta.deletedClientIds) ? meta.deletedClientIds : [],
+        deletedWarehouseIds: Array.isArray(meta.deletedWarehouseIds) ? meta.deletedWarehouseIds : [],
+        deletedPlanIds: Array.isArray(meta.deletedPlanIds) ? meta.deletedPlanIds : [],
+        updatedAt: meta.updatedAt || new Date().toISOString(),
+      };
+    }
+
+    // 2. Fallback to legacy single-doc snapshot if present
+    const legacy = await readFirestoreDocJson(SHARED_CLOUD_DOC_ID);
+    if (legacy && typeof legacy === 'object') {
+      return legacy as CloudStatePayload;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -397,7 +530,7 @@ function computeStateSignature(state: CloudStatePayload): string {
   const wSig = (state.warehouseProducts || [])
     .map(
       (w) =>
-        `${w.id}:${w.totalPieces}:${w.initialTotalPieces ?? ''}:${w.initialEditCount ?? 0}:${(w.stockHistory || []).length}`
+        `${w.id}:${(w as any).updatedAt || ''}:${w.totalPieces}:${w.initialTotalPieces ?? ''}:${w.initialEditCount ?? 0}:${(w.stockHistory || []).length}`
     )
     .sort()
     .join('|');
@@ -421,6 +554,7 @@ function computeStateSignature(state: CloudStatePayload): string {
 async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return false;
+  if (Date.now() < firestoreCooldownUntil) return false;
 
   const sig = computeStateSignature(payload);
   if (sig === lastSavedCloudSignature) {
@@ -444,63 +578,98 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
         lastSuccess = true;
         continue;
       }
+      if (Date.now() < firestoreCooldownUntil) {
+        lastSuccess = false;
+        break;
+      }
 
-      // Ensure payload fits well within Firestore 1MB document limit
-      const compactClients = (currentPayload.clients || []).map((c) => ({
-        ...c,
-        logs: Array.isArray(c.logs) && c.logs.length > 35 ? c.logs.slice(0, 35) : c.logs || [],
-      }));
-      const compactWh = (currentPayload.warehouseProducts || []).map((w) => ({
-        ...w,
-        stockHistory:
-          Array.isArray(w.stockHistory) && w.stockHistory.length > 40
-            ? w.stockHistory.slice(0, 40)
-            : w.stockHistory || [],
-      }));
-      const compactLogs = (currentPayload.systemLogs || []).slice(0, 120);
+      const compactClients = cleanFirestoreData(
+        (currentPayload.clients || []).map((c) => ({
+          ...c,
+          logs: Array.isArray(c.logs) && c.logs.length > 30 ? c.logs.slice(0, 30) : c.logs || [],
+        }))
+      );
+      const compactWh = cleanFirestoreData(
+        (currentPayload.warehouseProducts || []).map((w) => ({
+          ...w,
+          stockHistory:
+            Array.isArray(w.stockHistory) && w.stockHistory.length > 35
+              ? w.stockHistory.slice(0, 35)
+              : w.stockHistory || [],
+        }))
+      );
+      const compactPlans = cleanFirestoreData(currentPayload.dailyPlans || []);
 
-      const serialized = JSON.stringify(
+      const clientChunks = chunkArrayByByteSize(compactClients, 320_000);
+      const warehouseChunks = chunkArrayByByteSize(compactWh, 320_000);
+      const planChunks = chunkArrayByByteSize(compactPlans, 320_000);
+
+      let abortedByQuota = false;
+      for (let i = 0; i < clientChunks.length; i++) {
+        const st = await patchFirestoreDocJson(
+          `sync_snap_v2_clients_${i}`,
+          JSON.stringify({ items: clientChunks[i] })
+        );
+        if (st === 'quota') {
+          abortedByQuota = true;
+          break;
+        }
+      }
+      if (abortedByQuota) {
+        lastSuccess = false;
+        break;
+      }
+
+      for (let i = 0; i < warehouseChunks.length; i++) {
+        const st = await patchFirestoreDocJson(
+          `sync_snap_v2_warehouse_${i}`,
+          JSON.stringify({ items: warehouseChunks[i] })
+        );
+        if (st === 'quota') {
+          abortedByQuota = true;
+          break;
+        }
+      }
+      if (abortedByQuota) {
+        lastSuccess = false;
+        break;
+      }
+
+      for (let i = 0; i < planChunks.length; i++) {
+        const st = await patchFirestoreDocJson(
+          `sync_snap_v2_plans_${i}`,
+          JSON.stringify({ items: planChunks[i] })
+        );
+        if (st === 'quota') {
+          abortedByQuota = true;
+          break;
+        }
+      }
+      if (abortedByQuota) {
+        lastSuccess = false;
+        break;
+      }
+
+      const metaJson = JSON.stringify(
         cleanFirestoreData({
-          ...currentPayload,
-          clients: compactClients,
-          warehouseProducts: compactWh,
-          systemLogs: compactLogs,
+          clientChunksCount: clientChunks.length,
+          warehouseChunksCount: warehouseChunks.length,
+          planChunksCount: planChunks.length,
+          systemLogs: (currentPayload.systemLogs || []).slice(0, 80),
+          deletedClientIds: currentPayload.deletedClientIds || [],
+          deletedWarehouseIds: currentPayload.deletedWarehouseIds || [],
+          deletedPlanIds: currentPayload.deletedPlanIds || [],
+          updatedAt: new Date().toISOString(),
         })
       );
 
-      const url = `${FIRESTORE_REST_BASE}/monthlyPlans/${SHARED_CLOUD_DOC_ID}?key=${firebaseConfig.apiKey}`;
-      const bodyStr = JSON.stringify({
-        fields: {
-          id: { stringValue: SHARED_CLOUD_DOC_ID },
-          monthKey: { stringValue: '__sync_snapshot__' },
-          payloadJson: { stringValue: serialized },
-          updatedAt: { stringValue: new Date().toISOString() },
-        },
-      });
-
-      let wrote = false;
-      for (let attempt = 1; attempt <= 30; attempt++) {
-        try {
-          const res = await fetch(url, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: bodyStr,
-          });
-          if (res.status === 200) {
-            wrote = true;
-            lastSavedCloudSignature = currentSig;
-            break;
-          }
-        } catch {
-          // transient fetch error
-        }
-        // If another newer payload was queued while retrying, switch to the newer payload immediately
-        if (queuedCloudSnapshotPayload) {
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 180));
+      const metaSt = await patchFirestoreDocJson(SNAP_META_DOC_ID, metaJson);
+      if (metaSt === 'ok') {
+        lastSavedCloudSignature = currentSig;
+        lastSuccess = true;
+      } else {
+        lastSuccess = false;
       }
-      lastSuccess = wrote;
     }
   } finally {
     isWritingCloudSnapshot = false;
@@ -694,14 +863,15 @@ export async function addSystemLog(entry: {
 
 // Sync Clients (Single & Batched Bulk)
 export async function syncClientToFirestore(client: Client): Promise<void> {
-  pushToServerRelay({ clients: [client] });
+  await pushToServerRelay({ clients: [client] });
   scheduleCloudStatePush(100);
 }
 
 export async function syncClientsBulkToFirestore(clients: Client[]): Promise<void> {
   if (!clients || clients.length === 0) return;
-  pushToServerRelay({ clients });
-  scheduleCloudStatePush(100);
+  await pushToServerRelay({ clients });
+  const payload = buildLocalCloudStatePayload();
+  await writeFirestoreCloudSnapshot(payload);
 }
 
 export async function deleteClientFromFirestore(
@@ -822,7 +992,7 @@ export async function deletePlanFromFirestore(planId: string): Promise<void> {
 
 // Sync Warehouse Products
 export async function syncWarehouseProductToFirestore(product: WarehouseProduct): Promise<void> {
-  pushToServerRelay({ warehouseProducts: [product] });
+  await pushToServerRelay({ warehouseProducts: [product] });
   scheduleCloudStatePush(100);
 }
 
@@ -830,8 +1000,9 @@ export async function syncWarehouseProductsBulkToFirestore(
   products: WarehouseProduct[]
 ): Promise<void> {
   if (!products || products.length === 0) return;
-  pushToServerRelay({ warehouseProducts: products });
-  scheduleCloudStatePush(100);
+  await pushToServerRelay({ warehouseProducts: products });
+  const payload = buildLocalCloudStatePayload();
+  await writeFirestoreCloudSnapshot(payload);
 }
 
 export async function deleteWarehouseProductFromFirestore(productId: string): Promise<void> {
@@ -935,13 +1106,18 @@ export function subscribeToFirestoreData(callbacks: {
 }) {
   const unsubscribers: (() => void)[] = [];
 
-  // Listen to monthlyPlans collection which also holds our real-time shared_cloud_state_v1 document!
+  // Listen to monthlyPlans collection which also holds our real-time chunked sync snapshots!
   const unsubCloudState = onSnapshot(
     collection(db, 'monthlyPlans'),
     { includeMetadataChanges: true },
     (snapshot) => {
       const monthlyList: MonthlyPlan[] = [];
+      let hasV2Update = false;
       snapshot.forEach((d) => {
+        if (d.id === SNAP_META_DOC_ID || d.id.startsWith('sync_snap_v2_')) {
+          hasV2Update = true;
+          return;
+        }
         if (d.id === SHARED_CLOUD_DOC_ID) {
           const docData = d.data();
           if (docData && typeof docData.payloadJson === 'string') {
@@ -958,6 +1134,11 @@ export function subscribeToFirestoreData(callbacks: {
           monthlyList.push(d.data() as MonthlyPlan);
         }
       });
+      if (hasV2Update) {
+        readFirestoreCloudSnapshot().then((parsed) => {
+          if (parsed) applyIncomingStateToCallbacks(parsed, callbacks);
+        });
+      }
       if (callbacks.onMonthlyPlansChange) {
         callbacks.onMonthlyPlansChange(monthlyList);
       }
@@ -1078,11 +1259,13 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
         whMap.set(w.id, w);
         return;
       }
+      const exUpd = (existing as any).updatedAt ? new Date((existing as any).updatedAt).getTime() : 0;
+      const newUpd = (w as any).updatedAt ? new Date((w as any).updatedAt).getTime() : 0;
       const exEdits = existing.initialEditCount || 0;
       const newEdits = w.initialEditCount || 0;
       const exHist = Array.isArray(existing.stockHistory) ? existing.stockHistory.length : 0;
       const newHist = Array.isArray(w.stockHistory) ? w.stockHistory.length : 0;
-      if (newEdits > exEdits || newHist > exHist) {
+      if (newUpd > exUpd || newEdits > exEdits || newHist > exHist) {
         whMap.set(w.id, w);
       }
     };

@@ -81,6 +81,7 @@ import {
   syncWarehouseProductsBulkToFirestore,
   deleteWarehouseProductFromFirestore,
   syncMonthlyPlanToFirestore,
+  isFirestoreQuotaLimited,
 } from './services/firebase';
 import { formatDateDMY } from './utils/format';
 import { ImportedClientPayload } from './components/ExcelClientImporter';
@@ -448,7 +449,7 @@ export default function App() {
   };
 
   // Bulk Import Warehouse Products from Excel (.xlsx)
-  const handleBulkImportWarehouseProducts = (
+  const handleBulkImportWarehouseProducts = async (
     productsData: ImportedWarehouseProductPayload[]
   ) => {
     const currentUsername = user?.username || 'adminc';
@@ -460,7 +461,7 @@ export default function App() {
 
     const createdProducts = storageService.addWarehouseProductsBulk(productsData);
     setWarehouseProducts(storageService.getWarehouseProducts());
-    syncWarehouseProductsBulkToFirestore(createdProducts);
+    await syncWarehouseProductsBulkToFirestore(createdProducts);
 
     const totalPiecesImported = createdProducts.reduce((sum, p) => sum + (p.totalPieces || 0), 0);
     const totalSumImported = createdProducts.reduce((sum, p) => sum + (p.totalSum || 0), 0);
@@ -476,9 +477,15 @@ export default function App() {
         .join(', ')}${createdProducts.length > 8 ? '...' : ''}`,
     });
 
-    showToast(
-      `Excel (.xlsx) fayldan ${createdProducts.length} xil mahsulot (${totalPiecesImported.toLocaleString('uz-UZ')} dona) omborga muvaffaqiyatli yuklandi!`
-    );
+    if (isFirestoreQuotaLimited()) {
+      showToast(
+        `${createdProducts.length} xil mahsulot serverga yuklandi, ammo Firebase kunlik bepul limiti to'lgani uchun boshqa qurilmalar faqat shu manzil orqali ko'ra oladi.`
+      );
+    } else {
+      showToast(
+        `Excel (.xlsx) fayldan ${createdProducts.length} xil mahsulot (${totalPiecesImported.toLocaleString('uz-UZ')} dona) omborga muvaffaqiyatli yuklandi!`
+      );
+    }
   };
 
   // Update Existing Warehouse Product (Faqat adminlar uchun)
@@ -1043,13 +1050,14 @@ export default function App() {
     const runSilentAutoSync = async () => {
       if (typeof navigator !== 'undefined' && !navigator.onLine) return;
       try {
-        // Flush any queued offline mutations automatically
+        // Flush any queued offline mutations automatically in a single bulk batch
         const queue = storageService.getSyncQueue();
         if (queue.length > 0) {
-          for (const item of queue) {
-            if ((item.action === 'create' || item.action === 'update') && item.client) {
-              await syncClientToFirestore(item.client);
-            }
+          const queuedClients = queue
+            .filter((item) => (item.action === 'create' || item.action === 'update') && item.client)
+            .map((item) => item.client as Client);
+          if (queuedClients.length > 0) {
+            await syncClientsBulkToFirestore(queuedClients);
           }
           storageService.clearSyncQueue();
           setPendingSyncCount(0);
@@ -1194,7 +1202,7 @@ export default function App() {
   };
 
   // Handle Bulk Import Clients from Excel (.xlsx) — Faqat Adminlar (adminc va adminc1) uchun
-  const handleBulkImportClients = (clientsData: ImportedClientPayload[]) => {
+  const handleBulkImportClients = async (clientsData: ImportedClientPayload[]) => {
     const currentUsername = user?.username || 'adminc';
     if (user?.role !== 'admin' && currentUsername !== 'adminc' && currentUsername !== 'adminc1') {
       showToast("Faqat adminlar Excel (.xlsx) fayldan mijozlarni yuklash huquqiga ega!");
@@ -1206,8 +1214,8 @@ export default function App() {
     const createdClients = storageService.addClientsBulk(clientsData, currentUsername);
     setClients(storageService.getClients());
 
-    // Sync imported clients to Firestore using batched writeBatch (O(N/400) network commits)
-    syncClientsBulkToFirestore(createdClients);
+    // Sync imported clients to Server Relay & chunked Cloud Snapshots
+    await syncClientsBulkToFirestore(createdClients);
 
     const totalDebtImported = createdClients.reduce((sum, c) => sum + (c.currentDebt || 0), 0);
 
@@ -1222,9 +1230,15 @@ export default function App() {
         .join(', ')}${createdClients.length > 8 ? '...' : ''}`,
     });
 
-    showToast(
-      `Excel (.xlsx) fayldan ${createdClients.length} ta yangi mijoz bazaga muvaffaqiyatli yuklandi!`
-    );
+    if (isFirestoreQuotaLimited()) {
+      showToast(
+        `${createdClients.length} ta mijoz serverga yuklandi, ammo Firebase kunlik bepul limiti to'lgani uchun boshqa qurilmalar faqat shu manzil orqali ko'ra oladi.`
+      );
+    } else {
+      showToast(
+        `Excel (.xlsx) fayldan ${createdClients.length} ta yangi mijoz bazaga muvaffaqiyatli yuklandi!`
+      );
+    }
     setEditingClient(null);
     setClientFormInitialMode('single');
     setIsFormModalOpen(false);
