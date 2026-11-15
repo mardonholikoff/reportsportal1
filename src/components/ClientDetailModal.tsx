@@ -29,6 +29,11 @@ import {
   Check,
   ExternalLink,
   RotateCcw,
+  Activity,
+  PhoneCall,
+  Receipt,
+  CreditCard,
+  PackageCheck,
 } from 'lucide-react';
 import { StickyTableWrapper } from './StickyTableWrapper';
 
@@ -104,6 +109,17 @@ export const ClientDetailModal: React.FC<Props> = ({
     const fresh = storageService.getClientById(propClient.id);
     return fresh || propClient;
   }, [propClient, dailyPlans, isOpen]);
+
+  // Reset action filter and selected action detail when opening modal or switching client
+  React.useEffect(() => {
+    if (isOpen) {
+      setActionStartDate('');
+      setActionEndDate('');
+      setActionDateMode('range');
+      setActiveActionPreset('all');
+      setSelectedActionDetailId(null);
+    }
+  }, [propClient?.id, isOpen]);
 
   // Compute the latest note by agentp1 regarding this client
   const latestAgentNote = useMemo(() => {
@@ -185,6 +201,15 @@ export const ClientDetailModal: React.FC<Props> = ({
     return agentCandidate || candidates[0];
   }, [client, dailyPlans, isOpen]);
 
+  // Agent actions date filter state (supports both single day and date range)
+  const [actionStartDate, setActionStartDate] = useState('');
+  const [actionEndDate, setActionEndDate] = useState('');
+  const [actionDateMode, setActionDateMode] = useState<'range' | 'single'>('range');
+  const [activeActionPreset, setActiveActionPreset] = useState<
+    'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'single' | 'custom'
+  >('all');
+  const [selectedActionDetailId, setSelectedActionDetailId] = useState<string | null>(null);
+
   // Delivered products date filter state
   const [productStartDate, setProductStartDate] = useState('');
   const [productEndDate, setProductEndDate] = useState('');
@@ -198,6 +223,20 @@ export const ClientDetailModal: React.FC<Props> = ({
   const [activeLogPreset, setActiveLogPreset] = useState<
     'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'custom'
   >('all');
+
+  const handleActionPresetChange = (
+    preset: 'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth'
+  ) => {
+    setActiveActionPreset(preset);
+    if (preset === 'today' || preset === 'yesterday') {
+      setActionDateMode('single');
+    } else if (preset === 'last7' || preset === 'thisMonth') {
+      setActionDateMode('range');
+    }
+    const range = getPresetDateRange(preset);
+    setActionStartDate(range.start);
+    setActionEndDate(range.end);
+  };
 
   const handleProductPresetChange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth') => {
     setActiveProductPreset(preset);
@@ -628,6 +667,377 @@ export const ClientDetailModal: React.FC<Props> = ({
     return filteredDeliveredProducts.reduce((sum, p) => sum + (p.returnedQuantity || 0), 0);
   }, [filteredDeliveredProducts]);
 
+  // Extract all agent actions & receipts for this client (visit/call actions + product/general receipts)
+  const allAgentActions = useMemo(() => {
+    if (!client) return [];
+
+    interface AgentActionProductItem {
+      name: string;
+      unit: string;
+      quantity: number;
+      unitPrice: number;
+      totalPrice: number;
+    }
+
+    interface AgentActionRow {
+      id: string;
+      planId?: string;
+      planDate: string;
+      date: string; // YYYY-MM-DD
+      timeStr: string; // HH:mm
+      sortKey: string;
+      author: string;
+      actionType: 'joyiga borildi' | 'telefon qilindi' | 'telefon qilindi + joyiga borildi' | 'standalone_payment';
+      actionLabel: string;
+      isClosed?: boolean;
+      productReceiptUsd: number;
+      productMethodLabel?: string;
+      simpleReceiptUsd: number;
+      simpleMethodLabel?: string;
+      totalReceiptUsd: number;
+      deliveredItems: AgentActionProductItem[];
+      returnedItems: AgentActionProductItem[];
+      deliveryDebtUsd?: number;
+      note?: string;
+    }
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const toLocalYMD = (raw?: string, fallback?: string): string => {
+      if (!raw) return fallback || '';
+      const trimmed = raw.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+      const d = new Date(trimmed);
+      if (!isNaN(d.getTime())) {
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      }
+      return trimmed.slice(0, 10) || fallback || '';
+    };
+    const extractTimeHM = (raw?: string): string => {
+      if (!raw || !raw.includes('T')) return '';
+      const d = new Date(raw);
+      if (!isNaN(d.getTime())) {
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+      return raw.slice(11, 16);
+    };
+    const getActionLabel = (actType?: string): string => {
+      if (actType === 'telefon qilindi') return 'Telefon qilish';
+      if (actType === 'joyiga borildi') return 'Joyiga borish';
+      if (actType === 'telefon qilindi + joyiga borildi') return 'Joyiga borish + Telefon qilish';
+      return actType || 'Joyiga borish';
+    };
+
+    const rows: AgentActionRow[] = [];
+
+    try {
+      const sourcePlans =
+        dailyPlans && dailyPlans.length > 0 ? dailyPlans : storageService.getDailyPlans();
+      const rawClientPlans = sourcePlans.filter(
+        (p) =>
+          p &&
+          (p.clientId === client.id ||
+            ((p.clientName || '').trim().toLowerCase() === client.name.trim().toLowerCase() &&
+              (p.clientPhone || '').replace(/\D/g, '') === (client.phone || '').replace(/\D/g, '')))
+      );
+
+      const getEffectiveDate = (p: DailyPlanItem): string =>
+        getClosedDateKey(p) ||
+        (p as any).lastClosedDateKey ||
+        getPlanDateKey(p) ||
+        toLocalYMD(p.planDate || p.createdAt);
+
+      const getFreshnessScore = (p: DailyPlanItem): string =>
+        p.lastExecutedAt ||
+        (p as any).closedUpdatedAt ||
+        p.reopenedAt ||
+        p.closedAt ||
+        p.completedAt ||
+        p.createdAt ||
+        '';
+
+      const dedupByDate = new Map<string, DailyPlanItem>();
+      rawClientPlans.forEach((plan) => {
+        const dKey = getEffectiveDate(plan) || plan.id;
+        const existing = dedupByDate.get(dKey);
+        if (!existing || getFreshnessScore(plan) >= getFreshnessScore(existing)) {
+          dedupByDate.set(dKey, plan);
+        }
+      });
+
+      const clientPlans = Array.from(dedupByDate.values());
+
+      clientPlans.forEach((plan) => {
+        const planDateKey = getEffectiveDate(plan) || toLocalYMD(plan.createdAt);
+        const hasTopLevelOps = Boolean(
+          plan.actionDone ||
+            (plan.financialAction && plan.financialAction.amount > 0) ||
+            (plan.productsDelivered && plan.productsDelivered.length > 0) ||
+            (plan.deliveryPayment && plan.deliveryPayment.paidAmount > 0) ||
+            (plan.productsReturned && plan.productsReturned.length > 0)
+        );
+
+        const planActions =
+          plan.actionsHistory && plan.actionsHistory.length > 0
+            ? plan.actionsHistory
+            : hasTopLevelOps && !plan.closedWithoutAction
+            ? [
+                {
+                  timestamp:
+                    plan.lastExecutedAt || plan.completedAt || plan.closedAt || plan.createdAt,
+                  author: plan.lastExecutedBy || plan.closedBy || plan.agentUsername || 'agentp1',
+                  actionDone: plan.actionDone || ('joyiga borildi' as const),
+                  financialAction: plan.financialAction,
+                  deliveryPayment: plan.deliveryPayment,
+                  productsDelivered: plan.productsDelivered,
+                  productsReturned: plan.productsReturned,
+                  reportNote: plan.reportNote,
+                },
+              ]
+            : [];
+
+        planActions.forEach((act, actIdx) => {
+          const rawTs = act.timestamp || plan.lastExecutedAt || plan.completedAt || plan.createdAt;
+          const dateStr =
+            planActions.length === 1 && planDateKey
+              ? planDateKey
+              : toLocalYMD(rawTs, planDateKey);
+          const timeStr = extractTimeHM(rawTs);
+          const author = act.author || plan.lastExecutedBy || plan.agentUsername || 'agentp1';
+          const actType = act.actionDone || plan.actionDone || 'joyiga borildi';
+
+          // Shunchaki to'lov (Section 2: financialAction)
+          let simpleReceiptUsd = 0;
+          let simpleMethodLabel = '';
+          const fin = act.financialAction;
+          if (fin) {
+            if (Array.isArray(fin.splits) && fin.splits.length > 0) {
+              const splitSum = fin.splits.reduce((s, sp) => s + (Number(sp.amount) || 0), 0);
+              simpleReceiptUsd =
+                Math.round((Number(fin.amount) > 0 ? Number(fin.amount) : splitSum) * 100) / 100;
+              simpleMethodLabel = fin.splits
+                .filter((sp) => (Number(sp.amount) || 0) > 0)
+                .map((sp) => `${sp.methodLabel || sp.method}: ${formatMoney(sp.amount)}`)
+                .join(', ');
+            } else if ((Number(fin.amount) || 0) > 0) {
+              simpleReceiptUsd = Math.round(Number(fin.amount) * 100) / 100;
+              simpleMethodLabel = fin.methodLabel || fin.method || "Shunchaki to'lov";
+            }
+          }
+
+          // Mahsulot uchun tushum (Section 3: deliveryPayment)
+          let productReceiptUsd = 0;
+          let productMethodLabel = '';
+          const dp = act.deliveryPayment || (planActions.length === 1 ? plan.deliveryPayment : undefined);
+          if (dp) {
+            if (Array.isArray(dp.splits) && dp.splits.length > 0) {
+              const splitSum = dp.splits.reduce((s, sp) => s + (Number(sp.amount) || 0), 0);
+              productReceiptUsd =
+                Math.round((Number(dp.paidAmount) > 0 ? Number(dp.paidAmount) : splitSum) * 100) /
+                100;
+              productMethodLabel = dp.splits
+                .filter((sp) => (Number(sp.amount) || 0) > 0)
+                .map((sp) => `${sp.methodLabel || sp.method}: ${formatMoney(sp.amount)}`)
+                .join(', ');
+            } else if ((Number(dp.paidAmount) || 0) > 0) {
+              productReceiptUsd = Math.round(Number(dp.paidAmount) * 100) / 100;
+              productMethodLabel = dp.paymentLabel || dp.paymentType || "Mahsulot to'lovi";
+            }
+          }
+
+          const totalReceiptUsd = Math.round((productReceiptUsd + simpleReceiptUsd) * 100) / 100;
+
+          const deliveredList = (act.productsDelivered || []).filter(
+            (p) => p && (p.name || '').trim() !== '' && (Number(p.quantity) || 0) > 0
+          );
+          const deliveredItems: AgentActionProductItem[] = deliveredList.map((p) => {
+            const u = !p.unit || p.unit.toLowerCase() === 'birlik' ? 'dona' : p.unit;
+            const qty = Number(p.quantity) || 0;
+            const uPrice = Number(p.unitPrice) || 0;
+            const tPrice =
+              p.totalPrice !== undefined && p.totalPrice >= 0
+                ? Number(p.totalPrice)
+                : Math.round(qty * uPrice * 100) / 100;
+            return {
+              name: p.name,
+              unit: u,
+              quantity: qty,
+              unitPrice: uPrice,
+              totalPrice: tPrice,
+            };
+          });
+
+          const returnedList = (act.productsReturned || []).filter(
+            (r) => r && (r.name || '').trim() !== '' && (Number(r.quantity) || 0) > 0
+          );
+          const returnedItems: AgentActionProductItem[] = returnedList.map((r) => {
+            const u = !r.unit || r.unit.toLowerCase() === 'birlik' ? 'dona' : r.unit;
+            const qty = Number(r.quantity) || 0;
+            const uPrice = Number(r.unitPrice) || 0;
+            return {
+              name: r.name,
+              unit: u,
+              quantity: qty,
+              unitPrice: uPrice,
+              totalPrice: Math.round(qty * uPrice * 100) / 100,
+            };
+          });
+
+          const noteParts: string[] = [];
+          const rawActNote = (
+            act.reportNote ||
+            (planActions.length === 1 ? plan.reportNote : '') ||
+            ''
+          ).trim();
+          if (rawActNote) noteParts.push(rawActNote);
+          if (fin?.note && fin.note.trim() && fin.note.trim() !== rawActNote) {
+            noteParts.push(fin.note.trim());
+          }
+          if (plan.isClosed && plan.closeReason && plan.closeReason.trim()) {
+            const cr = plan.closeReason.trim();
+            if (!noteParts.includes(cr)) {
+              noteParts.push(`Yopilish: ${cr}`);
+            }
+          }
+
+          rows.push({
+            id: `act_${plan.id}_${actIdx}`,
+            planId: plan.id,
+            planDate: planDateKey || dateStr,
+            date: dateStr,
+            timeStr,
+            sortKey: `${dateStr}T${timeStr || '00:00'}`,
+            author,
+            actionType: actType,
+            actionLabel: getActionLabel(actType),
+            isClosed: Boolean(plan.isClosed || plan.status === 'yopildi'),
+            productReceiptUsd,
+            productMethodLabel,
+            simpleReceiptUsd,
+            simpleMethodLabel,
+            totalReceiptUsd,
+            deliveredItems,
+            returnedItems,
+            deliveryDebtUsd: dp?.debtAmount ? Math.round(Number(dp.debtAmount) * 100) / 100 : 0,
+            note: noteParts.join(' · '),
+          });
+        });
+      });
+
+      // Also catch standalone agent payment logs (outside daily plans, not _fin / _whdebt)
+      if (client.logs && client.logs.length > 0) {
+        client.logs.forEach((log) => {
+          if (
+            log.type !== 'payment' ||
+            String(log.id || '').endsWith('_fin') ||
+            String(log.id || '').endsWith('_fin_edit') ||
+            String(log.id || '').endsWith('_whdebt')
+          ) {
+            return;
+          }
+          const authorLower = (log.author || '').toLowerCase();
+          if (!authorLower.includes('agent')) return;
+
+          const text = `${log.title || ''} ${log.details || ''}`.toLowerCase();
+          if (text.includes("qarz qo'shildi") || text.includes("qarzdorlik qo'shildi")) return;
+
+          const amt = Math.round((Number(log.amountChanged) || 0) * 100) / 100;
+          if (amt <= 0) return;
+
+          const dateStr = toLocalYMD(log.timestamp);
+          const timeStr = extractTimeHM(log.timestamp);
+          const isProductPurpose = log.purpose === 'product';
+
+          rows.push({
+            id: `standalone_log_${log.id}`,
+            planDate: dateStr,
+            date: dateStr,
+            timeStr,
+            sortKey: `${dateStr}T${timeStr || '00:00'}`,
+            author: log.author || 'agentp1',
+            actionType: 'standalone_payment',
+            actionLabel: "Rejadan tashqari to'lov",
+            productReceiptUsd: isProductPurpose ? amt : 0,
+            productMethodLabel: isProductPurpose ? log.paymentMethodLabel || "Mahsulot to'lovi" : '',
+            simpleReceiptUsd: isProductPurpose ? 0 : amt,
+            simpleMethodLabel: isProductPurpose ? '' : log.paymentMethodLabel || "Shunchaki to'lov",
+            totalReceiptUsd: amt,
+            deliveredItems: [],
+            returnedItems: [],
+            note: log.details || log.title || '',
+          });
+        });
+      }
+    } catch (err) {
+      console.error('Error building agent actions history:', err);
+    }
+
+    rows.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+    return rows;
+  }, [client, dailyPlans, isOpen]);
+
+  const filteredAgentActions = useMemo(() => {
+    return allAgentActions.filter((row) => {
+      if (actionStartDate && row.date < actionStartDate) return false;
+      if (actionEndDate && row.date > actionEndDate) return false;
+      return true;
+    });
+  }, [allAgentActions, actionStartDate, actionEndDate]);
+
+  const agentActionsSummary = useMemo(() => {
+    let totalActionsCount = 0;
+    let visitOnlyCount = 0;
+    let phoneOnlyCount = 0;
+    let bothCount = 0;
+    let standalonePaymentCount = 0;
+    let totalReceiptUsd = 0;
+    let productReceiptUsd = 0;
+    let simpleReceiptUsd = 0;
+    let productPaymentCount = 0;
+    let simplePaymentCount = 0;
+
+    filteredAgentActions.forEach((row) => {
+      if (row.actionType === 'joyiga borildi') {
+        totalActionsCount++;
+        visitOnlyCount++;
+      } else if (row.actionType === 'telefon qilindi') {
+        totalActionsCount++;
+        phoneOnlyCount++;
+      } else if (row.actionType === 'telefon qilindi + joyiga borildi') {
+        totalActionsCount++;
+        bothCount++;
+      } else {
+        standalonePaymentCount++;
+      }
+
+      totalReceiptUsd += row.totalReceiptUsd;
+      productReceiptUsd += row.productReceiptUsd;
+      simpleReceiptUsd += row.simpleReceiptUsd;
+      if (row.productReceiptUsd > 0) productPaymentCount++;
+      if (row.simpleReceiptUsd > 0) simplePaymentCount++;
+    });
+
+    return {
+      totalActionsCount,
+      visitOnlyCount,
+      phoneOnlyCount,
+      bothCount,
+      standalonePaymentCount,
+      totalReceiptUsd: Math.round(totalReceiptUsd * 100) / 100,
+      productReceiptUsd: Math.round(productReceiptUsd * 100) / 100,
+      simpleReceiptUsd: Math.round(simpleReceiptUsd * 100) / 100,
+      productPaymentCount,
+      simplePaymentCount,
+    };
+  }, [filteredAgentActions]);
+
+  const selectedActionDetail = useMemo(
+    () =>
+      selectedActionDetailId
+        ? filteredAgentActions.find((row) => row.id === selectedActionDetailId) || null
+        : null,
+    [filteredAgentActions, selectedActionDetailId]
+  );
+
   // Filtered audit logs based on log date filter
   const filteredLogs = useMemo(() => {
     const rawLogs = client?.logs || [];
@@ -906,8 +1316,381 @@ export const ClientDetailModal: React.FC<Props> = ({
             </div>
           )}
 
+          {/* ========================================================= */}
+          {/* AGENTLAR QILGAN AMALLAR VA TUSHUMLAR JADVALI */}
+          {/* ========================================================= */}
+          <div className="space-y-3 pt-2 border-t border-rose-100">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Activity className="w-4 h-4 text-rose-700" />
+                <h3 className="text-sm font-bold text-neutral-900 uppercase tracking-wider">
+                  Agentlar qilgan amallar va tushumlar ({filteredAgentActions.length} ta yozuv)
+                </h3>
+                {filteredAgentActions.length > 0 && (
+                  <span className="text-[11px] font-semibold text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-200">
+                    Qator ustiga bossangiz mahsulotlar ko&apos;rinadi
+                  </span>
+                )}
+              </div>
+              {(actionStartDate || actionEndDate) && (
+                <span className="text-[11px] font-mono font-bold text-rose-800 bg-rose-50 px-2.5 py-0.5 rounded-lg border border-rose-200">
+                  {actionStartDate && actionEndDate && actionStartDate === actionEndDate
+                    ? `Sana: ${formatDateDMY(actionStartDate)}`
+                    : `${actionStartDate ? formatDateDMY(actionStartDate) : '...'} — ${
+                        actionEndDate ? formatDateDMY(actionEndDate) : '...'
+                      }`}
+                </span>
+              )}
+            </div>
+
+            {/* Single-day or Date-range filter bar for Agent Actions */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-rose-50/60 border border-rose-100 text-xs">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-bold text-neutral-700 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-rose-700" />
+                  <span>Muddat:</span>
+                </span>
+                {(['all', 'today', 'yesterday', 'last7', 'thisMonth'] as const).map((preset) => {
+                  const labels = {
+                    all: 'Barchasi',
+                    today: 'Bugun',
+                    yesterday: 'Kecha',
+                    last7: 'Oxirgi 7 kun',
+                    thisMonth: 'Bu oy',
+                  };
+                  const isActive = activeActionPreset === preset;
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => handleActionPresetChange(preset)}
+                      className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                        isActive
+                          ? 'bg-rose-700 text-white shadow-2xs'
+                          : 'bg-white text-neutral-700 hover:bg-rose-100/60 border border-neutral-200'
+                      }`}
+                    >
+                      {labels[preset]}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionDateMode('single');
+                      if (actionStartDate) {
+                        setActionEndDate(actionStartDate);
+                        setActiveActionPreset('single');
+                      } else if (actionEndDate) {
+                        setActionStartDate(actionEndDate);
+                        setActiveActionPreset('single');
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
+                      actionDateMode === 'single'
+                        ? 'bg-neutral-900 text-white'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Bir kun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionDateMode('range');
+                      if (activeActionPreset === 'single') {
+                        setActiveActionPreset('custom');
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
+                      actionDateMode === 'range'
+                        ? 'bg-neutral-900 text-white'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Kunlar oralig&apos;i
+                  </button>
+                </div>
+
+                {actionDateMode === 'single' ? (
+                  <input
+                    type="date"
+                    value={actionStartDate}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setActionStartDate(val);
+                      setActionEndDate(val);
+                      setActiveActionPreset(val ? 'single' : 'all');
+                    }}
+                    className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                    title="Aniq bir kunni tanlash"
+                  />
+                ) : (
+                  <>
+                    <input
+                      type="date"
+                      value={actionStartDate}
+                      onChange={(e) => {
+                        setActionStartDate(e.target.value);
+                        setActiveActionPreset('custom');
+                      }}
+                      className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                      title="Boshlanish sanasi"
+                    />
+                    <span className="text-neutral-400 font-bold">-</span>
+                    <input
+                      type="date"
+                      value={actionEndDate}
+                      onChange={(e) => {
+                        setActionEndDate(e.target.value);
+                        setActiveActionPreset('custom');
+                      }}
+                      className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                      title="Tugash sanasi"
+                    />
+                  </>
+                )}
+
+                {(actionStartDate || actionEndDate) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionDateMode('range');
+                      handleActionPresetChange('all');
+                    }}
+                    className="text-[10.5px] text-rose-700 hover:text-rose-900 font-bold underline cursor-pointer px-1"
+                  >
+                    Tozalash
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Summary KPI Cards for Selected Date / Range */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+              {/* 1. Nechcha marotaba amal qilgani */}
+              <div className="p-3 rounded-2xl bg-white border border-rose-200/80 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-neutral-600 uppercase">
+                    Amallar soni
+                  </span>
+                  <PhoneCall className="w-3.5 h-3.5 text-rose-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-neutral-900 tabular-nums mt-1">
+                  {agentActionsSummary.totalActionsCount} marta
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-neutral-100 flex flex-wrap gap-1 text-[10px]">
+                  <span className="px-1.5 py-0.5 rounded bg-rose-50 text-rose-800 font-semibold border border-rose-200/70">
+                    Joyiga: {agentActionsSummary.visitOnlyCount}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-800 font-semibold border border-sky-200/70">
+                    Tel: {agentActionsSummary.phoneOnlyCount}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-800 font-semibold border border-indigo-200/70">
+                    Joyi+Tel: {agentActionsSummary.bothCount}
+                  </span>
+                </div>
+              </div>
+
+              {/* 2. Jami tushum */}
+              <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-emerald-900 uppercase">
+                    Jami tushum
+                  </span>
+                  <Receipt className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-emerald-900 tabular-nums mt-1">
+                  {formatMoney(agentActionsSummary.totalReceiptUsd)}
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-emerald-200/60 text-[10px] text-emerald-800 font-medium">
+                  Tanlangan vaqtdagi umumiy tushum
+                </div>
+              </div>
+
+              {/* 3. Mahsulot uchun tushum */}
+              <div className="p-3 rounded-2xl bg-white border border-amber-200 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-amber-900 uppercase">
+                    Mahsulot uchun
+                  </span>
+                  <PackageCheck className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-amber-900 tabular-nums mt-1">
+                  {formatMoney(agentActionsSummary.productReceiptUsd)}
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-amber-100 text-[10px] text-amber-800 font-medium">
+                  {agentActionsSummary.productPaymentCount > 0
+                    ? `${agentActionsSummary.productPaymentCount} ta mahsulot to'lovi`
+                    : "Mahsulot uchun to'lov yo'q"}
+                </div>
+              </div>
+
+              {/* 4. Shunchaki to'lov */}
+              <div className="p-3 rounded-2xl bg-white border border-indigo-200 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10.5px] font-bold text-indigo-900 uppercase">
+                    Shunchaki to&apos;lov
+                  </span>
+                  <CreditCard className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                </div>
+                <div className="text-lg sm:text-xl font-extrabold font-display font-mono text-indigo-900 tabular-nums mt-1">
+                  {formatMoney(agentActionsSummary.simpleReceiptUsd)}
+                </div>
+                <div className="mt-1.5 pt-1.5 border-t border-indigo-100 text-[10px] text-indigo-800 font-medium">
+                  {agentActionsSummary.simplePaymentCount > 0
+                    ? `${agentActionsSummary.simplePaymentCount} ta qarz/avans to'lovi`
+                    : "Shunchaki to'lov yo'q"}
+                </div>
+              </div>
+            </div>
+
+            {/* Agent Actions Table */}
+            {filteredAgentActions.length === 0 ? (
+              <div className="p-6 text-center rounded-2xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-500">
+                {allAgentActions.length === 0
+                  ? "Ushbu mijoz bo'yicha agentlar tomonidan hali bajarilgan amallar mavjud emas."
+                  : "Tanlangan sana yoki muddat oralig'ida agentlar qilgan amallar topilmadi."}
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-2xl border border-rose-150 shadow-2xs">
+                <StickyTableWrapper maxHeightClassName="max-h-96">
+                  <table className="w-full min-w-[780px] text-left text-xs">
+                    <thead className="bg-rose-50 text-neutral-800 border-b border-rose-200 sticky top-0 z-20 font-bold uppercase tracking-wider text-[10.5px] whitespace-nowrap">
+                      <tr>
+                        <th className="py-2.5 px-3 w-10 text-center">#</th>
+                        <th className="py-2.5 px-3 min-w-[110px]">Sana</th>
+                        <th className="py-2.5 px-3 min-w-[115px]">Agent</th>
+                        <th className="py-2.5 px-3 min-w-[180px]">Qilingan amal</th>
+                        <th className="py-2.5 px-3 text-right min-w-[110px]">Jami tushum</th>
+                        <th className="py-2.5 px-3 text-right min-w-[125px]">Mahsulot uchun</th>
+                        <th className="py-2.5 px-3 text-right min-w-[125px]">Shunchaki to&apos;lov</th>
+                        <th className="py-2.5 px-3 min-w-[160px]">Izoh</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100">
+                      {filteredAgentActions.map((row, idx) => {
+                        const badgeClass =
+                          row.actionType === 'joyiga borildi'
+                            ? 'bg-rose-100 text-rose-900 border-rose-300'
+                            : row.actionType === 'telefon qilindi'
+                            ? 'bg-sky-100 text-sky-900 border-sky-300'
+                            : row.actionType === 'telefon qilindi + joyiga borildi'
+                            ? 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                            : 'bg-emerald-100 text-emerald-900 border-emerald-300';
+                        const isSelected = selectedActionDetailId === row.id;
+
+                        return (
+                          <tr
+                            key={row.id}
+                            onClick={() =>
+                              setSelectedActionDetailId((prev) =>
+                                prev === row.id ? null : row.id
+                              )
+                            }
+                            title="Mahsulotlar va batafsil ma'lumotni ko'rish uchun bosing"
+                            className={`transition-colors cursor-pointer ${
+                              isSelected ? 'bg-rose-50/90' : 'hover:bg-rose-50/40'
+                            }`}
+                          >
+                            <td className="py-2.5 px-3 text-neutral-400 font-mono text-center">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-[11px] whitespace-nowrap">
+                              <div className="font-bold text-neutral-900">
+                                {row.date ? formatDateDMY(row.date) : '-'}
+                              </div>
+                              {row.timeStr && (
+                                <div className="text-[10px] text-neutral-400">{row.timeStr}</div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 font-bold text-neutral-800 whitespace-nowrap">
+                              {getAgentDisplayName(row.author)}
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-bold border whitespace-nowrap ${badgeClass}`}
+                              >
+                                {row.actionLabel}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums whitespace-nowrap">
+                              {row.totalReceiptUsd > 0 ? (
+                                <span className="font-extrabold text-emerald-800">
+                                  {formatMoney(row.totalReceiptUsd)}
+                                </span>
+                              ) : (
+                                <span className="text-neutral-400">-</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                              {row.productReceiptUsd > 0 ? (
+                                <div className="flex flex-col items-end">
+                                  <span className="font-bold text-amber-800 whitespace-nowrap">
+                                    {formatMoney(row.productReceiptUsd)}
+                                  </span>
+                                  {row.productMethodLabel && (
+                                    <span className="text-[10px] text-neutral-500 font-sans whitespace-normal text-right">
+                                      {row.productMethodLabel}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-neutral-400">-</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                              {row.simpleReceiptUsd > 0 ? (
+                                <div className="flex flex-col items-end">
+                                  <span className="font-bold text-indigo-800 whitespace-nowrap">
+                                    {formatMoney(row.simpleReceiptUsd)}
+                                  </span>
+                                  {row.simpleMethodLabel && (
+                                    <span className="text-[10px] text-neutral-500 font-sans whitespace-normal text-right">
+                                      {row.simpleMethodLabel}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-neutral-400">-</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-[11px] text-neutral-600 whitespace-pre-wrap">
+                              {row.note || <span className="text-neutral-400">-</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot className="bg-rose-50/90 font-bold border-t-2 border-rose-200 sticky bottom-0 z-10 text-[11px]">
+                      <tr>
+                        <td colSpan={4} className="py-2.5 px-3 text-neutral-900 uppercase">
+                          JAMI: {agentActionsSummary.totalActionsCount} marta amal
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-emerald-900 tabular-nums font-extrabold">
+                          {formatMoney(agentActionsSummary.totalReceiptUsd)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-amber-900 tabular-nums font-bold">
+                          {formatMoney(agentActionsSummary.productReceiptUsd)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-indigo-900 tabular-nums font-bold">
+                          {formatMoney(agentActionsSummary.simpleReceiptUsd)}
+                        </td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </StickyTableWrapper>
+              </div>
+            )}
+          </div>
+
           {/* Products Table with Date Filtering */}
-          <div className="space-y-3">
+          <div className="space-y-3 pt-2 border-t border-rose-100">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <Package className="w-4 h-4 text-rose-700" />
@@ -1487,6 +2270,196 @@ export const ClientDetailModal: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
+      {/* Clicked Agent Action Products & Details Modal */}
+      {selectedActionDetail && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/50 backdrop-blur-xs"
+          onClick={() => setSelectedActionDetailId(null)}
+        >
+          <div
+            className="w-full max-w-2xl bg-white rounded-3xl shadow-2xl border border-rose-100 overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 bg-gradient-to-r from-rose-50 via-white to-rose-50/60 border-b border-rose-100 flex items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="text-base font-bold text-neutral-900">
+                    {selectedActionDetail.actionLabel}
+                  </h4>
+                  <span className="px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-rose-100 text-rose-900 border border-rose-200">
+                    {getAgentDisplayName(selectedActionDetail.author)}
+                  </span>
+                </div>
+                <div className="text-xs text-neutral-500 font-mono mt-0.5">
+                  Sana: {selectedActionDetail.date ? formatDateDMY(selectedActionDetail.date) : '-'}
+                  {selectedActionDetail.timeStr ? ` · ${selectedActionDetail.timeStr}` : ''}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedActionDetailId(null)}
+                className="w-9 h-9 rounded-xl bg-white hover:bg-rose-50 text-neutral-600 hover:text-neutral-900 border border-neutral-200 flex items-center justify-center transition-colors cursor-pointer"
+                aria-label="Yopish"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto text-xs">
+              {/* Receipts Summary Strip */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200">
+                  <div className="text-[10px] font-bold text-emerald-800 uppercase">Jami tushum</div>
+                  <div className="text-sm font-extrabold font-mono text-emerald-900 mt-0.5">
+                    {formatMoney(selectedActionDetail.totalReceiptUsd)}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200">
+                  <div className="text-[10px] font-bold text-amber-800 uppercase">Mahsulot uchun</div>
+                  <div className="text-sm font-extrabold font-mono text-amber-900 mt-0.5">
+                    {formatMoney(selectedActionDetail.productReceiptUsd)}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-xl bg-indigo-50 border border-indigo-200">
+                  <div className="text-[10px] font-bold text-indigo-800 uppercase">Shunchaki to&apos;lov</div>
+                  <div className="text-sm font-extrabold font-mono text-indigo-900 mt-0.5">
+                    {formatMoney(selectedActionDetail.simpleReceiptUsd)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Delivered Products List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-neutral-900 uppercase tracking-wide flex items-center gap-1.5">
+                    <Package className="w-4 h-4 text-rose-700" />
+                    Berilgan mahsulotlar ({selectedActionDetail.deliveredItems.length})
+                  </span>
+                  {selectedActionDetail.deliveryDebtUsd && selectedActionDetail.deliveryDebtUsd > 0 ? (
+                    <span className="text-[10.5px] font-bold text-rose-800 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 font-mono">
+                      Qarzga: {formatMoney(selectedActionDetail.deliveryDebtUsd)}
+                    </span>
+                  ) : null}
+                </div>
+
+                {selectedActionDetail.deliveredItems.length === 0 ? (
+                  <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200 text-neutral-500 text-center">
+                    Ushbu amalda berilgan mahsulotlar yo&apos;q.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-xl border border-neutral-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-neutral-100 text-neutral-700 font-bold uppercase text-[10px]">
+                        <tr>
+                          <th className="py-2 px-3">#</th>
+                          <th className="py-2 px-3">Mahsulot nomi</th>
+                          <th className="py-2 px-3 text-right">Miqdor</th>
+                          <th className="py-2 px-3 text-right">Narx</th>
+                          <th className="py-2 px-3 text-right">Jami</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-100">
+                        {selectedActionDetail.deliveredItems.map((item, i) => (
+                          <tr key={i} className="bg-white">
+                            <td className="py-2 px-3 text-neutral-400 font-mono">{i + 1}</td>
+                            <td className="py-2 px-3 font-bold text-neutral-900">{item.name}</td>
+                            <td className="py-2 px-3 text-right font-mono">
+                              {formatNumber(item.quantity)} {item.unit}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono text-neutral-600">
+                              {formatMoney(item.unitPrice)}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-bold text-neutral-900">
+                              {formatMoney(item.totalPrice)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Returned Products List (if any) */}
+              {selectedActionDetail.returnedItems.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-xs font-bold text-rose-900 uppercase tracking-wide flex items-center gap-1.5">
+                    <RotateCcw className="w-4 h-4 text-rose-700" />
+                    Qaytarilgan mahsulotlar ({selectedActionDetail.returnedItems.length})
+                  </span>
+                  <div className="overflow-x-auto rounded-xl border border-rose-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-rose-50 text-rose-900 font-bold uppercase text-[10px]">
+                        <tr>
+                          <th className="py-2 px-3">#</th>
+                          <th className="py-2 px-3">Mahsulot nomi</th>
+                          <th className="py-2 px-3 text-right">Miqdor</th>
+                          <th className="py-2 px-3 text-right">Summa</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-rose-100">
+                        {selectedActionDetail.returnedItems.map((item, i) => (
+                          <tr key={i} className="bg-white">
+                            <td className="py-2 px-3 text-neutral-400 font-mono">{i + 1}</td>
+                            <td className="py-2 px-3 font-bold text-neutral-900">{item.name}</td>
+                            <td className="py-2 px-3 text-right font-mono text-rose-800">
+                              {formatNumber(item.quantity)} {item.unit}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono font-bold text-rose-900">
+                              {item.totalPrice > 0 ? formatMoney(item.totalPrice) : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Note */}
+              {selectedActionDetail.note && (
+                <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200">
+                  <div className="text-[10px] font-bold text-neutral-500 uppercase mb-1">Izoh</div>
+                  <div className="text-neutral-800 whitespace-pre-wrap">{selectedActionDetail.note}</div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-3 bg-neutral-50 border-t border-neutral-200 flex items-center justify-between gap-2">
+              {onNavigateToPlanDate && selectedActionDetail.planId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = selectedActionDetail;
+                    setSelectedActionDetailId(null);
+                    onNavigateToPlanDate({
+                      clientId: client.id,
+                      clientName: client.name,
+                      planId: target.planId,
+                      planDate: target.planDate,
+                      openEditModal: false,
+                    });
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold transition cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>O&apos;sha kungi rejaga o&apos;tish</span>
+                </button>
+              ) : (
+                <div />
+              )}
+              <button
+                type="button"
+                onClick={() => setSelectedActionDetailId(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-neutral-700 bg-white hover:bg-neutral-100 border border-neutral-300 transition cursor-pointer"
+              >
+                Yopish
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
