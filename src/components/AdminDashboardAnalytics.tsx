@@ -76,7 +76,6 @@ interface Props {
   clients?: Client[];
   dailyPlans?: DailyPlanItem[];
   warehouseProducts?: WarehouseProduct[];
-  onEditWarehouseProduct?: (product: WarehouseProduct) => void;
   onDeleteWarehouseProduct?: (id: string) => void;
 }
 
@@ -116,7 +115,6 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   clients: propClients,
   dailyPlans: propPlans,
   warehouseProducts: propProducts,
-  onEditWarehouseProduct,
   onDeleteWarehouseProduct,
 }) => {
   // Navigation between blocks: 'block1' | 'block2' | 'block3' | 'block4' | 'block5' | 'block6'
@@ -2830,8 +2828,8 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                         </>
                       )}
                       <th className="py-3 px-3 text-right">Kiritilgan sana</th>
-                      {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
-                        <th className="py-3 px-3 text-center w-20">Amal</th>
+                      {onDeleteWarehouseProduct && (
+                        <th className="py-3 px-3 text-center w-16">Amal</th>
                       )}
                     </tr>
                   </thead>
@@ -2949,29 +2947,17 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
                         )}
 
                         <td className="py-3 px-3 text-right font-mono text-neutral-500 text-[11px]">{p.intakeDate || '-'}</td>
-                        {(onEditWarehouseProduct || onDeleteWarehouseProduct) && (
+                        {onDeleteWarehouseProduct && (
                           <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                             <div className="inline-flex items-center justify-center gap-1">
-                              {onEditWarehouseProduct && (
-                                <button
-                                  type="button"
-                                  onClick={() => onEditWarehouseProduct(p)}
-                                  className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition cursor-pointer"
-                                  title="Mahsulotni tahrirlash"
-                                >
-                                  <Edit3 className="w-4 h-4" />
-                                </button>
-                              )}
-                              {onDeleteWarehouseProduct && (
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteWarehouseProduct(p)}
-                                  className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                  title="Ombordan va butun bazadan o'chirish"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteWarehouseProduct(p)}
+                                className="p-1.5 text-neutral-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                title="Ombordan va butun bazadan o'chirish"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </td>
                         )}

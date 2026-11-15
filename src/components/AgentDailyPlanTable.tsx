@@ -31,6 +31,8 @@ import {
   Trash2,
   User,
   FileSpreadsheet,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { NakladnoyModal, NakladnoyData } from './NakladnoyModal';
 import { RejaPrintModal } from './RejaPrintModal';
@@ -159,6 +161,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
   // Payment filter & sort: 'all' | 'paid_only' | 'last_paid' | 'most_paid'
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'paid_only' | 'last_paid' | 'most_paid'>('all');
+
+  // Collapsible filter panels (closed by default, click to open)
+  const [isDateFilterOpen, setIsDateFilterOpen] = useState<boolean>(false);
+  const [isClosureFilterOpen, setIsClosureFilterOpen] = useState<boolean>(false);
+  const [isPaymentFilterOpen, setIsPaymentFilterOpen] = useState<boolean>(false);
 
   // State for confirming closing of plan item (Oxirgi marta yopish)
   const [confirmCloseItem, setConfirmCloseItem] = useState<DailyPlanItem | null>(null);
@@ -537,9 +544,9 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
   return (
     <div className="bg-white rounded-3xl border border-rose-100 shadow-xs overflow-hidden">
       {/* Header */}
-      <div className="p-4 sm:p-5 bg-gradient-to-r from-rose-50/70 via-white to-rose-50/40 border-b border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="p-3.5 sm:p-5 bg-gradient-to-r from-rose-50/70 via-white to-rose-50/40 border-b border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-rose-700 text-white flex items-center justify-center shadow-xs shrink-0">
+          <div className="hidden sm:flex w-10 h-10 rounded-2xl bg-rose-700 text-white items-center justify-center shadow-xs shrink-0">
             <CalendarCheck className="w-5 h-5" />
           </div>
           <div>
@@ -555,7 +562,7 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         </div>
 
         {/* Export & Create Plan Buttons */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
           {(displayedPlans.length > 0 || validPlans.length > 0) && (
             <>
               <button
@@ -576,20 +583,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                     'Agent_Reja_va_Amallar'
                   )
                 }
-                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+                className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-xs transition min-h-[30px] cursor-pointer"
                 title="Yopilgan va yopilmagan amallar jadvalini to'liq va batafsil Excel (.xlsx) formatda yuklab olish"
               >
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>Excel (.xlsx)</span>
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Excel</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setIsPlanPdfModalOpen(true)}
-                className="flex items-center gap-1.5 bg-neutral-900 hover:bg-black text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+                className="flex items-center gap-1 bg-neutral-900 hover:bg-black text-white px-2.5 py-1 rounded-lg text-[11px] font-semibold shadow-xs transition min-h-[30px] cursor-pointer"
                 title="Yopilgan va yopilmagan amallar jadvalini batafsil PDF / Print / Excel formatda yuklab olish"
               >
-                <Printer className="w-4 h-4" />
+                <Printer className="w-3.5 h-3.5" />
                 <span>PDF / Print</span>
               </button>
             </>
@@ -597,167 +604,253 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
 
           <button
             onClick={onOpenCreatePlan}
-            className="flex items-center gap-1.5 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[38px] cursor-pointer"
+            className="flex items-center gap-1.5 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-3 py-1.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition min-h-[34px] sm:min-h-[38px] cursor-pointer"
           >
-            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
             <span>Reja tuzish</span>
           </button>
         </div>
       </div>
 
-      {/* Date Filtering Bar */}
-      <div className="px-4 py-2.5 bg-rose-50/40 border-b border-rose-100 flex flex-wrap items-center justify-between gap-2.5 text-xs">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="font-bold text-neutral-700 flex items-center gap-1">
-            <Calendar className="w-3.5 h-3.5 text-rose-600" />
-            <span>Sana bo'yicha filtr:</span>
-          </span>
-          <button
-            type="button"
-            onClick={() => setDateFilter('all')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              dateFilter === 'all'
-                ? 'bg-rose-700 text-white shadow-2xs'
-                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
-            }`}
-          >
-            Barcha sanalar
-          </button>
-          <button
-            type="button"
-            onClick={() => setDateFilter('today')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              dateFilter === 'today'
-                ? 'bg-rose-700 text-white shadow-2xs'
-                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
-            }`}
-          >
-            Bugun
-          </button>
-          <button
-            type="button"
-            onClick={() => setDateFilter('yesterday')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              dateFilter === 'yesterday'
-                ? 'bg-rose-700 text-white shadow-2xs'
-                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
-            }`}
-          >
-            Kecha
-          </button>
-          <button
-            type="button"
-            onClick={() => setDateFilter('custom')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              dateFilter === 'custom'
-                ? 'bg-rose-700 text-white shadow-2xs'
-                : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
-            }`}
-          >
-            Maxsus sana
-          </button>
-          {dateFilter === 'custom' && (
-            <input
-              type="date"
-              value={customDate}
-              onChange={(e) => setCustomDate(e.target.value)}
-              className="px-2 py-1 rounded-lg border border-neutral-300 text-xs font-mono font-medium outline-none focus:border-rose-500 bg-white"
-            />
-          )}
-        </div>
-        <div className="text-[11px] font-medium text-neutral-500">
-          Ko'rsatilmoqda: <strong className="text-neutral-800">{displayedPlans.length} ta</strong> rejadagi mijoz
-        </div>
-      </div>
+      {/* Collapsible Filter Toggles Strip */}
+      <div className="px-3.5 sm:px-4 py-2 bg-rose-50/30 border-b border-rose-100 space-y-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Sana bo'yicha filtr toggle */}
+            <button
+              type="button"
+              onClick={() => setIsDateFilterOpen((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-bold border transition cursor-pointer ${
+                isDateFilterOpen || dateFilter !== 'all'
+                  ? 'bg-rose-700 text-white border-rose-700 shadow-2xs'
+                  : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-50'
+              }`}
+            >
+              <Calendar className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                Sana bo'yicha filtr
+                {dateFilter === 'today'
+                  ? ': Bugun'
+                  : dateFilter === 'yesterday'
+                  ? ': Kecha'
+                  : dateFilter === 'custom' && customDate
+                  ? `: ${formatDateDMY(customDate)}`
+                  : ''}
+              </span>
+              {isDateFilterOpen ? (
+                <ChevronUp className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              )}
+            </button>
 
-      {/* Closure Type & Payment Filter/Sort Bar */}
-      <div className="px-4 py-2.5 bg-white border-b border-rose-100 flex flex-wrap items-center justify-between gap-3 text-xs">
-        {/* Bajarib yopilgan / Bajarilmasdan yopilgan filtri */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="font-bold text-neutral-700">Yopilish holati:</span>
-          <button
-            type="button"
-            onClick={() => setClosureTypeFilter('all')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              closureTypeFilter === 'all'
-                ? 'bg-neutral-800 text-white shadow-2xs'
-                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-            }`}
-          >
-            Barchasi ({dateFilteredPlans.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setClosureTypeFilter('done_closed')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              closureTypeFilter === 'done_closed'
-                ? 'bg-emerald-700 text-white shadow-2xs'
-                : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-            }`}
-          >
-            Bajarib yopilgan ({closedPlans.filter((p) => !isPlanClosedWithoutAction(p)).length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setClosureTypeFilter('undone_closed')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              closureTypeFilter === 'undone_closed'
-                ? 'bg-amber-600 text-white shadow-2xs'
-                : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
-            }`}
-          >
-            Bajarilmasdan yopilgan ({closedPlans.filter((p) => isPlanClosedWithoutAction(p)).length})
-          </button>
+            {/* Yopilish holati toggle */}
+            <button
+              type="button"
+              onClick={() => setIsClosureFilterOpen((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-bold border transition cursor-pointer ${
+                isClosureFilterOpen || closureTypeFilter !== 'all'
+                  ? 'bg-neutral-800 text-white border-neutral-800 shadow-2xs'
+                  : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-50'
+              }`}
+            >
+              <span>
+                Yopilish holati
+                {closureTypeFilter === 'done_closed'
+                  ? ': Bajarib yopilgan'
+                  : closureTypeFilter === 'undone_closed'
+                  ? ': Bajarilmasdan yopilgan'
+                  : ''}
+              </span>
+              {isClosureFilterOpen ? (
+                <ChevronUp className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              )}
+            </button>
+
+            {/* To'lov bo'yicha toggle */}
+            <button
+              type="button"
+              onClick={() => setIsPaymentFilterOpen((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-bold border transition cursor-pointer ${
+                isPaymentFilterOpen || paymentFilter !== 'all'
+                  ? 'bg-emerald-700 text-white border-emerald-700 shadow-2xs'
+                  : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-50'
+              }`}
+            >
+              <span>
+                To'lov bo'yicha
+                {paymentFilter === 'paid_only'
+                  ? ': Pul berganlar'
+                  : paymentFilter === 'last_paid'
+                  ? ': Oxirgi pul bergan'
+                  : paymentFilter === 'most_paid'
+                  ? ": Ko'p pul bergan"
+                  : ''}
+              </span>
+              {isPaymentFilterOpen ? (
+                <ChevronUp className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              )}
+            </button>
+          </div>
+
+          <div className="text-[11px] font-medium text-neutral-500">
+            Ko'rsatilmoqda: <strong className="text-neutral-800">{displayedPlans.length} ta</strong> rejadagi mijoz
+          </div>
         </div>
 
-        {/* Pul berilgani / Oxirgi pul bergani / Ko'p pul bergan asosida filtr va saralash */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="font-bold text-neutral-700">To'lov bo'yicha:</span>
-          <button
-            type="button"
-            onClick={() => setPaymentFilter('all')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              paymentFilter === 'all'
-                ? 'bg-rose-700 text-white shadow-2xs'
-                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-            }`}
-          >
-            Barchasi
-          </button>
-          <button
-            type="button"
-            onClick={() => setPaymentFilter('paid_only')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              paymentFilter === 'paid_only'
-                ? 'bg-emerald-700 text-white shadow-2xs'
-                : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
-            }`}
-          >
-            Pul berganlar
-          </button>
-          <button
-            type="button"
-            onClick={() => setPaymentFilter('last_paid')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              paymentFilter === 'last_paid'
-                ? 'bg-indigo-700 text-white shadow-2xs'
-                : 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
-            }`}
-          >
-            Oxirgi pul bergani asosida
-          </button>
-          <button
-            type="button"
-            onClick={() => setPaymentFilter('most_paid')}
-            className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-              paymentFilter === 'most_paid'
-                ? 'bg-purple-700 text-white shadow-2xs'
-                : 'bg-purple-50 text-purple-800 border border-purple-200 hover:bg-purple-100'
-            }`}
-          >
-            Ko'p pul bergan asosida
-          </button>
-        </div>
+        {/* Expanded Sana bo'yicha filtr options */}
+        {isDateFilterOpen && (
+          <div className="pt-1.5 border-t border-rose-100/80 flex items-center gap-1.5 flex-wrap">
+            <span className="font-bold text-neutral-600 mr-1">Sana:</span>
+            <button
+              type="button"
+              onClick={() => setDateFilter('all')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                dateFilter === 'all'
+                  ? 'bg-rose-700 text-white shadow-2xs'
+                  : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+              }`}
+            >
+              Barcha sanalar
+            </button>
+            <button
+              type="button"
+              onClick={() => setDateFilter('today')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                dateFilter === 'today'
+                  ? 'bg-rose-700 text-white shadow-2xs'
+                  : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+              }`}
+            >
+              Bugun
+            </button>
+            <button
+              type="button"
+              onClick={() => setDateFilter('yesterday')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                dateFilter === 'yesterday'
+                  ? 'bg-rose-700 text-white shadow-2xs'
+                  : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+              }`}
+            >
+              Kecha
+            </button>
+            <button
+              type="button"
+              onClick={() => setDateFilter('custom')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                dateFilter === 'custom'
+                  ? 'bg-rose-700 text-white shadow-2xs'
+                  : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-50'
+              }`}
+            >
+              Maxsus sana
+            </button>
+            {dateFilter === 'custom' && (
+              <input
+                type="date"
+                value={customDate}
+                onChange={(e) => setCustomDate(e.target.value)}
+                className="px-2 py-1 rounded-lg border border-neutral-300 text-xs font-mono font-medium outline-none focus:border-rose-500 bg-white"
+              />
+            )}
+          </div>
+        )}
+
+        {/* Expanded Yopilish holati options */}
+        {isClosureFilterOpen && (
+          <div className="pt-1.5 border-t border-rose-100/80 flex items-center gap-1.5 flex-wrap">
+            <span className="font-bold text-neutral-600 mr-1">Yopilish holati:</span>
+            <button
+              type="button"
+              onClick={() => setClosureTypeFilter('all')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                closureTypeFilter === 'all'
+                  ? 'bg-neutral-800 text-white shadow-2xs'
+                  : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+              }`}
+            >
+              Barchasi ({dateFilteredPlans.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setClosureTypeFilter('done_closed')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                closureTypeFilter === 'done_closed'
+                  ? 'bg-emerald-700 text-white shadow-2xs'
+                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+              }`}
+            >
+              Bajarib yopilgan ({closedPlans.filter((p) => !isPlanClosedWithoutAction(p)).length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setClosureTypeFilter('undone_closed')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                closureTypeFilter === 'undone_closed'
+                  ? 'bg-amber-600 text-white shadow-2xs'
+                  : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
+              }`}
+            >
+              Bajarilmasdan yopilgan ({closedPlans.filter((p) => isPlanClosedWithoutAction(p)).length})
+            </button>
+          </div>
+        )}
+
+        {/* Expanded To'lov bo'yicha options */}
+        {isPaymentFilterOpen && (
+          <div className="pt-1.5 border-t border-rose-100/80 flex items-center gap-1.5 flex-wrap">
+            <span className="font-bold text-neutral-600 mr-1">To'lov bo'yicha:</span>
+            <button
+              type="button"
+              onClick={() => setPaymentFilter('all')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                paymentFilter === 'all'
+                  ? 'bg-rose-700 text-white shadow-2xs'
+                  : 'bg-white text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+              }`}
+            >
+              Barchasi
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaymentFilter('paid_only')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                paymentFilter === 'paid_only'
+                  ? 'bg-emerald-700 text-white shadow-2xs'
+                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+              }`}
+            >
+              Pul berganlar
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaymentFilter('last_paid')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                paymentFilter === 'last_paid'
+                  ? 'bg-indigo-700 text-white shadow-2xs'
+                  : 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
+              }`}
+            >
+              Oxirgi pul bergani asosida
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaymentFilter('most_paid')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
+                paymentFilter === 'most_paid'
+                  ? 'bg-purple-700 text-white shadow-2xs'
+                  : 'bg-purple-50 text-purple-800 border border-purple-200 hover:bg-purple-100'
+              }`}
+            >
+              Ko'p pul bergan asosida
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Multi-Selection & Bulk Actions Bar */}
@@ -1413,14 +1506,11 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
               </StickyTableWrapper>
             </div>
 
-            {/* Mobile Compact Cards View: Fits 100% of mobile screen with zero horizontal scroll */}
-            <div className="block md:hidden space-y-2.5">
+            {/* Mobile Compact Cards View: Shows ONLY client name, plan date & note */}
+            <div className="block md:hidden space-y-2">
               {displayedPlans.map((item, idx) => {
                 const isClosed = item.isClosed || item.status === 'yopildi';
-                const isDone = item.status === 'bajarildi';
                 const isSelected = selectedPlanIds.includes(item.id);
-                const { paidAmount, debtAmount } = calcPlanFinancials(item);
-
                 const isHighlighted =
                   highlightedPlanId === item.id ||
                   (navigationTarget?.clientId === item.clientId &&
@@ -1443,9 +1533,9 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         : 'bg-white border-rose-100 hover:border-rose-300 shadow-xs'
                     }`}
                   >
-                    {/* Top Row: #, Checkbox, Client Name, Creator, Status */}
+                    {/* Top Row: Checkbox, #, Client Name & Action */}
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                      <div className="flex items-center gap-1.5 min-w-0">
                         <input
                           type="checkbox"
                           checked={isSelected}
@@ -1457,296 +1547,73 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                         <span className="font-mono text-[11px] text-neutral-400 font-bold shrink-0">
                           #{idx + 1}
                         </span>
-                        <span className="font-bold text-neutral-900 text-xs truncate">
+                        <span className="font-bold text-neutral-900 text-sm truncate">
                           {item.clientName}
                         </span>
                         {isClosed && (
-                          <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9px] font-bold bg-neutral-200 text-neutral-700 shrink-0">
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-neutral-200 text-neutral-700 shrink-0">
                             <Lock className="w-2.5 h-2.5" />
                             <span>Yopiq</span>
                           </span>
                         )}
-                        <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
-                          <User className="w-2.5 h-2.5 text-indigo-600" />
-                          <span>Reja tuzdi: {getAgentDisplayName(item.agentUsername)}</span>
-                        </span>
-                        {(() => {
-                          const executor =
-                            item.lastExecutedBy ||
-                            (item.actionsHistory && item.actionsHistory.length > 0
-                              ? item.actionsHistory[0].author
-                              : undefined);
-                          if (!executor) return null;
-                          return (
-                            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 shrink-0">
-                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
-                              <span>Amal bajardi: {getAgentDisplayName(executor)}</span>
-                            </span>
-                          );
-                        })()}
                       </div>
 
-                      <div className="shrink-0">
-                        {isClosed ? (
-                          isPlanClosedWithoutAction(item) ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
-                              <Lock className="w-2.5 h-2.5 text-amber-700" />
-                              <span>Bajarilmasdan yopilgan</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
-                              <CheckCircle2 className="w-2.5 h-2.5 text-emerald-700" />
-                              <span>Bajarib yopilgan</span>
-                            </span>
-                          )
-                        ) : isDone ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                            <CheckCircle2 className="w-2.5 h-2.5" />
-                            <span>Bajarildi</span>
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800">
-                            Jarayonda
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Phone & Address */}
-                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-neutral-500">
-                      <span className="flex items-center gap-1 font-mono">
-                        <Phone className="w-3 h-3 text-neutral-400" />
-                        {item.clientPhone}
-                      </span>
-                      {([item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') || item.clientAddress) && (
-                        <span className="flex items-center gap-1 text-neutral-600 truncate max-w-[200px]">
-                          <MapPin className="w-2.5 h-2.5 text-rose-600 shrink-0" />
-                          <span className="truncate">
-                            {[item.clientRegion, item.clientDistrict].filter(Boolean).join(', ') || item.clientAddress}
-                          </span>
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Added Date & Last Payment / Product Dates */}
-                    {(() => {
-                      const mobileLastOps = getClientLastOperations(
-                        item.clientId,
-                        resolvedClients,
-                        allSystemPlans
-                      );
-                      return (
-                        <div className="mt-1.5 space-y-1">
-                          <div className="flex items-center gap-1 text-[10px] text-neutral-500 font-mono">
-                            <Calendar className="w-2.5 h-2.5 text-neutral-400 shrink-0" />
-                            <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-                            {mobileLastOps.currentDebt > 0 && (
-                              <span className="px-2 py-0.5 rounded-md bg-rose-50 border border-rose-200 font-mono font-bold text-rose-700">
-                                Joriy qarz: {formatMoney(mobileLastOps.currentDebt)}
-                              </span>
-                            )}
-                            {mobileLastOps.currentAdvance > 0 && (
-                              <span className="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 font-mono font-bold text-emerald-700">
-                                Haqdorlik: {formatMoney(mobileLastOps.currentAdvance)}
-                              </span>
-                            )}
-                            {mobileLastOps.currentDebt <= 0 && mobileLastOps.currentAdvance <= 0 && (
-                              <span className="px-2 py-0.5 rounded-md bg-neutral-100 border border-neutral-200 font-mono text-neutral-600">
-                                Joriy qarz / Haqdorlik: 0 USD
-                              </span>
-                            )}
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-[10px] bg-neutral-50 border border-neutral-200 rounded-lg p-1.5">
-                            <div>
-                              <span className="font-bold text-emerald-900">Oxirgi pul bergan: </span>
-                              <span className="font-mono text-neutral-800">
-                                {mobileLastOps.lastPaymentFormatted || "To'lov yo'q"}
-                              </span>
-                            </div>
-                            <div>
-                              <span className="font-bold text-amber-900">
-                                {mobileLastOps.lastProductType === 'qaytarilgan'
-                                  ? 'Mahsulot qaytarilgan: '
-                                  : 'Mahsulot berilgan: '}
-                              </span>
-                              <span className="font-mono text-neutral-800">
-                                {mobileLastOps.lastProductFormatted || "Amaliyot yo'q"}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Planned Action & Planned Collection Amount (Mobile) */}
-                    {(item.plannedAction || (item.plannedAmount && item.plannedAmount > 0)) && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                        {item.plannedAction && (
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200">
-                            Rejadagi amal: {formatPlannedActionLabel(item.plannedAction)}
-                          </span>
-                        )}
-                        {item.plannedAmount !== undefined && item.plannedAmount > 0 && (
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-emerald-50 text-emerald-900 border border-emerald-200">
-                            Undirish rejasi: {formatMoney(item.plannedAmount)}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Plan Note if any */}
-                    {item.planNote && (
-                      <div className="mt-1.5 text-[11px] text-neutral-700 bg-rose-50/60 px-2 py-1 rounded-lg border border-rose-100/80">
-                        <span className="font-semibold text-rose-950">Izoh: </span>
-                        <span>{item.planNote}</span>
-                      </div>
-                    )}
-
-                    {/* Action & Products info */}
-                    {item.actionDone && (
-                      <div className="mt-2 p-2 rounded-xl bg-neutral-50 border border-neutral-200/80 space-y-1 text-[11px]">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-bold text-neutral-900 bg-white px-1.5 py-0.5 rounded border border-neutral-200 text-[10px]">
-                            Bajardi:{' '}
-                            {item.actionDone === 'joyiga borildi'
-                              ? 'Joyiga borildi'
-                              : item.actionDone === 'telefon qilindi'
-                              ? 'Telefon qilindi'
-                              : item.actionDone === 'telefon qilindi + joyiga borildi'
-                              ? 'Telefon + Joyiga borildi'
-                              : item.actionDone}
-                          </span>
-                          {item.deliveryPayment && (
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                item.deliveryPayment.paymentType === 'qarzga'
-                                  ? 'bg-rose-100 text-rose-800'
-                                  : 'bg-emerald-100 text-emerald-800'
-                              }`}
-                            >
-                              {item.deliveryPayment.paymentType === 'qarzga'
-                                ? 'Qarzga (Nasiya)'
-                                : `To'lov: ${item.deliveryPayment.paymentLabel || item.deliveryPayment.paymentType}`}
-                            </span>
-                          )}
-                        </div>
-
-                        {(() => {
-                          const soldData = getPlanSoldProductsData(item);
-                          if (soldData.productsDelivered.length === 0) return null;
-                          return (
-                            <div className="space-y-1">
-                              <div className="text-neutral-800 font-medium flex items-center gap-1 truncate text-[10px]">
-                                <Package className="w-3 h-3 text-rose-700 shrink-0" />
-                                <span className="truncate">
-                                  Berildi: {soldData.productsDelivered.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
-                                </span>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onOpenExecuteModal(item, true);
-                                }}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-700 hover:bg-rose-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
-                              >
-                                <Edit3 className="w-2.5 h-2.5" />
-                                <span>Mahsulotga o&apos;zgartirish kiritish</span>
-                              </button>
-                            </div>
-                          );
-                        })()}
-
-                        {item.productsReturned && item.productsReturned.length > 0 && (
-                          <div className="text-amber-800 font-medium flex items-center gap-1 truncate text-[10px]">
-                            <RotateCcw className="w-2.5 h-2.5 text-amber-700 shrink-0" />
-                            <span className="truncate">
-                              Qaytdi: {item.productsReturned.map((p) => `${p.quantity} ${p.unit} ${p.name}`).join(', ')}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Bottom Row: Payments / Debts & Buttons */}
-                    <div className="mt-2.5 pt-2 border-t border-neutral-100 flex items-center justify-between gap-2">
-                      <div className="space-y-1">
-                        {paidAmount > 0 && debtAmount > 0 ? (
-                          <div className="flex flex-col text-[11px] font-mono font-bold leading-tight">
-                            <span className="text-emerald-700">To'lov: +{formatMoney(paidAmount)}</span>
-                            <span className="text-rose-700">Qarz: +{formatMoney(debtAmount)}</span>
-                          </div>
-                        ) : paidAmount > 0 ? (
-                          <span className="text-emerald-700 font-mono font-bold text-[11px] block">
-                            To'lov: +{formatMoney(paidAmount)}
-                          </span>
-                        ) : debtAmount > 0 ? (
-                          <span className="text-rose-700 font-mono font-bold text-[11px] block">
-                            Qarz: +{formatMoney(debtAmount)}
-                          </span>
-                        ) : (
-                          <span className="text-neutral-400 text-xs">-</span>
-                        )}
-                        {getPlanFinancialActionData(item).totalFinancialAmount > 0 && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenExecuteModal(item, false, true);
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
-                          >
-                            <Edit3 className="w-2.5 h-2.5" />
-                            <span>To&apos;lovga o&apos;zgartirish kiritish</span>
-                          </button>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                         {!isClosed ? (
                           <button
                             type="button"
                             onClick={() => handleOpenConfirmClose(item)}
-                            className="px-3 py-1.5 rounded-xl border border-rose-300 text-rose-800 text-xs font-bold cursor-pointer hover:bg-rose-50 flex items-center gap-1 shadow-2xs"
+                            className="px-2.5 py-1 rounded-lg border border-rose-300 text-rose-800 text-[11px] font-bold cursor-pointer hover:bg-rose-50 flex items-center gap-1 shadow-2xs"
                           >
                             <Lock className="w-3 h-3 text-rose-700" />
                             <span>Yopish</span>
                           </button>
                         ) : (
-                          <div className="flex items-center gap-1.5 flex-wrap">
+                          <>
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onOpenExecuteModal(item);
                               }}
-                              className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer flex items-center gap-1 shadow-xs"
+                              className="px-2 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold cursor-pointer flex items-center gap-1"
+                              title="Tahrirlash"
                             >
                               <Edit3 className="w-3 h-3" />
-                              <span>Tahrirlash</span>
                             </button>
                             <button
                               type="button"
                               onClick={(e) => handleOpenReopenSingle(item, e)}
-                              className="px-3 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold cursor-pointer flex items-center gap-1 shadow-xs"
+                              className="px-2 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-[10px] font-bold cursor-pointer flex items-center gap-1"
+                              title="Qayta ochish"
                             >
                               <Unlock className="w-3 h-3" />
-                              <span>Qayta ochish</span>
                             </button>
                             <button
                               type="button"
                               onClick={(e) => handleOpenRemoveSingle(item, e)}
-                              className="px-2.5 py-1.5 rounded-xl border border-neutral-300 hover:border-rose-300 text-neutral-600 hover:text-rose-700 hover:bg-rose-50 text-xs font-bold cursor-pointer flex items-center gap-1"
+                              className="px-2 py-1 rounded-lg border border-neutral-300 hover:border-rose-300 text-neutral-600 hover:text-rose-700 hover:bg-rose-50 text-[10px] font-bold cursor-pointer flex items-center gap-1"
                               title="Rejadan olib tashlash"
                             >
                               <Trash2 className="w-3 h-3 text-rose-600" />
-                              <span>Olib tashlash</span>
                             </button>
-                          </div>
+                          </>
                         )}
                       </div>
+                    </div>
+
+                    {/* Plan Date */}
+                    <div className="mt-1.5 flex items-center gap-1 text-[11px] text-neutral-500 font-mono">
+                      <Calendar className="w-3 h-3 text-neutral-400 shrink-0" />
+                      <span>Reja sanasi: {formatDateDMY(item.planDate || item.createdAt)}</span>
+                    </div>
+
+                    {/* Plan Note */}
+                    <div className="mt-1.5 text-[11px] text-neutral-700 bg-rose-50/50 px-2.5 py-1.5 rounded-lg border border-rose-100/80">
+                      <span className="font-semibold text-rose-950">Izoh: </span>
+                      <span className={item.planNote ? 'text-neutral-800' : 'text-neutral-400 italic'}>
+                        {item.planNote || "Izoh yo'q"}
+                      </span>
                     </div>
                   </div>
                 );
@@ -1761,79 +1628,90 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2.5 sm:p-4 animate-in fade-in duration-150"
         >
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-emerald-100 space-y-4">
-            <div className="flex items-center gap-3 text-emerald-700">
-              <div className="w-12 h-12 rounded-2xl bg-emerald-50 flex items-center justify-center border border-emerald-200 shrink-0">
-                <Unlock className="w-6 h-6 text-emerald-700" />
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-lg w-full max-h-[86dvh] flex flex-col overflow-hidden shadow-2xl border border-emerald-100">
+            <div className="px-4 py-3 border-b border-emerald-100 bg-emerald-50/40 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2.5 text-emerald-700 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center shrink-0">
+                  <Unlock className="w-4 h-4 text-emerald-700" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold font-display text-neutral-900 truncate">
+                    Yopilganlarni qayta ochish ({reopenModalTargetIds.length} ta)
+                  </h3>
+                </div>
               </div>
-              <div>
-                <h3 className="text-base font-bold font-display text-neutral-900">
-                  Yopilgan mijozlarni qayta ochish ({reopenModalTargetIds.length} ta)
-                </h3>
-                <p className="text-xs text-neutral-500">
-                  Qayta ochish uchun sabab / izoh kiritish majburiy
-                </p>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-950 space-y-1.5">
-              <div className="font-bold">Tanlangan mijozlar:</div>
-              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                {reopenModalClients.map((c) => (
-                  <span
-                    key={c.id}
-                    className="px-2 py-0.5 rounded-lg bg-white border border-emerald-200 font-semibold text-neutral-800 text-[11px]"
-                  >
-                    {c.clientName}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-neutral-700">
-                Qayta ochish izohi (majburiy): <span className="text-rose-600">*</span>
-              </label>
-
-              <div className="flex flex-wrap gap-1.5">
-                {PRESET_REOPEN_REASONS.map((preset) => {
-                  const isSelected = reopenReason === preset;
-                  return (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => setReopenReason(preset)}
-                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
-                        isSelected
-                          ? 'bg-emerald-700 border-emerald-700 text-white shadow-xs font-semibold'
-                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                      }`}
-                    >
-                      {preset}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <textarea
-                rows={3}
-                value={reopenReason}
-                onChange={(e) => setReopenReason(e.target.value)}
-                placeholder="Nima sababdan qayta ochilayotganini yozing..."
-                className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
                 type="button"
                 onClick={() => {
                   setReopenModalTargetIds(null);
                   setReopenReason('');
                 }}
-                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 sm:p-4 overflow-y-auto flex-1 space-y-3">
+              <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-950 space-y-1">
+                <div className="font-bold">Tanlangan mijozlar:</div>
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                  {reopenModalClients.map((c) => (
+                    <span
+                      key={c.id}
+                      className="px-2 py-0.5 rounded-lg bg-white border border-emerald-200 font-semibold text-neutral-800 text-[11px]"
+                    >
+                      {c.clientName}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-neutral-700">
+                  Qayta ochish izohi (majburiy): <span className="text-rose-600">*</span>
+                </label>
+
+                <div className="flex flex-wrap gap-1">
+                  {PRESET_REOPEN_REASONS.map((preset) => {
+                    const isSelected = reopenReason === preset;
+                    return (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setReopenReason(preset)}
+                        className={`text-[11px] px-2 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
+                          isSelected
+                            ? 'bg-emerald-700 border-emerald-700 text-white shadow-xs font-semibold'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <textarea
+                  rows={2}
+                  value={reopenReason}
+                  onChange={(e) => setReopenReason(e.target.value)}
+                  placeholder="Nima sababdan qayta ochilayotganini yozing..."
+                  className="w-full px-3 py-2 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="px-4 py-2.5 border-t border-neutral-100 bg-neutral-50/80 flex items-center justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setReopenModalTargetIds(null);
+                  setReopenReason('');
+                }}
+                className="px-3.5 py-2 rounded-xl border border-neutral-200 bg-white text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[36px] cursor-pointer"
               >
                 Bekor qilish
               </button>
@@ -1841,9 +1719,9 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 type="button"
                 disabled={!reopenReason.trim()}
                 onClick={handleExecuteReopen}
-                className="px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[36px] flex items-center gap-1.5 cursor-pointer"
               >
-                <Unlock className="w-4 h-4" />
+                <Unlock className="w-3.5 h-3.5" />
                 <span>Qayta ochish ({reopenModalTargetIds.length} ta)</span>
               </button>
             </div>
@@ -1856,80 +1734,20 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2.5 sm:p-4 animate-in fade-in duration-150"
         >
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-rose-100 space-y-4">
-            <div className="flex items-center gap-3 text-rose-700">
-              <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
-                <AlertTriangle className="w-6 h-6 text-rose-700" />
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-lg w-full max-h-[86dvh] flex flex-col overflow-hidden shadow-2xl border border-rose-100">
+            <div className="px-4 py-3 border-b border-rose-100 bg-rose-50/40 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2.5 text-rose-700 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-rose-100 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-4 h-4 text-rose-700" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold font-display text-neutral-900 truncate">
+                    Rejadan olib tashlash ({removeModalTargetIds.length} ta)
+                  </h3>
+                </div>
               </div>
-              <div>
-                <h3 className="text-base font-bold font-display text-neutral-900">
-                  Aniqmi? Rejadan olib tashlashni tasdiqlaysizmi?
-                </h3>
-                <p className="text-xs text-rose-700 font-semibold">
-                  Haqiqatan ham ushbu mijoz ({removeModalTargetIds.length} ta) ni rejadan olib tashlamoqchimisiz?
-                </p>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-1.5">
-              <div className="font-bold">Olib tashlanayotgan mijozlar:</div>
-              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                {validPlans
-                  .filter((p) => removeModalTargetIds.includes(p.id))
-                  .map((c) => (
-                    <span
-                      key={c.id}
-                      className="px-2 py-0.5 rounded-lg bg-white border border-rose-200 font-semibold text-neutral-800 text-[11px]"
-                    >
-                      {c.clientName}
-                    </span>
-                  ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-neutral-700">
-                Olib tashlash sababi (majburiy): <span className="text-rose-600">*</span>
-              </label>
-
-              <div className="flex flex-wrap gap-1.5">
-                {PRESET_REMOVE_REASONS.map((preset) => {
-                  const isSelected = selectedRemovePreset === preset;
-                  return (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => {
-                        setSelectedRemovePreset(preset);
-                        setRemoveReason(preset);
-                      }}
-                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
-                        isSelected
-                          ? 'bg-rose-700 border-rose-700 text-white shadow-xs font-semibold'
-                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                      }`}
-                    >
-                      {preset}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <textarea
-                rows={3}
-                value={removeReason}
-                onChange={(e) => {
-                  setRemoveReason(e.target.value);
-                  setSelectedRemovePreset(e.target.value);
-                }}
-                placeholder="Nima sababdan rejadan olib tashlanayotganini yozing..."
-                className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
                 type="button"
                 onClick={() => {
@@ -1937,190 +1755,263 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                   setRemoveReason('');
                   setSelectedRemovePreset('');
                 }}
-                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer shrink-0"
               >
-                Yo'q, bekor qilish
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 sm:p-4 overflow-y-auto flex-1 space-y-3">
+              <div className="p-2.5 rounded-xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-1">
+                <div className="font-bold">Olib tashlanayotgan mijozlar:</div>
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                  {validPlans
+                    .filter((p) => removeModalTargetIds.includes(p.id))
+                    .map((c) => (
+                      <span
+                        key={c.id}
+                        className="px-2 py-0.5 rounded-lg bg-white border border-rose-200 font-semibold text-neutral-800 text-[11px]"
+                      >
+                        {c.clientName}
+                      </span>
+                    ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-neutral-700">
+                  Olib tashlash sababi (majburiy): <span className="text-rose-600">*</span>
+                </label>
+
+                <div className="flex flex-wrap gap-1">
+                  {PRESET_REMOVE_REASONS.map((preset) => {
+                    const isSelected = selectedRemovePreset === preset;
+                    return (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => {
+                          setSelectedRemovePreset(preset);
+                          setRemoveReason(preset);
+                        }}
+                        className={`text-[11px] px-2 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-700 border-rose-700 text-white shadow-xs font-semibold'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <textarea
+                  rows={2}
+                  value={removeReason}
+                  onChange={(e) => {
+                    setRemoveReason(e.target.value);
+                    setSelectedRemovePreset(e.target.value);
+                  }}
+                  placeholder="Nima sababdan rejadan olib tashlanayotganini yozing..."
+                  className="w-full px-3 py-2 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
+                />
+              </div>
+            </div>
+
+            <div className="px-4 py-2.5 border-t border-neutral-100 bg-neutral-50/80 flex items-center justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setRemoveModalTargetIds(null);
+                  setRemoveReason('');
+                  setSelectedRemovePreset('');
+                }}
+                className="px-3.5 py-2 rounded-xl border border-neutral-200 bg-white text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[36px] cursor-pointer"
+              >
+                Bekor qilish
               </button>
               <button
                 type="button"
                 disabled={!removeReason.trim() && !selectedRemovePreset.trim()}
                 onClick={handleExecuteRemove}
-                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[36px] flex items-center gap-1.5 cursor-pointer"
               >
-                <Trash2 className="w-4 h-4" />
-                <span>Ha, aniq — olib tashlash ({removeModalTargetIds.length} ta)</span>
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Olib tashlash ({removeModalTargetIds.length} ta)</span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Confirmation Modal: Oxirgi marta yopish & Sabab kiritish */}
+      {/* Confirmation Modal: Oxirgi marta yopish & Sabab kiritish (Compact, mobile-safe with sticky footer) */}
       {confirmCloseItem && (
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-2.5 sm:p-4 animate-in fade-in duration-150"
         >
-          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-rose-100 space-y-4">
-            <div className="flex items-center gap-3 text-rose-700">
-              <div className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center border border-rose-200 shrink-0">
-                <Lock className="w-6 h-6 text-rose-700" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold font-display text-neutral-900">
-                  Rejani yakunlash va yopish
-                </h3>
-                <p className="text-xs text-neutral-500">
-                  Ushbu mijoz bo'yicha amallarni yakunlab yopish sababini ko'rsating
-                </p>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-rose-50/70 border border-rose-200 text-xs text-rose-950 space-y-2">
-              <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-rose-200/80">
-                <p className="font-semibold">
-                  Mijoz: <span className="font-bold underline">{confirmCloseItem.clientName}</span>
-                </p>
-                <div className="flex items-center gap-1.5 text-neutral-700 bg-white px-2.5 py-1 rounded-lg border border-neutral-200 shadow-2xs">
-                  <Calendar className="w-3.5 h-3.5 text-rose-700" />
-                  <span className="text-[11px] font-bold">
-                    Reja tuzilgan sana: <strong className="font-mono text-neutral-900">{formatDateDMY(confirmCloseItem.planDate || confirmCloseItem.createdAt)}</strong>
-                  </span>
+          <div className="bg-white rounded-2xl sm:rounded-3xl max-w-md w-full max-h-[86dvh] flex flex-col overflow-hidden shadow-2xl border border-rose-100">
+            {/* Compact Header */}
+            <div className="px-4 py-3 border-b border-rose-100 bg-rose-50/40 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2.5 text-rose-700 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-rose-100 flex items-center justify-center shrink-0">
+                  <Lock className="w-4 h-4 text-rose-700" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold font-display text-neutral-900 truncate">
+                    Rejani yopish
+                  </h3>
+                  <p className="text-[11px] text-neutral-500 truncate">
+                    {confirmCloseItem.clientName}
+                  </p>
                 </div>
               </div>
-              <p className="text-neutral-600 leading-relaxed">
-                Yopilgandan so'ng bu mijoz <strong>faol rejalar ro'yxatidan chiqariladi</strong> ("Yopilganlar" bo'limida saqlanadi) va kiritilgan yopilish sababi butun tizimda (admin boshqaruvi, mijoz audit logi) aks etadi.
-              </p>
-              <div className="flex items-center gap-1.5 text-rose-800 font-bold pt-1">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>Yopilgandan so'ng kerak bo'lsa "Yopilganlar" bo'limidan izoh kiritib qayta ochishingiz mumkin.</span>
-              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmCloseItem(null)}
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer shrink-0"
+                aria-label="Yopish"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
 
-            {/* Rejani yopish sanasi tanlash */}
-            <div className="p-3 rounded-xl border bg-white border-neutral-200 space-y-2 text-xs">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="font-bold text-neutral-800 flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-rose-700" />
-                  <span>Rejani yopish sanasi:</span>
+            {/* Scrollable Compact Body */}
+            <div className="p-3.5 sm:p-4 overflow-y-auto flex-1 space-y-2.5 text-xs">
+              {/* Client & Plan Date compact summary */}
+              <div className="p-2.5 rounded-xl bg-rose-50/70 border border-rose-200 flex items-center justify-between flex-wrap gap-1.5 text-[11px]">
+                <span className="font-semibold text-rose-950 truncate">
+                  Mijoz: <strong className="font-bold">{confirmCloseItem.clientName}</strong>
                 </span>
-                <span className="text-[11px] text-neutral-500 font-mono font-medium">
-                  Tanlangan sana: {formatDateDMY(confirmCloseDate)}
+                <span className="inline-flex items-center gap-1 text-neutral-700 bg-white px-2 py-0.5 rounded-md border border-neutral-200 font-mono">
+                  <Calendar className="w-3 h-3 text-rose-700 shrink-0" />
+                  <span>{formatDateDMY(confirmCloseItem.planDate || confirmCloseItem.createdAt)}</span>
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => setConfirmCloseDate(getTodayDateStr())}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    confirmCloseDate === getTodayDateStr()
-                      ? 'bg-rose-700 text-white shadow-xs'
-                      : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
-                  }`}
-                >
-                  Bugun
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmCloseDate(getYesterdayDateStr())}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    confirmCloseDate === getYesterdayDateStr()
-                      ? 'bg-rose-700 text-white shadow-xs'
-                      : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
-                  }`}
-                >
-                  Kecha
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmCloseDate(getDayBeforeYesterdayDateStr())}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
-                    confirmCloseDate === getDayBeforeYesterdayDateStr()
-                      ? 'bg-rose-700 text-white shadow-xs'
-                      : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
-                  }`}
-                >
-                  Kechadan oldin
-                </button>
+              {/* Compact Closure Date Picker */}
+              <div className="p-2.5 rounded-xl border bg-white border-neutral-200 space-y-1.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="font-bold text-neutral-800 flex items-center gap-1 text-[11px]">
+                    <Calendar className="w-3.5 h-3.5 text-rose-700" />
+                    <span>Yopish sanasi:</span>
+                  </span>
+                  <span className="text-[11px] text-neutral-500 font-mono font-semibold">
+                    {formatDateDMY(confirmCloseDate)}
+                  </span>
+                </div>
 
-                <div className="flex items-center gap-1 bg-neutral-50 px-2.5 py-1 rounded-xl border border-neutral-200">
-                  <span className="text-[11px] font-semibold text-neutral-500">Sana:</span>
+                <div className="flex items-center gap-1 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmCloseDate(getTodayDateStr())}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                      confirmCloseDate === getTodayDateStr()
+                        ? 'bg-rose-700 text-white shadow-2xs'
+                        : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Bugun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmCloseDate(getYesterdayDateStr())}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                      confirmCloseDate === getYesterdayDateStr()
+                        ? 'bg-rose-700 text-white shadow-2xs'
+                        : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Kecha
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmCloseDate(getDayBeforeYesterdayDateStr())}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                      confirmCloseDate === getDayBeforeYesterdayDateStr()
+                        ? 'bg-rose-700 text-white shadow-2xs'
+                        : 'bg-neutral-50 text-neutral-700 border border-neutral-200 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Kechadan oldin
+                  </button>
                   <input
                     type="date"
                     value={confirmCloseDate}
                     onChange={(e) => {
                       if (e.target.value) setConfirmCloseDate(e.target.value);
                     }}
-                    className="text-xs font-bold font-mono text-neutral-900 bg-transparent focus:outline-none cursor-pointer"
+                    className="px-2 py-0.5 rounded-lg border border-neutral-200 bg-neutral-50 text-[11px] font-bold font-mono text-neutral-900 focus:outline-none cursor-pointer"
                   />
                 </div>
               </div>
-            </div>
 
-            {/* Avtomatik aniqlangan yopilish holati */}
-            <div className="p-3 rounded-xl border bg-neutral-50 border-neutral-200 flex items-center justify-between gap-2 text-xs">
-              <span className="font-bold text-neutral-700">Yopilish holati:</span>
-              {closeWithoutActionFlag ? (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 font-bold">
-                  <Lock className="w-3.5 h-3.5 text-amber-700" />
-                  <span>Bajarilmasdan yopilgan (amal bajarilmagan)</span>
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                  <span>Bajarib yopilgan</span>
-                </span>
-              )}
-            </div>
-
-            {/* Sabab tanlash va yozish */}
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-neutral-700">
-                Yopilish sababi: <span className="text-rose-600">*</span>
-              </label>
-              
-              <div className="flex flex-wrap gap-1.5">
-                {PRESET_CLOSE_REASONS.map((reason) => {
-                  const isSelected = selectedPresetReason === reason && closeReason === reason;
-                  return (
-                    <button
-                      key={reason}
-                      type="button"
-                      onClick={() => {
-                        setSelectedPresetReason(reason);
-                        setCloseReason(reason);
-                      }}
-                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
-                        isSelected
-                          ? 'bg-rose-700 border-rose-700 text-white shadow-xs font-semibold'
-                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100 hover:border-neutral-300'
-                      }`}
-                    >
-                      {reason}
-                    </button>
-                  );
-                })}
+              {/* Status badge */}
+              <div className="px-2.5 py-1.5 rounded-xl border bg-neutral-50 border-neutral-200 flex items-center justify-between gap-2 text-[11px]">
+                <span className="font-bold text-neutral-700">Yopilish holati:</span>
+                {closeWithoutActionFlag ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 font-bold">
+                    <Lock className="w-3 h-3 text-amber-700" />
+                    <span>Bajarilmasdan yopildi</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-700" />
+                    <span>Bajarib yopilgan</span>
+                  </span>
+                )}
               </div>
 
-              <input
-                type="text"
-                value={closeReason}
-                onChange={(e) => {
-                  setCloseReason(e.target.value);
-                  setSelectedPresetReason(e.target.value);
-                }}
-                placeholder="Yopilish sababini kiriting yoki yuqoridagilardan tanlang..."
-                className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
-              />
+              {/* Reason selector & input */}
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-bold text-neutral-700">
+                  Yopilish sababi: <span className="text-rose-600">*</span>
+                </label>
+
+                <div className="flex flex-wrap gap-1">
+                  {PRESET_CLOSE_REASONS.map((reason) => {
+                    const isSelected = selectedPresetReason === reason && closeReason === reason;
+                    return (
+                      <button
+                        key={reason}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPresetReason(reason);
+                          setCloseReason(reason);
+                        }}
+                        className={`text-[11px] px-2 py-1 rounded-lg border transition-all text-left font-medium cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-700 border-rose-700 text-white shadow-2xs font-semibold'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {reason}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <input
+                  type="text"
+                  value={closeReason}
+                  onChange={(e) => {
+                    setCloseReason(e.target.value);
+                    setSelectedPresetReason(e.target.value);
+                  }}
+                  placeholder="Yopilish sababini kiriting..."
+                  className="w-full px-3 py-2 rounded-xl border border-neutral-200 text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500"
+                />
+              </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2.5 pt-2">
+            {/* Sticky Footer always visible on mobile */}
+            <div className="px-4 py-2.5 border-t border-neutral-100 bg-neutral-50/80 flex items-center justify-end gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => setConfirmCloseItem(null)}
-                className="px-4 py-2.5 rounded-xl border border-neutral-200 text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[42px] cursor-pointer"
+                className="px-3.5 py-2 rounded-xl border border-neutral-200 bg-white text-xs font-semibold text-neutral-700 hover:bg-neutral-50 min-h-[36px] cursor-pointer"
               >
                 Bekor qilish
               </button>
@@ -2128,9 +2019,9 @@ export const AgentDailyPlanTable: React.FC<Props> = ({
                 type="button"
                 disabled={!closeReason.trim()}
                 onClick={handleExecuteClose}
-                className="px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[42px] flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold shadow-xs min-h-[36px] flex items-center gap-1.5 cursor-pointer"
               >
-                <Lock className="w-4 h-4" />
+                <Lock className="w-3.5 h-3.5" />
                 <span>Yopish</span>
               </button>
             </div>

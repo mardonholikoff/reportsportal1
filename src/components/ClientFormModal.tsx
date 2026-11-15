@@ -180,13 +180,13 @@ export const ClientFormModal: React.FC<Props> = ({
       setRegion('');
       setDistrict('');
       setLandmark('');
-      setProducts([emptyProduct()]);
+      setProducts([]);
       setOrderDiscountPercent('');
       setOrderDiscountAmount('');
       setInitialDebtAmount('');
       setInitialDebtDate(new Date().toISOString().slice(0, 10));
       setCurrentDebtAmount('');
-      setIsGivenOnCredit(true);
+      setIsGivenOnCredit(false);
       setCreditDebtAmount('');
       setHasManuallyEditedDebt(false);
       setCurrentAdvance('');
@@ -553,7 +553,9 @@ export const ClientFormModal: React.FC<Props> = ({
               <p className="text-xs text-neutral-600 mt-0.5">
                 {entryMode === 'excel'
                   ? "Faqat adminlar uchun: .xlsx fayldan qator/ustunlarni maydonlarga biriktirib mijozlarni ommaviy qo'shish"
-                  : "Mijoz rekvizitlari, telefon raqamlari, mahsulotlar (USD) va hisob-kitob"}
+                  : editingClient
+                  ? "Mijoz rekvizitlari, telefon raqamlari, mahsulotlar (USD) va hisob-kitob"
+                  : "Faqat adminlar uchun: mijoz rekvizitlari, telefon raqamlari va qarz / haqdorlik hisob-kitobi"}
               </p>
             </div>
             <button
@@ -740,8 +742,9 @@ export const ClientFormModal: React.FC<Props> = ({
             </div>
 
             {/* ========================================================= */}
-            {/* Section 2: Ombordagi mahsulotlardan tanlab berish + Chegirma (% / USD) */}
+            {/* Section 2: Ombordagi mahsulotlardan tanlab berish + Chegirma (% / USD) — faqat mavjud mijoz tahririda */}
             {/* ========================================================= */}
+            {Boolean(editingClient) && (
             <div className="space-y-3 pt-2 border-t border-rose-100">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
@@ -1090,13 +1093,14 @@ export const ClientFormModal: React.FC<Props> = ({
                 </div>
               </div>
             </div>
+            )}
 
             {/* ========================================================= */}
-            {/* Section 3: Qarz va haqdorlik hisob-kitobi (USD) */}
+            {/* Qarz va haqdorlik hisob-kitobi (USD) */}
             {/* ========================================================= */}
             <div className="space-y-3 pt-2 border-t border-rose-100">
               <h3 className="text-xs font-bold text-neutral-800 tracking-wide uppercase">
-                3. Qarz va haqdorlik hisob-kitobi (USD)
+                {editingClient ? '3.' : '2.'} Qarz va haqdorlik hisob-kitobi (USD)
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1225,15 +1229,17 @@ export const ClientFormModal: React.FC<Props> = ({
             </div>
 
               {/* Form Actions */}
-              <div className="pt-3 border-t border-rose-100 flex flex-wrap items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={handleOpenNakladnoy}
-                  className="px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs sm:text-sm font-bold transition min-h-[44px] flex items-center gap-1.5 cursor-pointer shadow-xs"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>Print / Yuk xati (PDF)</span>
-                </button>
+              <div className={`pt-3 border-t border-rose-100 flex flex-wrap items-center gap-3 ${editingClient ? 'justify-between' : 'justify-end'}`}>
+                {editingClient && (
+                  <button
+                    type="button"
+                    onClick={handleOpenNakladnoy}
+                    className="px-4 py-2.5 rounded-xl bg-neutral-900 hover:bg-black text-white text-xs sm:text-sm font-bold transition min-h-[44px] flex items-center gap-1.5 cursor-pointer shadow-xs"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print / Yuk xati (PDF)</span>
+                  </button>
+                )}
 
                 <div className="flex items-center gap-2.5">
                   <button

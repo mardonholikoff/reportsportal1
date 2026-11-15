@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthUser } from '../types';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
-import { PWAInstallButton } from './PWAInstallButton';
+import { storageService } from '../services/storage';
 import { getAgentDisplayName } from '../utils/format';
 import {
   LogOut,
@@ -26,6 +26,16 @@ interface Props {
   warehouseCount?: number;
 }
 
+const formatLastSyncClock = (iso: string | null): string => {
+  if (!iso) return '--:--:--';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '--:--:--';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+};
+
 export const Navbar: React.FC<Props> = ({
   user,
   onLogout,
@@ -39,12 +49,50 @@ export const Navbar: React.FC<Props> = ({
 }) => {
   const isOnline = useOnlineStatus();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(() =>
+    storageService.getLastSyncedTime()
+  );
   const displayName = getAgentDisplayName(user.username);
+
+  useEffect(() => {
+    const refreshSyncTime = (ev?: Event) => {
+      const customEv = ev as CustomEvent<string> | undefined;
+      if (customEv?.detail && typeof customEv.detail === 'string') {
+        setLastSyncedAt(customEv.detail);
+      } else {
+        setLastSyncedAt(storageService.getLastSyncedTime());
+      }
+    };
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'savdo_last_synced_at') {
+        setLastSyncedAt(e.newValue);
+      }
+    };
+
+    window.addEventListener('savdo-sync-updated', refreshSyncTime);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('savdo-sync-updated', refreshSyncTime);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isSyncing) {
+      const latest = storageService.getLastSyncedTime();
+      if (latest) {
+        setLastSyncedAt(latest);
+      }
+    }
+  }, [isSyncing]);
+
+  const formattedSyncTime = formatLastSyncClock(lastSyncedAt);
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-rose-100 w-full">
       <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4 w-full">
-        {/* Zone 1: Left area - Online status & sync */}
+        {/* Zone 1: Left area - Online status, last sync timestamp & sync trigger */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Online / Offline status badge */}
           <div
@@ -78,6 +126,19 @@ export const Navbar: React.FC<Props> = ({
             )}
           </div>
 
+          {/* Last Sync Timestamp right before Sync button */}
+          <span
+            className="inline-flex items-center gap-1 px-1.5 sm:px-2 py-1 rounded-lg bg-neutral-100/90 border border-neutral-200/80 text-[10px] sm:text-[11px] font-mono font-semibold text-neutral-700 shrink-0"
+            title={
+              lastSyncedAt
+                ? `Oxirgi sinxronlash vaqti: ${new Date(lastSyncedAt).toLocaleString('uz-UZ')}`
+                : "Hali sinxronlanmagan"
+            }
+          >
+            <span className="hidden lg:inline text-neutral-500 font-sans font-medium">Oxirgi:</span>
+            <span>{formattedSyncTime}</span>
+          </span>
+
           {/* Sync trigger button */}
           <button
             onClick={onTriggerSync}
@@ -92,11 +153,8 @@ export const Navbar: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* Zone 2: Primary Action, PWA Install & User Profile */}
+        {/* Zone 2: Primary Action & User Profile */}
         <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-          {/* PWA Install Button */}
-          <PWAInstallButton />
-
           {/* Admin only: Omborga mahsulotlar kiritish button */}
           {user.role === 'admin' && onOpenWarehouseModal && (
             <button
@@ -110,16 +168,18 @@ export const Navbar: React.FC<Props> = ({
             </button>
           )}
 
-          {/* Main "Yangi mijoz" button */}
-          <button
-            onClick={onOpenAddModal}
-            className="flex items-center gap-1 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-all min-h-[38px] sm:min-h-[44px] justify-center cursor-pointer"
-            title="Yangi mijoz qo'shish"
-          >
-            <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5] shrink-0" />
-            <span className="whitespace-nowrap hidden sm:inline">Yangi mijoz</span>
-            <span className="whitespace-nowrap sm:hidden text-xs font-bold">Mijoz</span>
-          </button>
+          {/* Admin only: Main "Yangi mijoz" button */}
+          {user.role === 'admin' && (
+            <button
+              onClick={onOpenAddModal}
+              className="flex items-center gap-1 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-all min-h-[38px] sm:min-h-[44px] justify-center cursor-pointer"
+              title="Yangi mijoz qo'shish"
+            >
+              <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5] shrink-0" />
+              <span className="whitespace-nowrap hidden sm:inline">Yangi mijoz</span>
+              <span className="whitespace-nowrap sm:hidden text-xs font-bold">Mijoz</span>
+            </button>
+          )}
 
           {/* Direct Mobile Logout Button for immediate 1-tap exit */}
           <button

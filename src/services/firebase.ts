@@ -1415,6 +1415,17 @@ function applyIncomingStateToCallbacks(
   }
 }
 
+function recordSuccessfulSyncTimestamp() {
+  if (typeof window === 'undefined') return;
+  try {
+    const nowIso = new Date().toISOString();
+    localStorage.setItem('savdo_last_synced_at', nowIso);
+    window.dispatchEvent(new CustomEvent('savdo-sync-updated', { detail: nowIso }));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 // Subscribe to real-time updates from Firestore & Cloud Snapshot
 export function subscribeToFirestoreData(callbacks: {
   onClientsChange?: (clients: Client[]) => void;
@@ -1465,12 +1476,14 @@ export function subscribeToFirestoreData(callbacks: {
           applyIncomingStateToCallbacks(directSnap, callbacks);
           if (!snapshot.metadata.fromCache) {
             hasCompletedInitialCloudMerge = true;
+            recordSuccessfulSyncTimestamp();
           }
         } else {
           readFirestoreCloudSnapshot().then((parsed) => {
             if (parsed) {
               applyIncomingStateToCallbacks(parsed, callbacks);
               hasCompletedInitialCloudMerge = true;
+              recordSuccessfulSyncTimestamp();
             }
           });
         }
@@ -1722,7 +1735,11 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
         writeFirestoreCloudSnapshot(mergedPayload);
       }
 
-      return Boolean(cloudSnap || relayData || mergedClients.length > 0 || mergedWh.length > 0);
+      const syncedOk = Boolean(cloudSnap || relayData || mergedClients.length > 0 || mergedWh.length > 0);
+      if (syncedOk) {
+        recordSuccessfulSyncTimestamp();
+      }
+      return syncedOk;
     } catch {
       return false;
     } finally {

@@ -69,47 +69,22 @@ function createPNG(width, height, drawFn) {
   return Buffer.concat([signature, ihdr, idat, iend]);
 }
 
-// Brand draw function (Soft light rose canvas with bold crimson central seal)
+// Brand draw function (Pure bright red circle)
 function brandIconDraw(x, y, w, h) {
   const cx = w / 2;
   const cy = h / 2;
   const dx = x - cx;
   const dy = y - cy;
   const dist = Math.sqrt(dx * dx + dy * dy);
+  const radius = w * 0.44;
 
-  // Background: soft light red / rose tint (#FFF1F2)
-  let r = 255, g = 241, b = 242, a = 255;
-
-  // Outer circle ring
-  const outerR = w * 0.44;
-  const innerR = w * 0.36;
-  const badgeR = w * 0.26;
-
-  if (dist < outerR && dist >= outerR - 4) {
-    // Subtle border
-    r = 254; g = 205; b = 211; // rose-200
-  } else if (dist < outerR && dist >= innerR) {
-    // Soft circle layer
-    r = 255; g = 255; b = 255;
-  } else if (dist < innerR) {
-    // Crimson core (#E11D48)
-    if (dist < badgeR) {
-      // In center: crimson red
-      r = 225; g = 29; b = 72;
-      // Simple inner ledger symbol (cross/box)
-      const absDx = Math.abs(dx);
-      const absDy = Math.abs(dy);
-      const iconSize = w * 0.12;
-      if ((absDx < iconSize && absDy < iconSize * 1.3) && (absDx > iconSize * 0.7 || absDy > iconSize * 0.9 || (absDy < 3 && absDx < iconSize * 0.5))) {
-        // white ledger symbol
-        r = 255; g = 255; b = 255;
-      }
-    } else {
-      r = 255; g = 228; b = 230; // rose-100
-    }
+  if (dist <= radius) {
+    // Anti-aliased edge
+    const alpha = dist > radius - 1.2 ? Math.max(0, Math.min(255, Math.round((radius - dist + 1.2) / 1.2 * 255))) : 255;
+    return [220, 38, 38, alpha]; // #DC2626 bright red
   }
 
-  return [r, g, b, a];
+  return [0, 0, 0, 0];
 }
 
 const publicDir = path.resolve('public');

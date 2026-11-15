@@ -1740,13 +1740,15 @@ export const ClientTable: React.FC<Props> = ({
                   ? `"${searchQuery}" so'rovi bo'yicha hech qanday mijoz topilmadi. Qidiruv so'zini o'zgartirib ko'ring.`
                   : "Hozircha hech qanday mijoz kiritilmagan. Birinchi mijozingizni qo'shing."}
               </p>
-              <button
-                onClick={onOpenAddModal}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs"
-              >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
-                <span>Yangi mijoz qo'shish</span>
-              </button>
+              {userRole === 'admin' && (
+                <button
+                  onClick={onOpenAddModal}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+                >
+                  <Plus className="w-4 h-4 stroke-[2.5]" />
+                  <span>Yangi mijoz qo'shish</span>
+                </button>
+              )}
             </div>
           )}
 

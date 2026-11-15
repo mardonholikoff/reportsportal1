@@ -1185,6 +1185,12 @@ export default function App() {
       });
       showToast(`"${data.name}" ma'lumotlari yangilandi.`);
     } else {
+      if (user?.role !== 'admin' && currentUsername !== 'adminc' && currentUsername !== 'adminc1') {
+        showToast("Yangi mijozni faqatgina admin kirita oladi!");
+        setEditingClient(null);
+        setIsFormModalOpen(false);
+        return;
+      }
       const saved = storageService.addClient(data, currentUsername);
       syncClientToFirestore(saved);
       addSystemLog({
@@ -1972,6 +1978,10 @@ export default function App() {
         user={user}
         onLogout={handleLogout}
         onOpenAddModal={() => {
+          if (!isAdmin) {
+            showToast("Yangi mijozni faqatgina admin kirita oladi!");
+            return;
+          }
           setEditingClient(null);
           setIsFormModalOpen(true);
         }}
@@ -2164,16 +2174,6 @@ export default function App() {
                       Barcha mijozlar bazasi va ularning ma'lumotlari
                     </p>
                   </div>
-                  <button
-                    onClick={() => {
-                      setEditingClient(null);
-                      setIsFormModalOpen(true);
-                    }}
-                    className="self-start sm:self-auto flex items-center gap-2 bg-rose-700 hover:bg-rose-800 active:bg-rose-900 text-white px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[42px] cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4 stroke-[2.5]" />
-                    <span>Yangi mijoz qo'shish</span>
-                  </button>
                 </div>
 
                 <StatsCards stats={stats} userRole={user.role} />
@@ -2182,6 +2182,10 @@ export default function App() {
                   clients={clients}
                   dailyPlans={dailyPlans}
                   onOpenAddModal={() => {
+                    if (!isAdmin) {
+                      showToast("Yangi mijozni faqatgina admin kirita oladi!");
+                      return;
+                    }
                     setEditingClient(null);
                     setIsFormModalOpen(true);
                   }}
@@ -2467,10 +2471,6 @@ export default function App() {
                     warehouseProducts={warehouseProducts}
                     clients={clients}
                     dailyPlans={dailyPlans}
-                    onEditWarehouseProduct={(prod) => {
-                      setEditingWarehouseProduct(prod);
-                      setIsWarehouseModalOpen(true);
-                    }}
                     onDeleteWarehouseProduct={handleDeleteWarehouseProduct}
                   />
                 </div>
