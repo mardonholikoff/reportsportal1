@@ -2912,6 +2912,16 @@ export default function App() {
         }}
         onToggleReminderStatus={handleToggleReminderStatus}
         onDeleteReminder={handleDeleteReminder}
+        warehouseProducts={warehouseProducts}
+        onSaveClientMonthlyDetails={(clientId, monthlyDetails) => {
+          const updated = storageService.updateClient(clientId, { monthlyDetails });
+          setClients(storageService.getClients());
+          if (updated) {
+            setSelectedClient(updated);
+            syncClientToFirestore(updated);
+            showToast(`"${updated.name}" oylik ma'lumotlari saqlandi.`);
+          }
+        }}
         userRole={user.role}
         currentUsername={user.username}
       />

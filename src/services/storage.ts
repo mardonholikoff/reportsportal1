@@ -561,17 +561,56 @@ class StorageService {
 
     const existing = clients[index];
     const newCreatedAt = updates.createdAt || existing.createdAt;
+    const prevInitDebt =
+      typeof existing.initialDebt === 'number' && !isNaN(existing.initialDebt)
+        ? Math.round(existing.initialDebt * 100) / 100
+        : getInitialDebtForClient(existing);
+
+    let updatedCurrentDebt =
+      updates.currentDebt !== undefined ? updates.currentDebt : existing.currentDebt;
+    let updatedCurrentAdvance =
+      updates.currentAdvance !== undefined ? updates.currentAdvance : existing.currentAdvance;
 
     let updatedLogs = updates.logs ? [...updates.logs] : (existing.logs ? [...existing.logs] : []);
     if (updates.initialDebt !== undefined || updates.createdAt) {
-      const initLogIndex = updatedLogs.findIndex(
-        (l) => l && (l.type === 'created' || (l.title && (l.title.includes("qo'shildi") || l.title.includes("yuklandi"))))
-      );
-      const effInitDebt = updates.initialDebt !== undefined ? updates.initialDebt : getInitialDebtForClient(existing);
+      // Find the real client creation log strictly (never match later debt-addition logs)
+      let initLogIndex = updatedLogs.findIndex((l) => l && l.type === 'created');
+      if (initLogIndex === -1) {
+        initLogIndex = updatedLogs.findIndex(
+          (l) =>
+            l &&
+            l.title &&
+            (l.title === "Mijoz ro'yxatga qo'shildi" ||
+              l.title === "Mijoz qo'shildi" ||
+              l.title.includes('Excel (.xlsx) orqali'))
+        );
+      }
+
+      const effInitDebt =
+        updates.initialDebt !== undefined
+          ? Math.round(Math.max(0, Number(updates.initialDebt) || 0) * 100) / 100
+          : prevInitDebt;
+
+      // Safety net: if initialDebt was changed programmatically without passing new currentDebt/currentAdvance,
+      // shift the current net balance by the initialDebt delta so all financial history remains consistent.
+      if (
+        updates.initialDebt !== undefined &&
+        updates.currentDebt === undefined &&
+        updates.currentAdvance === undefined &&
+        Math.abs(effInitDebt - prevInitDebt) > 0.001
+      ) {
+        const delta = Math.round((effInitDebt - prevInitDebt) * 100) / 100;
+        const oldNet = (existing.currentDebt || 0) - (existing.currentAdvance || 0);
+        const newNet = Math.round((oldNet + delta) * 100) / 100;
+        updatedCurrentDebt = newNet >= 0 ? newNet : 0;
+        updatedCurrentAdvance = newNet < 0 ? Math.round(Math.abs(newNet) * 100) / 100 : 0;
+      }
+
       if (initLogIndex !== -1) {
         const oldLog = updatedLogs[initLogIndex];
-        const newDetails = oldLog.details && oldLog.details.includes('Qarz:')
-          ? oldLog.details.replace(/Qarz:\s*[\d.,]+/i, `Qarz: ${effInitDebt}`)
+        const hasQarzLabel = Boolean(oldLog.details && /Qarz:\s*[\d\s.,]+/i.test(oldLog.details));
+        const newDetails = hasQarzLabel
+          ? oldLog.details.replace(/Qarz:\s*[\d\s.,]+(\s*USD)?/i, `Qarz: ${effInitDebt} USD`)
           : `${oldLog.details || ''}. Qarz: ${effInitDebt} USD`.trim();
         updatedLogs[initLogIndex] = {
           ...oldLog,
@@ -579,7 +618,7 @@ class StorageService {
           details: newDetails,
         };
       } else {
-        updatedLogs.unshift({
+        updatedLogs.push({
           id: 'log_' + Date.now() + '_init',
           clientId: id,
           author: existing.createdBy || 'adminc',
@@ -589,11 +628,29 @@ class StorageService {
           details: `Tizimga qo'shildi. Qarz: ${effInitDebt} USD`,
         });
       }
+
+      if (updates.initialDebt !== undefined && Math.abs(effInitDebt - prevInitDebt) > 0.001) {
+        updatedLogs.unshift({
+          id: 'log_' + Date.now() + '_init_edit',
+          clientId: id,
+          author: updates.createdBy || existing.createdBy || 'adminc',
+          timestamp: new Date().toISOString(),
+          type: 'updated',
+          title: "Dastlabki qarz tahrirlandi",
+          details: `Dastlabki (boshlang'ich) qarz ${prevInitDebt} USD dan ${effInitDebt} USD ga o'zgartirildi. Joriy qarz: ${updatedCurrentDebt} USD, Joriy avans: ${updatedCurrentAdvance} USD.`,
+        });
+      }
     }
 
     const updated: Client = {
       ...existing,
       ...updates,
+      initialDebt:
+        updates.initialDebt !== undefined
+          ? Math.round(Math.max(0, Number(updates.initialDebt) || 0) * 100) / 100
+          : existing.initialDebt,
+      currentDebt: updatedCurrentDebt,
+      currentAdvance: updatedCurrentAdvance,
       createdAt: newCreatedAt,
       logs: updatedLogs,
       updatedAt: new Date().toISOString(),

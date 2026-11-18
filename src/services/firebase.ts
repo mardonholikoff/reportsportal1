@@ -804,7 +804,10 @@ function mergeTwoCloudPayloads(
 
 function computeStateSignature(state: CloudStatePayload): string {
   const cSig = (state.clients || [])
-    .map((c) => `${c.id}:${c.updatedAt || ''}:${c.currentDebt}:${(c.logs || []).length}`)
+    .map(
+      (c) =>
+        `${c.id}:${c.updatedAt || ''}:${c.initialDebt ?? ''}:${c.currentDebt}:${c.currentAdvance ?? 0}:${(c.logs || []).length}`
+    )
     .sort()
     .join('|');
   const wSig = (state.warehouseProducts || [])

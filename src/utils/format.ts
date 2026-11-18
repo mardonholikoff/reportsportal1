@@ -163,31 +163,35 @@ export function getInitialDebtForClient(client: {
 }): number {
   if (!client) return 0;
 
-  // 1. Check creation audit log first (primary source of truth for initial debt at creation)
+  // 1. Explicit initialDebt property (authoritative source whenever set or edited by admin)
+  if (typeof client.initialDebt === 'number' && !isNaN(client.initialDebt) && client.initialDebt >= 0) {
+    return Math.round(client.initialDebt * 100) / 100;
+  }
+
+  // 2. Fallback to creation audit log only if explicit initialDebt is missing (legacy records)
   if (Array.isArray(client.logs) && client.logs.length > 0) {
     const createLog =
+      client.logs.find((l) => l && l.type === 'created') ||
       client.logs.find(
         (l) =>
           l &&
-          (l.type === 'created' ||
-            (l.title && (l.title.includes("qo'shildi") || l.title.includes("yuklandi"))))
-      ) || client.logs[client.logs.length - 1];
+          l.title &&
+          (l.title === "Mijoz ro'yxatga qo'shildi" ||
+            l.title === "Mijoz qo'shildi" ||
+            l.title.includes('Excel (.xlsx) orqali'))
+      ) ||
+      client.logs[client.logs.length - 1];
 
     if (createLog && createLog.details) {
-      const match = createLog.details.match(/Qarz:\s*([\d.,]+)/i);
+      const match = createLog.details.match(/Qarz:\s*([\d\s.,]+)/i);
       if (match && match[1]) {
-        const cleanVal = match[1].replace(/,/g, '');
+        const cleanVal = match[1].replace(/[\s,]/g, '');
         const parsed = parseFloat(cleanVal);
         if (!isNaN(parsed) && parsed >= 0) {
           return Math.round(parsed * 100) / 100;
         }
       }
     }
-  }
-
-  // 2. Explicit initialDebt property
-  if (typeof client.initialDebt === 'number' && client.initialDebt >= 0) {
-    return Math.round(client.initialDebt * 100) / 100;
   }
 
   // 3. Fallback to currentDebt

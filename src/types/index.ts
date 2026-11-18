@@ -45,9 +45,30 @@ export interface ClientReminder {
   completedBy?: string;
 }
 
+export interface ClientMonthlyInfoEntry {
+  izoh?: string;
+  sl?: string;
+  sp?: string;
+  w540?: string;
+  emptyCol?: string;
+  extraInfo?: string;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export interface Client {
   id: string;
   name: string;
+  clientCode?: string; // Klient kodi (ixtiyoriy)
+  contactName?: string; // Ismi (ixtiyoriy)
+  businessType?: "Do'kon" | 'Servis' | 'Moy almashtirish'; // Turi (ixtiyoriy)
+  employeesCount?: string; // Ishchilar soni (ixtiyoriy)
+  apprenticesInfo?: string; // Shogirtlar va hamkasblar haqida ma'lumot (ixtiyoriy)
+  mainOils?: string; // Asosiy sotadigan moylari (ixtiyoriy)
+  sparePartsInfo?: string; // Zapchast to'g'risida ma'lumot (ixtiyoriy)
+  workStartDate?: string; // Biz bilan ish boshlagan sanasi (YYYY-MM-DD, ixtiyoriy)
+  dayOff?: string; // Dam olish kuni (ixtiyoriy)
+  monthlyDetails?: Record<string, ClientMonthlyInfoEntry>; // YYYY-MM -> admin to'ldiradigan oylik ma'lumotlar
   phone: string;
   phones?: string[];
   address: string;

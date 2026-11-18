@@ -1,5 +1,10 @@
 import React, { useState, useMemo } from 'react';
-import { Client, DailyPlanItem } from '../types';
+import {
+  Client,
+  ClientMonthlyInfoEntry,
+  DailyPlanItem,
+  WarehouseProduct,
+} from '../types';
 import {
   formatMoney,
   formatDate,
@@ -24,7 +29,6 @@ import {
   Package,
   History,
   FileText,
-  Lock,
   BellRing,
   Check,
   ExternalLink,
@@ -32,9 +36,12 @@ import {
   CreditCard,
   BarChart3,
   AlertTriangle,
+  FileSpreadsheet,
+  Banknote,
 } from 'lucide-react';
 import { StickyTableWrapper } from './StickyTableWrapper';
 import { SpecialClientAnalysisModal } from './SpecialClientAnalysisModal';
+import { ClientFullInfoModal } from './ClientFullInfoModal';
 
 const getPresetDateRange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth') => {
   const now = new Date();
@@ -66,6 +73,7 @@ const getPresetDateRange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 't
 interface Props {
   client: Client | null;
   dailyPlans?: DailyPlanItem[];
+  warehouseProducts?: WarehouseProduct[];
   isOpen: boolean;
   onClose: () => void;
   onEdit: (client: Client) => void;
@@ -74,6 +82,10 @@ interface Props {
   onOpenWarehouseDebtModal?: (client: Client) => void;
   onToggleReminderStatus?: (reminderId: string, clientId: string) => void;
   onDeleteReminder?: (reminderId: string, clientId: string) => void;
+  onSaveClientMonthlyDetails?: (
+    clientId: string,
+    monthlyDetails: Record<string, ClientMonthlyInfoEntry>
+  ) => void;
   onNavigateToPlanDate?: (target: {
     clientId: string;
     clientName: string;
@@ -85,15 +97,50 @@ interface Props {
   currentUsername?: string;
 }
 
+const normalizePaymentTypeLabel = (method?: string, methodLabel?: string): string => {
+  const m = (method || '').toLowerCase();
+  const l = (methodLabel || '').toLowerCase();
+  if (m === 'bank_otkazma' || m === 'bank' || l.includes('bank')) return 'Bank';
+  if (m === 'karta_otkazma' || m === 'karta' || l.includes('karta')) return 'Karta';
+  if (m === 'qr_otkazma' || m === 'qr' || l.includes('qr')) return 'QR';
+  if (m === 'naqd_som' || l.includes("so'm") || l.includes('naqd')) return "Naqd so'm";
+  return methodLabel || "So'm (Konvertatsiya)";
+};
+
+const toLocalYMD = (raw?: string, fallback?: string): string => {
+  if (!raw) return fallback || '';
+  const trimmed = raw.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const d = new Date(trimmed);
+  if (!isNaN(d.getTime())) {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  return trimmed.slice(0, 10) || fallback || '';
+};
+
+const extractTimeHM = (raw?: string): string => {
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (!isNaN(d.getTime())) {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  if (raw.includes('T')) return raw.slice(11, 16);
+  return '';
+};
+
 export const ClientDetailModal: React.FC<Props> = ({
   client: propClient,
   dailyPlans,
+  warehouseProducts,
   isOpen,
   onClose,
   onEdit,
   onDelete,
   onToggleReminderStatus,
   onDeleteReminder,
+  onSaveClientMonthlyDetails,
   onNavigateToPlanDate,
   userRole = 'admin',
   currentUsername,
@@ -114,14 +161,19 @@ export const ClientDetailModal: React.FC<Props> = ({
     return fresh || propClient;
   }, [propClient, dailyPlans, isOpen]);
 
-  // Reset product filters and special analysis modal when opening modal or switching client
+  // Reset filters and sub-modals when opening modal or switching client
   React.useEffect(() => {
     if (isOpen) {
+      setFinStartDate('');
+      setFinEndDate('');
+      setFinDateMode('range');
+      setActiveFinPreset('all');
       setProductStartDate('');
       setProductEndDate('');
       setProductDateMode('range');
       setActiveProductPreset('all');
       setIsSpecialAnalysisOpen(false);
+      setIsFullInfoOpen(false);
     }
   }, [propClient?.id, isOpen]);
 
@@ -205,8 +257,17 @@ export const ClientDetailModal: React.FC<Props> = ({
     return agentCandidate || candidates[0];
   }, [client, dailyPlans, isOpen]);
 
-  // Special analysis modal state
+  // Special analysis & Full Info modal states
   const [isSpecialAnalysisOpen, setIsSpecialAnalysisOpen] = useState(false);
+  const [isFullInfoOpen, setIsFullInfoOpen] = useState(false);
+
+  // Financial operations date filter state (supports both single day and date range)
+  const [finStartDate, setFinStartDate] = useState('');
+  const [finEndDate, setFinEndDate] = useState('');
+  const [finDateMode, setFinDateMode] = useState<'range' | 'single'>('range');
+  const [activeFinPreset, setActiveFinPreset] = useState<
+    'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'single' | 'custom'
+  >('all');
 
   // Delivered products date filter state (supports both single day and date range)
   const [productStartDate, setProductStartDate] = useState('');
@@ -222,6 +283,18 @@ export const ClientDetailModal: React.FC<Props> = ({
   const [activeLogPreset, setActiveLogPreset] = useState<
     'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth' | 'custom'
   >('all');
+
+  const handleFinPresetChange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth') => {
+    setActiveFinPreset(preset);
+    if (preset === 'today' || preset === 'yesterday') {
+      setFinDateMode('single');
+    } else if (preset === 'last7' || preset === 'thisMonth' || preset === 'all') {
+      setFinDateMode('range');
+    }
+    const range = getPresetDateRange(preset);
+    setFinStartDate(range.start);
+    setFinEndDate(range.end);
+  };
 
   const handleProductPresetChange = (preset: 'all' | 'today' | 'yesterday' | 'last7' | 'thisMonth') => {
     setActiveProductPreset(preset);
@@ -241,6 +314,338 @@ export const ClientDetailModal: React.FC<Props> = ({
     setLogStartDate(range.start);
     setLogEndDate(range.end);
   };
+
+  // Extract all financial operations (both converted UZS & direct USD, without double-counting)
+  const allFinancialOps = useMemo(() => {
+    if (!client) return [];
+
+    interface FinancialOpRow {
+      id: string;
+      date: string;
+      timeStr: string;
+      sortKey: string;
+      author: string;
+      amountUsd: number;
+      isConverted: boolean;
+      amountUzs: number;
+      exchangeRate: number;
+      paymentTypeLabel: string;
+    }
+
+    const list: FinancialOpRow[] = [];
+
+    try {
+      const allPlans = storageService.getDailyPlans();
+      const rawClientPlans = allPlans.filter(
+        (p) =>
+          p &&
+          (p.clientId === client.id ||
+            ((p.clientName || '').trim().toLowerCase() === client.name.trim().toLowerCase() &&
+              (p.clientPhone || '').replace(/\D/g, '') === (client.phone || '').replace(/\D/g, '')))
+      );
+
+      const getEffectiveDate = (p: DailyPlanItem): string =>
+        getClosedDateKey(p) ||
+        (p as any).lastClosedDateKey ||
+        getPlanDateKey(p) ||
+        toLocalYMD(p.planDate || p.createdAt);
+
+      const getFreshnessScore = (p: DailyPlanItem): string =>
+        p.lastExecutedAt ||
+        (p as any).closedUpdatedAt ||
+        p.reopenedAt ||
+        p.closedAt ||
+        p.completedAt ||
+        p.createdAt ||
+        '';
+
+      const dedupByDate = new Map<string, DailyPlanItem>();
+      rawClientPlans.forEach((plan) => {
+        const dKey = getEffectiveDate(plan) || plan.id;
+        const existing = dedupByDate.get(dKey);
+        if (!existing || getFreshnessScore(plan) >= getFreshnessScore(existing)) {
+          dedupByDate.set(dKey, plan);
+        }
+      });
+
+      const clientPlans = Array.from(dedupByDate.values());
+
+      clientPlans.forEach((plan) => {
+        const planDateKey = getEffectiveDate(plan) || new Date().toISOString().slice(0, 10);
+
+        const hasTopLevelOps = Boolean(
+          (plan.financialAction && plan.financialAction.amount > 0) ||
+            (plan.deliveryPayment && plan.deliveryPayment.paidAmount > 0)
+        );
+
+        const planActions =
+          plan.actionsHistory && plan.actionsHistory.length > 0
+            ? plan.actionsHistory
+            : hasTopLevelOps
+            ? [
+                {
+                  timestamp:
+                    plan.lastExecutedAt || plan.completedAt || plan.closedAt || plan.createdAt,
+                  author: plan.lastExecutedBy || plan.closedBy || plan.agentUsername || 'agentp1',
+                  actionDone: plan.actionDone || ('joyiga borildi' as const),
+                  financialAction: plan.financialAction,
+                  deliveryPayment: plan.deliveryPayment,
+                },
+              ]
+            : [];
+
+        let anyActionHadDeliveryPay = false;
+
+        planActions.forEach((act, actIdx) => {
+          const rawTs = act.timestamp || plan.lastExecutedAt || plan.completedAt || plan.createdAt;
+          const dateStr =
+            planActions.length === 1 && planDateKey ? planDateKey : toLocalYMD(rawTs, planDateKey);
+          const timeStr = extractTimeHM(rawTs);
+          const author = act.author || plan.lastExecutedBy || plan.agentUsername || 'agentp1';
+
+          // 1) Shunchaki to'lov (financialAction)
+          const fin = act.financialAction;
+          if (fin) {
+            if (Array.isArray(fin.splits) && fin.splits.length > 0) {
+              fin.splits.forEach((sp, spIdx) => {
+                const amt = Math.round((Number(sp?.amount) || 0) * 100) / 100;
+                if (amt <= 0) return;
+                const uzs = Math.round(Number(sp.amountUzs) || 0);
+                const isConverted = uzs > 0;
+                const rate = isConverted
+                  ? sp.exchangeRate && sp.exchangeRate > 0
+                    ? sp.exchangeRate
+                    : Math.round(uzs / amt)
+                  : 0;
+                list.push({
+                  id: `fin_sp_${plan.id}_${actIdx}_${spIdx}`,
+                  date: dateStr,
+                  timeStr,
+                  sortKey: `${dateStr}T${timeStr || '00:00'}`,
+                  author,
+                  amountUsd: amt,
+                  isConverted,
+                  amountUzs: uzs,
+                  exchangeRate: rate,
+                  paymentTypeLabel: isConverted
+                    ? normalizePaymentTypeLabel(sp.method, sp.methodLabel)
+                    : 'USD',
+                });
+              });
+            } else if ((Number(fin.amount) || 0) > 0) {
+              const amt = Math.round(Number(fin.amount) * 100) / 100;
+              const uzs = Math.round(Number(fin.amountUzs) || 0);
+              const isConverted = uzs > 0;
+              const rate = isConverted
+                ? fin.exchangeRate && fin.exchangeRate > 0
+                  ? fin.exchangeRate
+                  : Math.round(uzs / amt)
+                : 0;
+              list.push({
+                id: `fin_${plan.id}_${actIdx}`,
+                date: dateStr,
+                timeStr,
+                sortKey: `${dateStr}T${timeStr || '00:00'}`,
+                author,
+                amountUsd: amt,
+                isConverted,
+                amountUzs: uzs,
+                exchangeRate: rate,
+                paymentTypeLabel: isConverted
+                  ? normalizePaymentTypeLabel(fin.method, fin.methodLabel)
+                  : 'USD',
+              });
+            }
+          }
+
+          // 2) Mahsulot uchun to'lov (deliveryPayment)
+          const dp =
+            act.deliveryPayment || (planActions.length === 1 ? plan.deliveryPayment : undefined);
+          if (dp) {
+            if (act.deliveryPayment) anyActionHadDeliveryPay = true;
+            if (Array.isArray(dp.splits) && dp.splits.length > 0) {
+              dp.splits.forEach((sp, spIdx) => {
+                const amt = Math.round((Number(sp?.amount) || 0) * 100) / 100;
+                if (amt <= 0) return;
+                const uzs = Math.round(Number(sp.amountUzs) || 0);
+                const isConverted = uzs > 0;
+                const rate = isConverted
+                  ? sp.exchangeRate && sp.exchangeRate > 0
+                    ? sp.exchangeRate
+                    : Math.round(uzs / amt)
+                  : 0;
+                list.push({
+                  id: `dp_sp_${plan.id}_${actIdx}_${spIdx}`,
+                  date: dateStr,
+                  timeStr,
+                  sortKey: `${dateStr}T${timeStr || '00:00'}`,
+                  author,
+                  amountUsd: amt,
+                  isConverted,
+                  amountUzs: uzs,
+                  exchangeRate: rate,
+                  paymentTypeLabel: isConverted
+                    ? normalizePaymentTypeLabel(sp.method, sp.methodLabel || dp.paymentLabel)
+                    : 'USD',
+                });
+              });
+            } else if ((Number(dp.paidAmount) || 0) > 0) {
+              const amt = Math.round(Number(dp.paidAmount) * 100) / 100;
+              const uzs = Math.round(Number(dp.paidAmountUzs) || 0);
+              const isConverted = uzs > 0;
+              const rate = isConverted
+                ? dp.exchangeRate && dp.exchangeRate > 0
+                  ? dp.exchangeRate
+                  : Math.round(uzs / amt)
+                : 0;
+              list.push({
+                id: `dp_${plan.id}_${actIdx}`,
+                date: dateStr,
+                timeStr,
+                sortKey: `${dateStr}T${timeStr || '00:00'}`,
+                author,
+                amountUsd: amt,
+                isConverted,
+                amountUzs: uzs,
+                exchangeRate: rate,
+                paymentTypeLabel: isConverted
+                  ? normalizePaymentTypeLabel(dp.paymentType, dp.paymentLabel)
+                  : 'USD',
+              });
+            }
+          }
+        });
+
+        // Fallback if multiple actionsHistory exist but deliveryPayment was saved only at plan level
+        if (planActions.length > 1 && !anyActionHadDeliveryPay && plan.deliveryPayment) {
+          const dp = plan.deliveryPayment;
+          const rawTs = plan.lastExecutedAt || plan.completedAt || plan.closedAt || plan.createdAt;
+          const timeStr = extractTimeHM(rawTs);
+          const author = plan.lastExecutedBy || plan.agentUsername || 'agentp1';
+
+          if (Array.isArray(dp.splits) && dp.splits.length > 0) {
+            dp.splits.forEach((sp, spIdx) => {
+              const amt = Math.round((Number(sp?.amount) || 0) * 100) / 100;
+              if (amt <= 0) return;
+              const uzs = Math.round(Number(sp.amountUzs) || 0);
+              const isConverted = uzs > 0;
+              const rate = isConverted
+                ? sp.exchangeRate && sp.exchangeRate > 0
+                  ? sp.exchangeRate
+                  : Math.round(uzs / amt)
+                : 0;
+              list.push({
+                id: `dp_top_sp_${plan.id}_${spIdx}`,
+                date: planDateKey,
+                timeStr,
+                sortKey: `${planDateKey}T${timeStr || '00:00'}`,
+                author,
+                amountUsd: amt,
+                isConverted,
+                amountUzs: uzs,
+                exchangeRate: rate,
+                paymentTypeLabel: isConverted
+                  ? normalizePaymentTypeLabel(sp.method, sp.methodLabel || dp.paymentLabel)
+                  : 'USD',
+              });
+            });
+          } else if ((Number(dp.paidAmount) || 0) > 0) {
+            const amt = Math.round(Number(dp.paidAmount) * 100) / 100;
+            const uzs = Math.round(Number(dp.paidAmountUzs) || 0);
+            const isConverted = uzs > 0;
+            const rate = isConverted
+              ? dp.exchangeRate && dp.exchangeRate > 0
+                ? dp.exchangeRate
+                : Math.round(uzs / amt)
+              : 0;
+            list.push({
+              id: `dp_top_${plan.id}`,
+              date: planDateKey,
+              timeStr,
+              sortKey: `${planDateKey}T${timeStr || '00:00'}`,
+              author,
+              amountUsd: amt,
+              isConverted,
+              amountUzs: uzs,
+              exchangeRate: rate,
+              paymentTypeLabel: isConverted
+                ? normalizePaymentTypeLabel(dp.paymentType, dp.paymentLabel)
+                : 'USD',
+            });
+          }
+        }
+      });
+    } catch (err) {
+      console.error('Error extracting financial operations:', err);
+    }
+
+    // Standalone payment logs (QuickPaymentModal etc., excluding _fin, _fin_edit, _whdebt & debt additions)
+    if (Array.isArray(client.logs)) {
+      client.logs.forEach((log) => {
+        if (
+          log.type !== 'payment' ||
+          String(log.id || '').endsWith('_fin') ||
+          String(log.id || '').endsWith('_fin_edit') ||
+          String(log.id || '').endsWith('_whdebt')
+        ) {
+          return;
+        }
+        const text = `${log.title || ''} ${log.details || ''}`.toLowerCase();
+        if (text.includes("qarz qo'shildi") || text.includes("qarzdorlik qo'shildi")) return;
+
+        const uzs = Math.round(Number(log.amountUzs) || 0);
+        const isConverted = uzs > 0;
+        const rate = isConverted
+          ? log.exchangeRate && log.exchangeRate > 0
+            ? log.exchangeRate
+            : 12800
+          : 0;
+        const amt =
+          log.amountChanged && log.amountChanged > 0
+            ? Math.round(Number(log.amountChanged) * 100) / 100
+            : isConverted && rate > 0
+            ? Math.round((uzs / rate) * 100) / 100
+            : 0;
+        if (amt <= 0) return;
+
+        const dateStr = toLocalYMD(log.timestamp);
+        const timeStr = extractTimeHM(log.timestamp);
+        list.push({
+          id: `log_pay_${log.id}`,
+          date: dateStr,
+          timeStr,
+          sortKey: `${dateStr}T${timeStr || '00:00'}`,
+          author: log.author || 'adminc',
+          amountUsd: amt,
+          isConverted,
+          amountUzs: uzs,
+          exchangeRate: rate,
+          paymentTypeLabel: isConverted
+            ? normalizePaymentTypeLabel(undefined, log.paymentMethodLabel)
+            : 'USD',
+        });
+      });
+    }
+
+    list.sort((a, b) => b.sortKey.localeCompare(a.sortKey));
+    return list;
+  }, [client, dailyPlans, isOpen]);
+
+  const filteredFinancialOps = useMemo(() => {
+    return allFinancialOps.filter((op) => {
+      if (finStartDate && op.date < finStartDate) return false;
+      if (finEndDate && op.date > finEndDate) return false;
+      return true;
+    });
+  }, [allFinancialOps, finStartDate, finEndDate]);
+
+  const totalFilteredFinancialUsd = useMemo(() => {
+    return (
+      Math.round(
+        filteredFinancialOps.reduce((s, op) => s + (Number(op.amountUsd) || 0), 0) * 100
+      ) / 100
+    );
+  }, [filteredFinancialOps]);
 
   // Extract all delivered & returned products with accurate plan dates, return dates, and status
   const allDeliveredProducts = useMemo(() => {
@@ -819,11 +1224,6 @@ export const ClientDetailModal: React.FC<Props> = ({
                   Qo'shgan: {client.createdBy || 'adminc'}
                 </span>
               </div>
-              <div className="text-xs text-neutral-500 flex items-center gap-2 mt-0.5 font-mono">
-                <span>ID: {client.id.slice(0, 10)}</span>
-                <span aria-hidden="true">·</span>
-                <span>{formatDate(client.createdAt)}</span>
-              </div>
             </div>
           </div>
           <button
@@ -936,27 +1336,6 @@ export const ClientDetailModal: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* Oxirgi reja yakunlanishi va yopilish sababi */}
-          {client.lastPlanCloseReason && (
-            <div className="p-4 rounded-2xl bg-rose-50/80 border border-rose-200 text-xs space-y-1.5 shadow-2xs">
-              <div className="flex items-center gap-2 font-bold text-rose-950">
-                <Lock className="w-4 h-4 text-rose-700 shrink-0" />
-                <span className="text-xs uppercase tracking-wide">Oxirgi kunlik reja yopilish sababi</span>
-              </div>
-              <div className="text-neutral-900 font-semibold pl-6 text-sm">
-                "{client.lastPlanCloseReason}"
-              </div>
-              <div className="text-[11px] text-neutral-500 font-mono pl-6 flex items-center gap-3">
-                {client.lastPlanClosedBy && (
-                  <span className="font-semibold text-rose-900">Mas'ul: @{client.lastPlanClosedBy}</span>
-                )}
-                {client.lastPlanClosedAt && (
-                  <span>Sana: {formatDate(client.lastPlanClosedAt)}</span>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Mijoz bo'yicha eslatmalar (Agar mavjud bo'lsa) */}
           {client.reminders && client.reminders.length > 0 && (
             <div className="space-y-2.5 pt-2 border-t border-amber-100">
@@ -1067,25 +1446,262 @@ export const ClientDetailModal: React.FC<Props> = ({
           )}
 
           {/* ========================================================= */}
-          {/* MAXSUS TAHLIL TUGMASI */}
+          {/* TO'LIQ MA'LUMOT VA MAXSUS TAHLIL TUGMALARI */}
           {/* ========================================================= */}
           <div className="no-print flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-neutral-50 border border-neutral-200">
             <div>
               <div className="text-sm font-bold text-neutral-900">
-                Mijoz bo&apos;yicha maxsus tahlil
+                Mijoz bo&apos;yicha qo&apos;shimcha ma&apos;lumot va maxsus tahlil
               </div>
               <p className="text-xs text-neutral-500 mt-0.5">
-                Istalgan sana kungi qarzdorlik/haqdorlik, berilgan va qaytarilgan mahsulotlar hamda sana oralig&apos;idagi to&apos;lovlar tahlili
+                Mijozning to&apos;liq anketasi, oylik hisobotlar jadvali hamda istalgan sana bo&apos;yicha chuqur tahlil
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsSpecialAnalysisOpen(true)}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs transition cursor-pointer whitespace-nowrap shrink-0 min-h-[42px]"
-            >
-              <BarChart3 className="w-4 h-4 shrink-0" />
-              <span>Maxsus tahlil</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsFullInfoOpen(true)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold shadow-xs transition cursor-pointer whitespace-nowrap shrink-0 min-h-[42px]"
+              >
+                <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                <span>To&apos;liq ma&apos;lumot</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsSpecialAnalysisOpen(true)}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold shadow-xs transition cursor-pointer whitespace-nowrap shrink-0 min-h-[42px]"
+              >
+                <BarChart3 className="w-4 h-4 shrink-0" />
+                <span>Maxsus tahlil</span>
+              </button>
+            </div>
+          </div>
+
+          {/* ========================================================= */}
+          {/* MOLIYAVIY AMALIYOTLAR JADVALI (Topshirilgan mahsulotlardan tepada) */}
+          {/* ========================================================= */}
+          <div className="space-y-3 pt-2 border-t border-emerald-100">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Banknote className="w-4 h-4 text-emerald-700" />
+                <h3 className="text-sm font-bold text-neutral-900 uppercase tracking-wider">
+                  Moliyaviy amaliyotlar ({filteredFinancialOps.length} ta yozuv)
+                </h3>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-bold font-mono text-emerald-900 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                  Jami to&apos;lov: {formatMoney(totalFilteredFinancialUsd)}
+                </span>
+              </div>
+            </div>
+
+            {/* Date filter bar for financial operations */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-50/60 border border-emerald-100 text-xs">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-bold text-neutral-700 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Sana bo&apos;yicha:</span>
+                </span>
+                {(['all', 'today', 'yesterday', 'last7', 'thisMonth'] as const).map((preset) => {
+                  const labels = {
+                    all: 'Barchasi',
+                    today: 'Bugun',
+                    yesterday: 'Kecha',
+                    last7: 'Oxirgi 7 kun',
+                    thisMonth: 'Bu oy',
+                  };
+                  const isActive = activeFinPreset === preset;
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => handleFinPresetChange(preset)}
+                      className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                        isActive
+                          ? 'bg-emerald-700 text-white shadow-2xs'
+                          : 'bg-white text-neutral-700 hover:bg-emerald-100/60 border border-neutral-200'
+                      }`}
+                    >
+                      {labels[preset]}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFinDateMode('single');
+                      if (finStartDate) {
+                        setFinEndDate(finStartDate);
+                        setActiveFinPreset('single');
+                      } else if (finEndDate) {
+                        setFinStartDate(finEndDate);
+                        setActiveFinPreset('single');
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
+                      finDateMode === 'single'
+                        ? 'bg-neutral-900 text-white'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Bir kun
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFinDateMode('range');
+                      if (activeFinPreset === 'single') {
+                        setActiveFinPreset('custom');
+                      }
+                    }}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition cursor-pointer ${
+                      finDateMode === 'range'
+                        ? 'bg-neutral-900 text-white'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Kunlar oralig&apos;i
+                  </button>
+                </div>
+
+                {finDateMode === 'single' ? (
+                  <input
+                    type="date"
+                    value={finStartDate}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFinStartDate(val);
+                      setFinEndDate(val);
+                      setActiveFinPreset(val ? 'single' : 'all');
+                    }}
+                    className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                    title="Aniq bir kunni tanlash"
+                  />
+                ) : (
+                  <>
+                    <input
+                      type="date"
+                      value={finStartDate}
+                      onChange={(e) => {
+                        setFinStartDate(e.target.value);
+                        setActiveFinPreset('custom');
+                      }}
+                      className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                      title="Boshlanish sanasi"
+                    />
+                    <span className="text-neutral-400 font-bold">-</span>
+                    <input
+                      type="date"
+                      value={finEndDate}
+                      onChange={(e) => {
+                        setFinEndDate(e.target.value);
+                        setActiveFinPreset('custom');
+                      }}
+                      className="px-2 py-1 rounded-lg text-xs border border-neutral-300 bg-white font-mono"
+                      title="Tugash sanasi"
+                    />
+                  </>
+                )}
+
+                {(finStartDate || finEndDate) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFinDateMode('range');
+                      handleFinPresetChange('all');
+                    }}
+                    className="text-[10.5px] text-emerald-700 hover:text-emerald-900 font-bold underline cursor-pointer px-1"
+                  >
+                    Tozalash
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {filteredFinancialOps.length === 0 ? (
+              <div className="p-5 text-center rounded-2xl bg-neutral-50 border border-neutral-200 text-xs text-neutral-500">
+                {allFinancialOps.length === 0
+                  ? "Ushbu mijoz bilan moliyaviy amaliyotlar mavjud emas."
+                  : "Tanlangan sana yoki muddat oralig'ida moliyaviy amaliyotlar topilmadi."}
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-2xl border border-emerald-200/80 shadow-2xs">
+                <StickyTableWrapper maxHeightClassName="max-h-72">
+                  <table className="w-full min-w-[540px] text-left text-xs whitespace-nowrap">
+                    <thead className="bg-emerald-50 text-neutral-800 border-b border-emerald-200 sticky top-0 z-20 font-bold uppercase tracking-wider text-[10.5px]">
+                      <tr>
+                        <th className="py-2.5 px-3 w-12 text-center">#</th>
+                        <th className="py-2.5 px-3 min-w-[130px]">Sana</th>
+                        <th className="py-2.5 px-3 min-w-[140px]">Agent</th>
+                        <th className="py-2.5 px-3 min-w-[260px]">To&apos;lov</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100 bg-white">
+                      {filteredFinancialOps.map((op, idx) => (
+                        <tr key={op.id} className="hover:bg-emerald-50/40 transition-colors">
+                          <td className="py-2.5 px-3 text-center font-mono text-neutral-400">
+                            {idx + 1}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-neutral-700 text-[11px]">
+                            <div className="font-bold text-neutral-900">
+                              {formatDateDMY(op.date)}
+                            </div>
+                            {op.timeStr && (
+                              <div className="text-[10px] text-neutral-400">{op.timeStr}</div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 font-bold text-neutral-800">
+                            {getAgentDisplayName(op.author)}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {op.isConverted ? (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-bold font-mono text-neutral-900">
+                                  {new Intl.NumberFormat('uz-UZ').format(op.amountUzs)} so&apos;m
+                                </span>
+                                <span className="text-neutral-400">→</span>
+                                <span className="font-bold font-mono text-emerald-800">
+                                  {formatMoney(op.amountUsd)}
+                                </span>
+                                {op.exchangeRate > 0 && (
+                                  <span className="text-[10.5px] font-mono text-neutral-500">
+                                    (kurs: {new Intl.NumberFormat('uz-UZ').format(op.exchangeRate)})
+                                  </span>
+                                )}
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                                  {op.paymentTypeLabel}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5 font-bold font-mono text-neutral-900">
+                                <span>{formatMoney(op.amountUsd)}</span>
+                                <span className="text-[10.5px] font-bold text-neutral-600 uppercase">
+                                  USD
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-emerald-50/90 font-bold border-t-2 border-emerald-200 sticky bottom-0 z-10 text-[11px]">
+                      <tr>
+                        <td colSpan={3} className="py-2.5 px-3 text-neutral-900 uppercase">
+                          JAMI TO&apos;LOVLAR ({filteredFinancialOps.length} ta)
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-emerald-950 tabular-nums text-xs sm:text-sm font-extrabold">
+                          {formatMoney(totalFilteredFinancialUsd)} USD
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </StickyTableWrapper>
+              </div>
+            )}
           </div>
 
           {/* Products Table with Date Filtering */}
@@ -1813,6 +2429,18 @@ export const ClientDetailModal: React.FC<Props> = ({
           </div>
         </div>
       </div>
+
+      {/* To'liq ma'lumot modal */}
+      <ClientFullInfoModal
+        isOpen={isFullInfoOpen}
+        onClose={() => setIsFullInfoOpen(false)}
+        client={client}
+        dailyPlans={dailyPlans}
+        warehouseProducts={warehouseProducts || storageService.getWarehouseProducts()}
+        userRole={userRole}
+        currentUsername={currentUsername}
+        onSaveMonthlyDetails={onSaveClientMonthlyDetails}
+      />
 
       {/* Maxsus tahlil modal */}
       <SpecialClientAnalysisModal

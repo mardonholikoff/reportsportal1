@@ -64,7 +64,16 @@ export const ClientFormModal: React.FC<Props> = ({
     currentUserUsername === 'adminc1';
 
   const [entryMode, setEntryMode] = useState<'single' | 'excel'>('single');
+  const [clientCode, setClientCode] = useState('');
   const [name, setName] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [businessType, setBusinessType] = useState<"Do'kon" | 'Servis' | 'Moy almashtirish' | ''>('');
+  const [employeesCount, setEmployeesCount] = useState('');
+  const [apprenticesInfo, setApprenticesInfo] = useState('');
+  const [mainOils, setMainOils] = useState('');
+  const [sparePartsInfo, setSparePartsInfo] = useState('');
+  const [workStartDate, setWorkStartDate] = useState('');
+  const [dayOff, setDayOff] = useState('');
   const [phones, setPhones] = useState<string[]>(['']);
   // 3 ta joylashuv formasi: Viloyat/shahar, Tuman, Mo'ljal
   const [region, setRegion] = useState('');
@@ -81,6 +90,7 @@ export const ClientFormModal: React.FC<Props> = ({
   const [initialDebtAmount, setInitialDebtAmount] = useState<number | ''>('');
   const [initialDebtDate, setInitialDebtDate] = useState<string>('');
   const [currentDebtAmount, setCurrentDebtAmount] = useState<number | ''>('');
+  const [hasManuallyEditedCurrentBalance, setHasManuallyEditedCurrentBalance] = useState<boolean>(false);
   const [isGivenOnCredit, setIsGivenOnCredit] = useState<boolean>(true);
   const [creditDebtAmount, setCreditDebtAmount] = useState<number | ''>('');
   const [hasManuallyEditedDebt, setHasManuallyEditedDebt] = useState<boolean>(false);
@@ -128,7 +138,16 @@ export const ClientFormModal: React.FC<Props> = ({
 
   useEffect(() => {
     if (editingClient) {
+      setClientCode(editingClient.clientCode || '');
       setName(editingClient.name);
+      setContactName(editingClient.contactName || '');
+      setBusinessType(editingClient.businessType || '');
+      setEmployeesCount(editingClient.employeesCount || '');
+      setApprenticesInfo(editingClient.apprenticesInfo || '');
+      setMainOils(editingClient.mainOils || '');
+      setSparePartsInfo(editingClient.sparePartsInfo || '');
+      setWorkStartDate(editingClient.workStartDate || '');
+      setDayOff(editingClient.dayOff || '');
       const existingPhones =
         editingClient.phones && editingClient.phones.length > 0
           ? editingClient.phones
@@ -171,6 +190,7 @@ export const ClientFormModal: React.FC<Props> = ({
       setInitialDebtDate(rawCreatedDate.slice(0, 10));
 
       setCurrentDebtAmount(editingClient.currentDebt !== undefined ? editingClient.currentDebt : initDebt);
+      setHasManuallyEditedCurrentBalance(false);
 
       const hasDebt = editingClient.currentDebt > 0;
       setIsGivenOnCredit(hasDebt);
@@ -181,7 +201,16 @@ export const ClientFormModal: React.FC<Props> = ({
       setCurrentAdvance(editingClient.currentAdvance || '');
       setNotes(editingClient.notes || '');
     } else {
+      setClientCode('');
       setName('');
+      setContactName('');
+      setBusinessType('');
+      setEmployeesCount('');
+      setApprenticesInfo('');
+      setMainOils('');
+      setSparePartsInfo('');
+      setWorkStartDate('');
+      setDayOff('');
       setPhones(['']);
       setRegion('');
       setDistrict('');
@@ -192,6 +221,7 @@ export const ClientFormModal: React.FC<Props> = ({
       setInitialDebtAmount('');
       setInitialDebtDate(new Date().toISOString().slice(0, 10));
       setCurrentDebtAmount('');
+      setHasManuallyEditedCurrentBalance(false);
       setIsGivenOnCredit(false);
       setCreditDebtAmount('');
       setHasManuallyEditedDebt(false);
@@ -437,6 +467,30 @@ export const ClientFormModal: React.FC<Props> = ({
     return editingClient ? getInitialDebtForClient(editingClient) : 0;
   }, [editingClient]);
 
+  // Net effect of all subsequent financial operations recorded in client.logs
+  const subsequentLogsNetDelta = useMemo(() => {
+    if (!editingClient || !Array.isArray(editingClient.logs)) return 0;
+    let deltaSum = 0;
+    editingClient.logs.forEach((l) => {
+      const amt = Number(l.amountChanged) || 0;
+      if (amt <= 0) return;
+      if (l.type === 'product_added') {
+        const isReturn =
+          String(l.id || '').endsWith('_ret') ||
+          (l.title || '').toLowerCase().includes('qaytarildi');
+        deltaSum += isReturn ? -amt : amt;
+      } else if (l.type === 'payment') {
+        const text = `${l.title || ''} ${l.details || ''}`.toLowerCase();
+        const isDebtAddition =
+          text.includes("qarz qo'shildi") ||
+          text.includes("qarzdorlik qo'shildi") ||
+          String(l.id || '').endsWith('_whdebt');
+        deltaSum += isDebtAddition ? amt : -amt;
+      }
+    });
+    return Math.round(deltaSum * 100) / 100;
+  }, [editingClient]);
+
   // Effective Initial Debt & Product Debt
   const effectiveInitialDebt = useMemo(() => {
     return typeof initialDebtAmount === 'number' ? Math.max(0, initialDebtAmount) : 0;
@@ -457,6 +511,47 @@ export const ClientFormModal: React.FC<Props> = ({
     }
     return Math.round((effectiveInitialDebt + effectiveProductDebt) * 100) / 100;
   }, [currentDebtAmount, editingClient, effectiveInitialDebt, effectiveProductDebt]);
+
+  const handleInitialDebtAmountChange = (rawVal: string) => {
+    const nextVal = rawVal === '' ? '' : Math.max(0, parseFloat(rawVal) || 0);
+    const nextInit = typeof nextVal === 'number' ? nextVal : 0;
+    const prevInit = typeof initialDebtAmount === 'number' ? initialDebtAmount : 0;
+    setInitialDebtAmount(nextVal);
+
+    if (editingClient) {
+      let newNet: number;
+      if (!hasManuallyEditedCurrentBalance) {
+        const origNet =
+          (Number(editingClient.currentDebt) || 0) - (Number(editingClient.currentAdvance) || 0);
+        newNet = Math.round((origNet + (nextInit - originalInitDebt)) * 100) / 100;
+      } else {
+        const currD = typeof currentDebtAmount === 'number' ? currentDebtAmount : 0;
+        const currA = typeof currentAdvance === 'number' ? currentAdvance : 0;
+        newNet = Math.round((currD - currA + (nextInit - prevInit)) * 100) / 100;
+      }
+      if (newNet >= 0) {
+        setCurrentDebtAmount(newNet);
+        setCurrentAdvance('');
+      } else {
+        setCurrentDebtAmount(0);
+        setCurrentAdvance(Math.round(Math.abs(newNet) * 100) / 100);
+      }
+    }
+  };
+
+  const expectedNetFromLogs = useMemo(() => {
+    return Math.round((effectiveInitialDebt + subsequentLogsNetDelta) * 100) / 100;
+  }, [effectiveInitialDebt, subsequentLogsNetDelta]);
+
+  const hasLogSyncMismatch = useMemo(() => {
+    if (!editingClient || !Array.isArray(editingClient.logs) || editingClient.logs.length === 0) {
+      return false;
+    }
+    const currD = typeof currentDebtAmount === 'number' ? currentDebtAmount : 0;
+    const currA = typeof currentAdvance === 'number' ? currentAdvance : 0;
+    const currentNet = Math.round((currD - currA) * 100) / 100;
+    return Math.abs(currentNet - expectedNetFromLogs) > 0.05;
+  }, [editingClient, currentDebtAmount, currentAdvance, expectedNetFromLogs]);
 
   // Build Nakladnoy data for preview/PDF print
   const handleOpenNakladnoy = () => {
@@ -490,8 +585,9 @@ export const ClientFormModal: React.FC<Props> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) {
-      setValidationError('Mijoz ismini kiritish majburiy!');
+    const resolvedName = name.trim() || contactName.trim() || clientCode.trim();
+    if (!resolvedName) {
+      setValidationError("Kamida Mijoz ismi/Tashkilot nomi, Ismi yoki Klient kodini kiriting!");
       return;
     }
 
@@ -509,12 +605,26 @@ export const ClientFormModal: React.FC<Props> = ({
       });
     }
 
+    const existingCreatedYMD = editingClient?.createdAt ? editingClient.createdAt.slice(0, 10) : '';
     const createdIsoDate = initialDebtDate
-      ? new Date(initialDebtDate + 'T12:00:00.000Z').toISOString()
-      : (editingClient ? editingClient.createdAt : new Date().toISOString());
+      ? editingClient && initialDebtDate === existingCreatedYMD
+        ? editingClient.createdAt
+        : new Date(initialDebtDate + 'T12:00:00.000Z').toISOString()
+      : editingClient
+      ? editingClient.createdAt
+      : new Date().toISOString();
 
     onSave({
-      name: name.trim(),
+      name: resolvedName,
+      clientCode: clientCode.trim() || undefined,
+      contactName: contactName.trim() || undefined,
+      businessType: businessType || undefined,
+      employeesCount: employeesCount.trim() || undefined,
+      apprenticesInfo: apprenticesInfo.trim() || undefined,
+      mainOils: mainOils.trim() || undefined,
+      sparePartsInfo: sparePartsInfo.trim() || undefined,
+      workStartDate: workStartDate || undefined,
+      dayOff: dayOff.trim() || undefined,
       phone: primaryPhoneStr,
       phones: cleanPhones,
       region: region.trim(),
@@ -634,71 +744,121 @@ export const ClientFormModal: React.FC<Props> = ({
             {/* ========================================================= */}
             <div className="space-y-3">
               <h3 className="text-xs font-bold text-neutral-800 tracking-wide uppercase">
-                1. Mijoz shaxsiy ma'lumotlari va joylashuvi
+                1. Mijoz shaxsiy ma&apos;lumotlari va joylashuvi
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-neutral-800 mb-1">
-                    Mijoz ismi / Tashkilot nomi <span className="text-rose-600">*</span>
+                    Klient kodi <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
                   </label>
                   <input
                     type="text"
-                    required
-                    placeholder="Masalan: Sardor Rustamov"
+                    placeholder="Masalan: K-105"
+                    value={clientCode}
+                    onChange={(e) => setClientCode(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                    Mijoz ismi / Tashkilot nomi <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Masalan: Avto Servis Baraka"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
                   />
                 </div>
 
-                {/* Multiple Phone Numbers */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-xs font-semibold text-neutral-800">
-                      Telefon raqamlari
-                    </label>
-                    <button
-                      type="button"
-                      onClick={handleAddPhone}
-                      className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 hover:text-rose-900 bg-rose-50 hover:bg-rose-100 px-2 py-0.5 rounded-lg border border-rose-200 transition cursor-pointer"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>+ Raqam qo'shish</span>
-                    </button>
-                  </div>
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                    Ismi <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Masalan: Sardor"
+                    value={contactName}
+                    onChange={(e) => setContactName(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
+                  />
+                </div>
 
-                  <div className="space-y-1.5">
-                    {phones.map((ph, idx) => (
-                      <div key={idx} className="flex items-center gap-1.5">
-                        <div className="relative flex-1">
-                          <Phone className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="tel"
-                            placeholder={`+998 90 123 45 67 ${phones.length > 1 ? `(#${idx + 1})` : ''}`}
-                            value={ph}
-                            onChange={(e) => handlePhoneChange(idx, e.target.value)}
-                            className="w-full pl-8 pr-3 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition font-mono tabular-nums"
-                          />
-                        </div>
-                        {phones.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setConfirmDeleteModal({
-                                title: "Rostanmi? Telefon raqamini o'chirish",
-                                description: `${ph || `#${idx + 1} raqam`} o'chirilsinmi?`,
-                                onConfirm: () => handleRemovePhone(idx),
-                              })
-                            }
-                            className="p-2 rounded-xl text-neutral-400 hover:text-rose-600 hover:bg-rose-50 border border-neutral-200 transition cursor-pointer"
-                            title="Raqamni o'chirish"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                    Turi: Do&apos;kon / Servis / Moy almashtirish <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(["Do'kon", 'Servis', 'Moy almashtirish'] as const).map((opt) => {
+                      const active = businessType === opt;
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() => setBusinessType(active ? '' : opt)}
+                          className={`px-2 py-2 rounded-xl text-[11px] font-bold border transition cursor-pointer text-center leading-tight min-h-[42px] flex items-center justify-center ${
+                            active
+                              ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
+                              : 'bg-white text-neutral-700 border-neutral-200 hover:bg-rose-50'
+                          }`}
+                        >
+                          {opt}
+                        </button>
+                      );
+                    })}
                   </div>
+                </div>
+              </div>
+
+              {/* Multiple Phone Numbers */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-neutral-800">
+                    Telefon raqamlari
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleAddPhone}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 hover:text-rose-900 bg-rose-50 hover:bg-rose-100 px-2 py-0.5 rounded-lg border border-rose-200 transition cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>+ Raqam qo&apos;shish</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  {phones.map((ph, idx) => (
+                    <div key={idx} className="flex items-center gap-1.5">
+                      <div className="relative flex-1">
+                        <Phone className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="tel"
+                          placeholder={`+998 90 123 45 67 ${phones.length > 1 ? `(#${idx + 1})` : ''}`}
+                          value={ph}
+                          onChange={(e) => handlePhoneChange(idx, e.target.value)}
+                          className="w-full pl-8 pr-3 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition font-mono tabular-nums"
+                        />
+                      </div>
+                      {phones.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setConfirmDeleteModal({
+                              title: "Rostanmi? Telefon raqamini o'chirish",
+                              description: `${ph || `#${idx + 1} raqam`} o'chirilsinmi?`,
+                              onConfirm: () => handleRemovePhone(idx),
+                            })
+                          }
+                          className="p-2 rounded-xl text-neutral-400 hover:text-rose-600 hover:bg-rose-50 border border-neutral-200 transition cursor-pointer"
+                          title="Raqamni o'chirish"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -740,7 +900,7 @@ export const ClientFormModal: React.FC<Props> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-neutral-800 mb-1">
-                    Mo'ljal
+                    Mo&apos;ljal
                   </label>
                   <input
                     type="text"
@@ -749,6 +909,104 @@ export const ClientFormModal: React.FC<Props> = ({
                     onChange={(e) => setLandmark(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
                   />
+                </div>
+              </div>
+
+              {/* Qo'shimcha faoliyat ma'lumotlari (ixtiyoriy) */}
+              <div className="pt-2 border-t border-rose-100/80 space-y-3">
+                <h4 className="text-[11px] font-bold text-neutral-700 uppercase tracking-wide">
+                  Qo&apos;shimcha ma&apos;lumotlar (ixtiyoriy)
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                      Ishchilar soni <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Masalan: 4 ta"
+                      value={employeesCount}
+                      onChange={(e) => setEmployeesCount(e.target.value)}
+                      className="w-full px-3.5 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                      Biz bilan ish boshlagan sanasi <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={workStartDate}
+                      onChange={(e) => setWorkStartDate(e.target.value)}
+                      className="w-full px-3.5 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 font-mono outline-none transition"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                      Dam olish kuni <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                    </label>
+                    <input
+                      type="text"
+                      list="client_dayoff_options"
+                      placeholder="Masalan: Yakshanba"
+                      value={dayOff}
+                      onChange={(e) => setDayOff(e.target.value)}
+                      className="w-full px-3.5 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
+                    />
+                    <datalist id="client_dayoff_options">
+                      <option value="Yakshanba" />
+                      <option value="Dushanba" />
+                      <option value="Seshanba" />
+                      <option value="Chorshanba" />
+                      <option value="Payshanba" />
+                      <option value="Juma" />
+                      <option value="Shanba" />
+                      <option value="Dam olish kunisiz" />
+                    </datalist>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                    Asosiy sotadigan moylari <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Masalan: 10w40 SL, 5w30 SP, Lukoil, Mannol..."
+                    value={mainOils}
+                    onChange={(e) => setMainOils(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                      Shogirtlar va hamkasblar haqida ma&apos;lumot <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      placeholder="Shogirtlar, ustalar yoki hamkasblari haqida..."
+                      value={apprenticesInfo}
+                      onChange={(e) => setApprenticesInfo(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-neutral-800 mb-1">
+                      Zapchast to&apos;g&apos;risida ma&apos;lumot <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      placeholder="Filtrlar, zapchastlar bilan ishlashi haqida..."
+                      value={sparePartsInfo}
+                      onChange={(e) => setSparePartsInfo(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-neutral-200 focus:border-rose-500 focus:ring-2 focus:ring-rose-200 text-xs sm:text-sm text-neutral-900 placeholder:text-neutral-400 outline-none transition"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1134,11 +1392,7 @@ export const ClientFormModal: React.FC<Props> = ({
                       step="any"
                       placeholder="0"
                       value={initialDebtAmount === '' ? '' : initialDebtAmount}
-                      onChange={(e) => {
-                        setInitialDebtAmount(
-                          e.target.value === '' ? '' : parseFloat(e.target.value) || 0
-                        );
-                      }}
+                      onChange={(e) => handleInitialDebtAmountChange(e.target.value)}
                       className="w-full px-3 py-2 bg-white rounded-xl border border-amber-300 focus:border-amber-600 focus:ring-1 focus:ring-amber-300 text-sm font-extrabold text-neutral-900 font-mono tabular-nums outline-none"
                     />
                   </div>
@@ -1178,6 +1432,7 @@ export const ClientFormModal: React.FC<Props> = ({
                       placeholder="0"
                       value={currentDebtAmount === '' ? '' : currentDebtAmount}
                       onChange={(e) => {
+                        setHasManuallyEditedCurrentBalance(true);
                         setCurrentDebtAmount(
                           e.target.value === '' ? '' : parseFloat(e.target.value) || 0
                         );
@@ -1202,9 +1457,12 @@ export const ClientFormModal: React.FC<Props> = ({
                       step="any"
                       placeholder="0"
                       value={currentAdvance === '' ? '' : currentAdvance}
-                      onChange={(e) =>
-                        setCurrentAdvance(e.target.value === '' ? '' : parseFloat(e.target.value) || 0)
-                      }
+                      onChange={(e) => {
+                        setHasManuallyEditedCurrentBalance(true);
+                        setCurrentAdvance(
+                          e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                        );
+                      }}
                       className="w-full px-3 py-2 bg-white rounded-xl border border-emerald-200 focus:border-emerald-500 text-sm font-extrabold text-neutral-900 font-mono tabular-nums outline-none"
                     />
                   </div>
@@ -1215,7 +1473,7 @@ export const ClientFormModal: React.FC<Props> = ({
               </div>
 
               {/* Jami Joriy (Hozirgi) qarzdorlik umumiy hisobi */}
-              <div className="p-3.5 rounded-2xl bg-rose-50/90 border border-rose-200/90 shadow-2xs space-y-1">
+              <div className="p-3.5 rounded-2xl bg-rose-50/90 border border-rose-200/90 shadow-2xs space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-rose-900 uppercase tracking-wide">
                     Joriy (Hozirgi) qarzdorlik summasi (USD):
@@ -1229,7 +1487,43 @@ export const ClientFormModal: React.FC<Props> = ({
                   {initialDebtDate && (
                     <span className="text-neutral-600">({initialDebtDate})</span>
                   )}
+                  {editingClient && Math.abs(effectiveInitialDebt - originalInitDebt) > 0.001 && (
+                    <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-sans font-bold text-[10px]">
+                      Dastlabki qarz {effectiveInitialDebt - originalInitDebt >= 0 ? '+' : ''}
+                      {formatMoney(effectiveInitialDebt - originalInitDebt)} o&apos;zgardi → joriy balans qayta hisoblandi
+                    </span>
+                  )}
                 </div>
+
+                {hasLogSyncMismatch && (
+                  <div className="mt-1.5 pt-2 border-t border-rose-200/70 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <span className="text-amber-900 font-semibold">
+                      Loglardagi amaliyotlar (farq: {subsequentLogsNetDelta >= 0 ? '+' : ''}
+                      {formatMoney(subsequentLogsNetDelta)}) bo&apos;yicha kutilayotgan balans:{' '}
+                      <strong className="font-mono">
+                        {expectedNetFromLogs >= 0
+                          ? `Qarz ${formatMoney(expectedNetFromLogs)}`
+                          : `Avans ${formatMoney(Math.abs(expectedNetFromLogs))}`}
+                      </strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHasManuallyEditedCurrentBalance(false);
+                        if (expectedNetFromLogs >= 0) {
+                          setCurrentDebtAmount(expectedNetFromLogs);
+                          setCurrentAdvance('');
+                        } else {
+                          setCurrentDebtAmount(0);
+                          setCurrentAdvance(Math.round(Math.abs(expectedNetFromLogs) * 100) / 100);
+                        }
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10.5px] transition cursor-pointer shadow-2xs"
+                    >
+                      Amaliyotlarni dastlabki qarzga moslash
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div>
