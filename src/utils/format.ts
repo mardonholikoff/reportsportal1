@@ -198,3 +198,184 @@ export function getInitialDebtForClient(client: {
   return client.currentDebt || 0;
 }
 
+type ClientLogLike = {
+  id?: string;
+  type?: string;
+  title?: string;
+  details?: string;
+  amountChanged?: number;
+};
+
+type ClientBalanceLike = {
+  initialDebt?: number;
+  currentDebt?: number;
+  currentAdvance?: number;
+  logs?: ClientLogLike[];
+};
+
+function findClientCreationLog(logs?: ClientLogLike[]): ClientLogLike | undefined {
+  if (!Array.isArray(logs) || logs.length === 0) return undefined;
+  return (
+    logs.find((l) => l && l.type === 'created') ||
+    logs.find(
+      (l) =>
+        l &&
+        l.title &&
+        (l.title === "Mijoz ro'yxatga qo'shildi" ||
+          l.title === "Mijoz qo'shildi" ||
+          l.title.includes('Excel (.xlsx) orqali'))
+    )
+  );
+}
+
+export function hasClientCreationLog(client?: ClientBalanceLike | null): boolean {
+  if (!client) return false;
+  return Boolean(findClientCreationLog(client.logs));
+}
+
+export function getInitialAdvanceForClient(client?: ClientBalanceLike | null): number {
+  if (!client) return 0;
+  const createLog = findClientCreationLog(client.logs);
+  if (createLog && createLog.details) {
+    const match = createLog.details.match(/Avans:\s*([\d\s.,]+)/i);
+    if (match && match[1]) {
+      const cleanVal = match[1].replace(/[\s,]/g, '');
+      const parsed = parseFloat(cleanVal);
+      if (!isNaN(parsed) && parsed >= 0) {
+        return Math.round(parsed * 100) / 100;
+      }
+    }
+  }
+  return 0;
+}
+
+/**
+ * Returns the signed net-debt delta of a single audit log entry:
+ *  - positive (+) means client's net debt increased (or advance decreased)
+ *  - negative (-) means client's net debt decreased (or advance increased)
+ */
+export function getClientLogNetDelta(log?: ClientLogLike | null): number {
+  if (!log) return 0;
+  const amt = Number(log.amountChanged) || 0;
+  if (amt <= 0) return 0;
+
+  if (log.type === 'product_added') {
+    const isReturn =
+      String(log.id || '').endsWith('_ret') ||
+      (log.title || '').toLowerCase().includes('qaytarildi');
+    return Math.round((isReturn ? -amt : amt) * 100) / 100;
+  }
+
+  if (log.type === 'payment') {
+    const text = `${log.title || ''} ${log.details || ''}`.toLowerCase();
+    const isDebtAddition =
+      text.includes("qarz qo'shildi") ||
+      text.includes("qarzdorlik qo'shildi") ||
+      String(log.id || '').endsWith('_whdebt');
+    return Math.round((isDebtAddition ? amt : -amt) * 100) / 100;
+  }
+
+  return 0;
+}
+
+export function computeClientSubsequentOpsNetDelta(client?: ClientBalanceLike | null): number {
+  if (!client || !Array.isArray(client.logs) || client.logs.length === 0) return 0;
+  let deltaSum = 0;
+  for (let i = 0; i < client.logs.length; i++) {
+    deltaSum += getClientLogNetDelta(client.logs[i]);
+  }
+  return Math.round(deltaSum * 100) / 100;
+}
+
+export function getClientSubsequentOpsBreakdown(client?: ClientBalanceLike | null): {
+  totalPayments: number;
+  totalProductDebts: number;
+  totalExtraDebts: number;
+  totalReturns: number;
+  netDelta: number;
+} {
+  let totalPayments = 0;
+  let totalProductDebts = 0;
+  let totalExtraDebts = 0;
+  let totalReturns = 0;
+
+  if (client && Array.isArray(client.logs)) {
+    for (let i = 0; i < client.logs.length; i++) {
+      const log = client.logs[i];
+      if (!log) continue;
+      const amt = Number(log.amountChanged) || 0;
+      if (amt <= 0) continue;
+
+      if (log.type === 'product_added') {
+        const isReturn =
+          String(log.id || '').endsWith('_ret') ||
+          (log.title || '').toLowerCase().includes('qaytarildi');
+        if (isReturn) {
+          totalReturns += amt;
+        } else if (String(log.id || '').endsWith('_whdebt')) {
+          totalExtraDebts += amt;
+        } else {
+          totalProductDebts += amt;
+        }
+      } else if (log.type === 'payment') {
+        const text = `${log.title || ''} ${log.details || ''}`.toLowerCase();
+        const isDebtAddition =
+          text.includes("qarz qo'shildi") ||
+          text.includes("qarzdorlik qo'shildi") ||
+          String(log.id || '').endsWith('_whdebt');
+        if (isDebtAddition) {
+          totalExtraDebts += amt;
+        } else {
+          totalPayments += amt;
+        }
+      }
+    }
+  }
+
+  totalPayments = Math.round(totalPayments * 100) / 100;
+  totalProductDebts = Math.round(totalProductDebts * 100) / 100;
+  totalExtraDebts = Math.round(totalExtraDebts * 100) / 100;
+  totalReturns = Math.round(totalReturns * 100) / 100;
+  const netDelta =
+    Math.round((totalProductDebts + totalExtraDebts - totalPayments - totalReturns) * 100) / 100;
+
+  return {
+    totalPayments,
+    totalProductDebts,
+    totalExtraDebts,
+    totalReturns,
+    netDelta,
+  };
+}
+
+export function computeExpectedBalanceFromInitial(
+  client: ClientBalanceLike,
+  overrideInitialDebt?: number
+): {
+  initDebt: number;
+  initAdvance: number;
+  subsequentDelta: number;
+  expectedNet: number;
+  currentDebt: number;
+  currentAdvance: number;
+} {
+  const initDebt =
+    overrideInitialDebt !== undefined && !isNaN(overrideInitialDebt)
+      ? Math.round(Math.max(0, overrideInitialDebt) * 100) / 100
+      : getInitialDebtForClient(client);
+  const rawInitAdvance = getInitialAdvanceForClient(client);
+  const initAdvance =
+    overrideInitialDebt !== undefined && initDebt > 0 ? 0 : rawInitAdvance;
+  const subsequentDelta = computeClientSubsequentOpsNetDelta(client);
+  const expectedNet = Math.round((initDebt - initAdvance + subsequentDelta) * 100) / 100;
+  return {
+    initDebt,
+    initAdvance,
+    subsequentDelta,
+    expectedNet,
+    currentDebt: expectedNet > 0 ? expectedNet : 0,
+    currentAdvance: expectedNet < 0 ? Math.round(Math.abs(expectedNet) * 100) / 100 : 0,
+  };
+}
+
+

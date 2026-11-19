@@ -19,7 +19,11 @@ import {
   WarehouseStockChangeLog,
 } from '../types';
 import { parseLegacyAddress, formatAddress } from '../utils/location';
-import { getInitialDebtForClient } from '../utils/format';
+import {
+  getInitialDebtForClient,
+  hasClientCreationLog,
+  computeExpectedBalanceFromInitial,
+} from '../utils/format';
 
 const STORAGE_KEY = 'savdo_clients_data_v1';
 const SYNC_QUEUE_KEY = 'savdo_sync_queue_v1';
@@ -591,27 +595,15 @@ class StorageService {
           ? Math.round(Math.max(0, Number(updates.initialDebt) || 0) * 100) / 100
           : prevInitDebt;
 
-      // Safety net: if initialDebt was changed programmatically without passing new currentDebt/currentAdvance,
-      // shift the current net balance by the initialDebt delta so all financial history remains consistent.
-      if (
-        updates.initialDebt !== undefined &&
-        updates.currentDebt === undefined &&
-        updates.currentAdvance === undefined &&
-        Math.abs(effInitDebt - prevInitDebt) > 0.001
-      ) {
-        const delta = Math.round((effInitDebt - prevInitDebt) * 100) / 100;
-        const oldNet = (existing.currentDebt || 0) - (existing.currentAdvance || 0);
-        const newNet = Math.round((oldNet + delta) * 100) / 100;
-        updatedCurrentDebt = newNet >= 0 ? newNet : 0;
-        updatedCurrentAdvance = newNet < 0 ? Math.round(Math.abs(newNet) * 100) / 100 : 0;
-      }
-
       if (initLogIndex !== -1) {
         const oldLog = updatedLogs[initLogIndex];
         const hasQarzLabel = Boolean(oldLog.details && /Qarz:\s*[\d\s.,]+/i.test(oldLog.details));
-        const newDetails = hasQarzLabel
+        let newDetails = hasQarzLabel
           ? oldLog.details.replace(/Qarz:\s*[\d\s.,]+(\s*USD)?/i, `Qarz: ${effInitDebt} USD`)
           : `${oldLog.details || ''}. Qarz: ${effInitDebt} USD`.trim();
+        if (effInitDebt > 0 && /Avans:\s*[\d\s.,]+/i.test(newDetails)) {
+          newDetails = newDetails.replace(/Avans:\s*[\d\s.,]+(\s*USD)?/i, 'Avans: 0 USD');
+        }
         updatedLogs[initLogIndex] = {
           ...oldLog,
           timestamp: newCreatedAt,
@@ -625,8 +617,31 @@ class StorageService {
           timestamp: newCreatedAt,
           type: 'created',
           title: "Mijoz ro'yxatga qo'shildi",
-          details: `Tizimga qo'shildi. Qarz: ${effInitDebt} USD`,
+          details: `Tizimga qo'shildi. Qarz: ${effInitDebt} USD, Avans: 0 USD`,
         });
+      }
+
+      // Whenever initialDebt is changed (and admin did not explicitly set manualBalanceOverride),
+      // always compute currentDebt/currentAdvance directly from (effInitDebt - initAdvance) + subsequentLogsNetDelta.
+      if (
+        updates.initialDebt !== undefined &&
+        updates.manualBalanceOverride !== true &&
+        Math.abs(effInitDebt - prevInitDebt) > 0.001
+      ) {
+        if (hasClientCreationLog({ ...existing, logs: updatedLogs })) {
+          const expected = computeExpectedBalanceFromInitial(
+            { ...existing, logs: updatedLogs },
+            effInitDebt
+          );
+          updatedCurrentDebt = expected.currentDebt;
+          updatedCurrentAdvance = expected.currentAdvance;
+        } else if (updates.currentDebt === undefined && updates.currentAdvance === undefined) {
+          const delta = Math.round((effInitDebt - prevInitDebt) * 100) / 100;
+          const oldNet = (existing.currentDebt || 0) - (existing.currentAdvance || 0);
+          const newNet = Math.round((oldNet + delta) * 100) / 100;
+          updatedCurrentDebt = newNet >= 0 ? newNet : 0;
+          updatedCurrentAdvance = newNet < 0 ? Math.round(Math.abs(newNet) * 100) / 100 : 0;
+        }
       }
 
       if (updates.initialDebt !== undefined && Math.abs(effInitDebt - prevInitDebt) > 0.001) {
@@ -651,6 +666,15 @@ class StorageService {
           : existing.initialDebt,
       currentDebt: updatedCurrentDebt,
       currentAdvance: updatedCurrentAdvance,
+      manualBalanceOverride:
+        updates.manualBalanceOverride !== undefined
+          ? updates.manualBalanceOverride
+          : updates.initialDebt !== undefined &&
+              Math.abs(
+                Math.round(Math.max(0, Number(updates.initialDebt) || 0) * 100) / 100 - prevInitDebt
+              ) > 0.001
+            ? false
+            : existing.manualBalanceOverride,
       createdAt: newCreatedAt,
       logs: updatedLogs,
       updatedAt: new Date().toISOString(),
@@ -661,6 +685,62 @@ class StorageService {
     this.saveClients(clients);
     this.addToSyncQueue({ action: 'update', client: updated });
     return updated;
+  }
+
+  /**
+   * Auto-reconciles any client whose currentDebt/currentAdvance drifted from
+   * (initialDebt - initialAdvance) + subsequentLogsNetDelta (for example, clients whose
+   * initialDebt was edited before automatic recalculation was introduced).
+   * Returns the array of clients that were updated so the caller can sync them to server/cloud.
+   */
+  public reconcileClientsWithInitialDebt(): Client[] {
+    const clients = [...this.getClients()];
+    if (clients.length === 0) return [];
+
+    const nowStr = new Date().toISOString();
+    const reconciled: Client[] = [];
+    let anyChanged = false;
+
+    for (let i = 0; i < clients.length; i++) {
+      const c = clients[i];
+      if (!c || c.manualBalanceOverride) continue;
+      if (typeof c.initialDebt !== 'number' || isNaN(c.initialDebt)) continue;
+      if (!hasClientCreationLog(c)) continue;
+
+      const expected = computeExpectedBalanceFromInitial(c, c.initialDebt);
+      const actualNet = Math.round(((Number(c.currentDebt) || 0) - (Number(c.currentAdvance) || 0)) * 100) / 100;
+
+      if (Math.abs(actualNet - expected.expectedNet) > 0.05) {
+        const nextLogs = Array.isArray(c.logs) ? [...c.logs] : [];
+        nextLogs.unshift({
+          id: `log_${Date.now()}_${i}_reconcile`,
+          clientId: c.id,
+          author: 'adminc',
+          timestamp: nowStr,
+          type: 'updated',
+          title: "Joriy balans dastlabki qarzga moslandi",
+          details: `Dastlabki qarz (${expected.initDebt} USD) va keyingi amaliyotlar (${expected.subsequentDelta >= 0 ? '+' : ''}${expected.subsequentDelta} USD) asosida joriy balans ${c.currentDebt || 0} USD dan ${expected.currentDebt} USD ga qayta hisoblandi.`,
+        });
+
+        const updatedClient: Client = {
+          ...c,
+          currentDebt: expected.currentDebt,
+          currentAdvance: expected.currentAdvance,
+          logs: nextLogs,
+          updatedAt: nowStr,
+          syncStatus: typeof navigator !== 'undefined' && navigator.onLine ? 'synced' : 'pending',
+        };
+        clients[i] = updatedClient;
+        reconciled.push(updatedClient);
+        anyChanged = true;
+      }
+    }
+
+    if (anyChanged) {
+      this.saveClients(clients);
+    }
+
+    return reconciled;
   }
 
   public addClientAuditLog(clientId: string, logItem: Omit<ClientAuditLog, 'id' | 'clientId' | 'timestamp'>): void {

@@ -898,7 +898,16 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
       const compactClients = cleanFirestoreData(
         (currentPayload.clients || []).map((c) => ({
           ...c,
-          logs: Array.isArray(c.logs) && c.logs.length > 30 ? c.logs.slice(0, 30) : c.logs || [],
+          logs:
+            Array.isArray(c.logs) && c.logs.length > 60
+              ? c.logs.filter(
+                  (l, idx) =>
+                    idx < 60 ||
+                    l.type === 'created' ||
+                    l.type === 'payment' ||
+                    l.type === 'product_added'
+                )
+              : c.logs || [],
         }))
       );
       const compactWh = cleanFirestoreData(

@@ -8,6 +8,7 @@ import {
   getAgentDisplayName,
   formatWarehouseStock,
   calculateProfitMargin,
+  getClientLogNetDelta,
 } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import { exportWarehouseToExcel } from '../utils/exportWarehouseExcel';
@@ -419,11 +420,9 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             hadActivityInPeriod = true;
           }
           if (endStr && logDate > endStr) {
-            const amt = Number(log.amountChanged) || 0;
-            if (log.type === 'product_added') {
-              netAtEnd -= amt;
-            } else if (log.type === 'payment') {
-              netAtEnd += amt;
+            const delta = getClientLogNetDelta(log);
+            if (delta !== 0) {
+              netAtEnd = Math.round((netAtEnd - delta) * 100) / 100;
             }
           }
         }

@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Client, ProductItem, WarehouseProduct } from '../types';
-import { formatMoney, getInitialDebtForClient } from '../utils/format';
+import {
+  formatMoney,
+  getInitialDebtForClient,
+  getInitialAdvanceForClient,
+  hasClientCreationLog,
+  getClientSubsequentOpsBreakdown,
+  computeExpectedBalanceFromInitial,
+} from '../utils/format';
 import { UZBEKISTAN_REGIONS, formatAddress, parseLegacyAddress } from '../utils/location';
 import { storageService } from '../services/storage';
 import { UsdConverterPanel } from './UsdConverterPanel';
@@ -467,34 +474,29 @@ export const ClientFormModal: React.FC<Props> = ({
     return editingClient ? getInitialDebtForClient(editingClient) : 0;
   }, [editingClient]);
 
-  // Net effect of all subsequent financial operations recorded in client.logs
-  const subsequentLogsNetDelta = useMemo(() => {
-    if (!editingClient || !Array.isArray(editingClient.logs)) return 0;
-    let deltaSum = 0;
-    editingClient.logs.forEach((l) => {
-      const amt = Number(l.amountChanged) || 0;
-      if (amt <= 0) return;
-      if (l.type === 'product_added') {
-        const isReturn =
-          String(l.id || '').endsWith('_ret') ||
-          (l.title || '').toLowerCase().includes('qaytarildi');
-        deltaSum += isReturn ? -amt : amt;
-      } else if (l.type === 'payment') {
-        const text = `${l.title || ''} ${l.details || ''}`.toLowerCase();
-        const isDebtAddition =
-          text.includes("qarz qo'shildi") ||
-          text.includes("qarzdorlik qo'shildi") ||
-          String(l.id || '').endsWith('_whdebt');
-        deltaSum += isDebtAddition ? amt : -amt;
-      }
-    });
-    return Math.round(deltaSum * 100) / 100;
+  const initialAdvanceFromLog = useMemo(() => {
+    return editingClient ? getInitialAdvanceForClient(editingClient) : 0;
   }, [editingClient]);
+
+  const clientHasCreationLog = useMemo(() => {
+    return editingClient ? hasClientCreationLog(editingClient) : false;
+  }, [editingClient]);
+
+  // Detailed breakdown of all subsequent financial & product operations recorded in client.logs
+  const opsBreakdown = useMemo(() => {
+    return getClientSubsequentOpsBreakdown(editingClient);
+  }, [editingClient]);
+
+  const subsequentLogsNetDelta = opsBreakdown.netDelta;
 
   // Effective Initial Debt & Product Debt
   const effectiveInitialDebt = useMemo(() => {
     return typeof initialDebtAmount === 'number' ? Math.max(0, initialDebtAmount) : 0;
   }, [initialDebtAmount]);
+
+  const effectiveInitialAdvance = useMemo(() => {
+    return effectiveInitialDebt > 0 ? 0 : initialAdvanceFromLog;
+  }, [effectiveInitialDebt, initialAdvanceFromLog]);
 
   const effectiveProductDebt = useMemo(() => {
     if (!isGivenOnCredit) return 0;
@@ -520,7 +522,13 @@ export const ClientFormModal: React.FC<Props> = ({
 
     if (editingClient) {
       let newNet: number;
-      if (!hasManuallyEditedCurrentBalance) {
+      if (clientHasCreationLog) {
+        // Authoritative formula directly from the NEW initialDebt:
+        // (newInitialDebt - initialAdvanceIfZeroDebt) + subsequentLogsNetDelta
+        setHasManuallyEditedCurrentBalance(false);
+        const effInitAdv = nextInit > 0 ? 0 : initialAdvanceFromLog;
+        newNet = Math.round((nextInit - effInitAdv + subsequentLogsNetDelta) * 100) / 100;
+      } else if (!hasManuallyEditedCurrentBalance) {
         const origNet =
           (Number(editingClient.currentDebt) || 0) - (Number(editingClient.currentAdvance) || 0);
         newNet = Math.round((origNet + (nextInit - originalInitDebt)) * 100) / 100;
@@ -536,22 +544,24 @@ export const ClientFormModal: React.FC<Props> = ({
         setCurrentDebtAmount(0);
         setCurrentAdvance(Math.round(Math.abs(newNet) * 100) / 100);
       }
+    } else if (!hasManuallyEditedCurrentBalance) {
+      setCurrentDebtAmount(nextVal);
     }
   };
 
   const expectedNetFromLogs = useMemo(() => {
-    return Math.round((effectiveInitialDebt + subsequentLogsNetDelta) * 100) / 100;
-  }, [effectiveInitialDebt, subsequentLogsNetDelta]);
+    return Math.round((effectiveInitialDebt - effectiveInitialAdvance + subsequentLogsNetDelta) * 100) / 100;
+  }, [effectiveInitialDebt, effectiveInitialAdvance, subsequentLogsNetDelta]);
 
   const hasLogSyncMismatch = useMemo(() => {
-    if (!editingClient || !Array.isArray(editingClient.logs) || editingClient.logs.length === 0) {
+    if (!editingClient || !clientHasCreationLog) {
       return false;
     }
     const currD = typeof currentDebtAmount === 'number' ? currentDebtAmount : 0;
     const currA = typeof currentAdvance === 'number' ? currentAdvance : 0;
     const currentNet = Math.round((currD - currA) * 100) / 100;
     return Math.abs(currentNet - expectedNetFromLogs) > 0.05;
-  }, [editingClient, currentDebtAmount, currentAdvance, expectedNetFromLogs]);
+  }, [editingClient, clientHasCreationLog, currentDebtAmount, currentAdvance, expectedNetFromLogs]);
 
   // Build Nakladnoy data for preview/PDF print
   const handleOpenNakladnoy = () => {
@@ -614,6 +624,29 @@ export const ClientFormModal: React.FC<Props> = ({
       ? editingClient.createdAt
       : new Date().toISOString();
 
+    const finalInitialDebt =
+      !editingClient && initialDebtAmount === '' && effectiveDebt > 0
+        ? effectiveDebt
+        : effectiveInitialDebt;
+
+    let finalCurrentDebt = effectiveDebt;
+    let finalCurrentAdvance = Number(currentAdvance) || 0;
+    let finalManualOverride: boolean | undefined = editingClient?.manualBalanceOverride;
+
+    if (editingClient) {
+      if (hasManuallyEditedCurrentBalance) {
+        finalManualOverride = true;
+      } else if (
+        clientHasCreationLog &&
+        (!editingClient.manualBalanceOverride || Math.abs(finalInitialDebt - originalInitDebt) > 0.001)
+      ) {
+        const expected = computeExpectedBalanceFromInitial(editingClient, finalInitialDebt);
+        finalCurrentDebt = expected.currentDebt;
+        finalCurrentAdvance = expected.currentAdvance;
+        finalManualOverride = false;
+      }
+    }
+
     onSave({
       name: resolvedName,
       clientCode: clientCode.trim() || undefined,
@@ -632,9 +665,10 @@ export const ClientFormModal: React.FC<Props> = ({
       landmark: landmark.trim(),
       address: fullAddress,
       products: validProducts,
-      initialDebt: effectiveInitialDebt,
-      currentDebt: effectiveDebt,
-      currentAdvance: Number(currentAdvance) || 0,
+      initialDebt: finalInitialDebt,
+      currentDebt: finalCurrentDebt,
+      currentAdvance: finalCurrentAdvance,
+      manualBalanceOverride: finalManualOverride,
       notes: notes.trim(),
       createdBy: editingClient ? editingClient.createdBy : currentUserUsername,
       createdAt: createdIsoDate,
@@ -1473,27 +1507,75 @@ export const ClientFormModal: React.FC<Props> = ({
               </div>
 
               {/* Jami Joriy (Hozirgi) qarzdorlik umumiy hisobi */}
-              <div className="p-3.5 rounded-2xl bg-rose-50/90 border border-rose-200/90 shadow-2xs space-y-1.5">
-                <div className="flex items-center justify-between">
+              <div className="p-3.5 rounded-2xl bg-rose-50/90 border border-rose-200/90 shadow-2xs space-y-2">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold text-rose-900 uppercase tracking-wide">
-                    Joriy (Hozirgi) qarzdorlik summasi (USD):
+                    {effectiveDebt === 0 && Number(currentAdvance) > 0
+                      ? 'Joriy haqdorlik (Avans) summasi (USD):'
+                      : 'Joriy (Hozirgi) qarzdorlik summasi (USD):'}
                   </span>
-                  <span className="text-base sm:text-lg font-extrabold font-mono text-rose-950 tabular-nums">
-                    {formatMoney(effectiveDebt)}
+                  <span
+                    className={`text-base sm:text-lg font-extrabold font-mono tabular-nums ${
+                      effectiveDebt === 0 && Number(currentAdvance) > 0
+                        ? 'text-emerald-800'
+                        : 'text-rose-950'
+                    }`}
+                  >
+                    {effectiveDebt === 0 && Number(currentAdvance) > 0
+                      ? formatMoney(Number(currentAdvance) || 0)
+                      : formatMoney(effectiveDebt)}
                   </span>
                 </div>
-                <div className="text-[11px] text-rose-800 font-mono flex items-center gap-2 flex-wrap pt-0.5">
-                  <span>Dastlabki (boshlang'ich) qarz: <strong>{formatMoney(effectiveInitialDebt)}</strong></span>
-                  {initialDebtDate && (
-                    <span className="text-neutral-600">({initialDebtDate})</span>
-                  )}
-                  {editingClient && Math.abs(effectiveInitialDebt - originalInitDebt) > 0.001 && (
-                    <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-sans font-bold text-[10px]">
-                      Dastlabki qarz {effectiveInitialDebt - originalInitDebt >= 0 ? '+' : ''}
-                      {formatMoney(effectiveInitialDebt - originalInitDebt)} o&apos;zgardi → joriy balans qayta hisoblandi
+
+                {editingClient && clientHasCreationLog ? (
+                  <div className="p-2.5 rounded-xl bg-white/90 border border-rose-200/80 text-[11px] font-mono text-neutral-800 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-sans font-bold text-neutral-600">Hisob-kitob:</span>
+                    <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-950 font-bold">
+                      Dastlabki qarz: {formatMoney(effectiveInitialDebt)}
                     </span>
-                  )}
-                </div>
+                    {effectiveInitialAdvance > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 font-bold">
+                        − Dastlabki avans: {formatMoney(effectiveInitialAdvance)}
+                      </span>
+                    )}
+                    {opsBreakdown.totalPayments > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-900 font-bold">
+                        − To&apos;lovlar: {formatMoney(opsBreakdown.totalPayments)}
+                      </span>
+                    )}
+                    {opsBreakdown.totalProductDebts > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-900 font-bold">
+                        + Nasiya mahsulot: {formatMoney(opsBreakdown.totalProductDebts)}
+                      </span>
+                    )}
+                    {opsBreakdown.totalExtraDebts > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-rose-50 border border-rose-200 text-rose-900 font-bold">
+                        + Qo&apos;shimcha qarz: {formatMoney(opsBreakdown.totalExtraDebts)}
+                      </span>
+                    )}
+                    {opsBreakdown.totalReturns > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-sky-50 border border-sky-200 text-sky-900 font-bold">
+                        − Qaytarilgan: {formatMoney(opsBreakdown.totalReturns)}
+                      </span>
+                    )}
+                    <span className="font-bold text-neutral-950">
+                      ={' '}
+                      {expectedNetFromLogs >= 0
+                        ? `Joriy qarz ${formatMoney(expectedNetFromLogs)}`
+                        : `Joriy avans ${formatMoney(Math.abs(expectedNetFromLogs))}`}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-rose-800 font-mono flex items-center gap-2 flex-wrap pt-0.5">
+                    <span>
+                      Dastlabki (boshlang&apos;ich) qarz:{' '}
+                      <strong>{formatMoney(effectiveInitialDebt)}</strong>
+                    </span>
+                    {initialDebtDate && (
+                      <span className="text-neutral-600">({initialDebtDate})</span>
+                    )}
+                  </div>
+                )}
 
                 {hasLogSyncMismatch && (
                   <div className="mt-1.5 pt-2 border-t border-rose-200/70 flex flex-wrap items-center justify-between gap-2 text-[11px]">

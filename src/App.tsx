@@ -60,6 +60,7 @@ import { MonthlyProductPlanProgressCard } from './components/MonthlyProductPlanP
 import { CreateMonthlyProductPlanModal } from './components/CreateMonthlyProductPlanModal';
 import { AddWarehouseDebtModal } from './components/AddWarehouseDebtModal';
 import { AgentRemindersSection } from './components/AgentRemindersSection';
+import { AdminExcelComparisonSection } from './components/AdminExcelComparisonSection';
 import {
   addSystemLog,
   getLocalSystemLogs,
@@ -134,6 +135,7 @@ export default function App() {
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [isAdminPlansOpen, setIsAdminPlansOpen] = useState(false);
   const [isAdminRemindersOpen, setIsAdminRemindersOpen] = useState(false);
+  const [isAdminComparisonOpen, setIsAdminComparisonOpen] = useState(false);
   const [isAdminLogsOpen, setIsAdminLogsOpen] = useState(false);
 
   // Modals state
@@ -217,10 +219,13 @@ export default function App() {
     const client = clients.find((c) => c.id === clientId);
     if (!client) return;
 
-    const oldDebt = client.currentDebt;
-    const newDebt = oldDebt + amount;
+    const oldDebt = client.currentDebt || 0;
+    const oldAdvance = client.currentAdvance || 0;
+    const nextNet = Math.round((oldDebt - oldAdvance + amount) * 100) / 100;
+    const newDebt = nextNet >= 0 ? nextNet : 0;
+    const newAdvance = nextNet < 0 ? Math.round(Math.abs(nextNet) * 100) / 100 : 0;
     const nowStr = new Date().toISOString();
-    const clientLogs = client.logs || [];
+    const clientLogs = [...(client.logs || [])];
 
     const logDetail = `${currentUsername} tomonidan ombordagi mahsulotlar hisobidan qarzdorlik qo'shildi: ${new Intl.NumberFormat('uz-UZ').format(amount)} ${currency}.${note ? ' Izoh: ' + note : ''}`;
 
@@ -237,6 +242,7 @@ export default function App() {
 
     const updatedClient = storageService.updateClient(client.id, {
       currentDebt: newDebt,
+      currentAdvance: newAdvance,
       logs: clientLogs,
       updatedAt: nowStr,
     });
@@ -591,6 +597,13 @@ export default function App() {
 
   // Subscribe to storage changes & Firebase Firestore real-time sync (Web & PWA continuous auto-sync)
   useEffect(() => {
+    // 0. Auto-reconcile any client balances that drifted from initialDebt + subsequent operations
+    const initiallyReconciled = storageService.reconcileClientsWithInitialDebt();
+    if (initiallyReconciled.length > 0) {
+      setClients([...storageService.getClients()]);
+      syncClientsBulkToFirestore(initiallyReconciled);
+    }
+
     // 1. Initial bootstrap to Firestore if remote is empty
     bootstrapFirestoreData(
       storageService.getClients(),
@@ -645,10 +658,20 @@ export default function App() {
             (c) => !deletedIds.has(c.id)
           );
           storageService.saveClients(mergedList);
-          setClients([...mergedList]);
+          const reconciledClients = storageService.reconcileClientsWithInitialDebt();
+          const finalClientsList =
+            reconciledClients.length > 0 ? storageService.getClients() : mergedList;
+          setClients([...finalClientsList]);
           // Keep open client modals in sync with remote changes
-          setSelectedClient((prev) => (prev ? mergedList.find((c) => c.id === prev.id) || prev : null));
-          setPaymentClient((prev) => (prev ? mergedList.find((c) => c.id === prev.id) || prev : null));
+          setSelectedClient((prev) =>
+            prev ? finalClientsList.find((c) => c.id === prev.id) || prev : null
+          );
+          setPaymentClient((prev) =>
+            prev ? finalClientsList.find((c) => c.id === prev.id) || prev : null
+          );
+          if (reconciledClients.length > 0) {
+            syncClientsBulkToFirestore(reconciledClients);
+          }
           // Re-evaluate dailyPlans so any plans belonging to removed clients disappear immediately
           setDailyPlans([...storageService.getActive24hPlans()]);
         }
@@ -1174,15 +1197,18 @@ export default function App() {
         setIsFormModalOpen(false);
         return;
       }
-      storageService.updateClient(editingClient.id, data);
-      const updated = storageService.getClientById(editingClient.id);
-      if (updated) syncClientToFirestore(updated);
+      const updated = storageService.updateClient(editingClient.id, data);
+      if (updated) {
+        setClients([...storageService.getClients()]);
+        setSelectedClient((prev) => (prev && prev.id === updated.id ? updated : prev));
+        syncClientToFirestore(updated);
+      }
       addSystemLog({
         userId: currentUsername,
         userRole: user?.role || 'admin',
         actionType: 'mijoz_tahrirlash',
         actionTitle: `Mijoz ma'lumotlari tahrirlandi: ${data.name}`,
-        details: `Telefon: ${data.phone}, Manzil: ${data.address || ''}, Qarz: ${data.currentDebt || 0} USD`,
+        details: `Telefon: ${data.phone}, Manzil: ${data.address || ''}, Dastlabki qarz: ${updated?.initialDebt ?? data.initialDebt ?? 0} USD, Joriy qarz: ${updated?.currentDebt ?? data.currentDebt ?? 0} USD`,
       });
       showToast(`"${data.name}" ma'lumotlari yangilandi.`);
     } else {
@@ -2661,6 +2687,70 @@ export default function App() {
                       setSelectedClient(client);
                       setIsDetailModalOpen(true);
                     }}
+                  />
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ========================================================= */}
+        {/* TAQQOSLASH: EXCEL (.XLSX) VA BAZA TAQQOSLASH (ADMINLAR) */}
+        {/* ========================================================= */}
+        {isAdmin && (
+          <section className="bg-white rounded-3xl border border-neutral-200 shadow-xs overflow-hidden transition-all duration-200">
+            <div
+              onClick={() => setIsAdminComparisonOpen(!isAdminComparisonOpen)}
+              className="p-5 sm:p-6 flex items-center justify-between gap-4 cursor-pointer hover:bg-neutral-50/70 transition select-none"
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-neutral-900 text-white font-bold flex items-center justify-center shadow-xs shrink-0">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-base sm:text-lg font-bold font-display text-neutral-900 tracking-tight">
+                    Taqqoslash
+                  </h2>
+                  <p className="text-xs text-neutral-500 mt-0.5 truncate">
+                    Excel (.xlsx) fayl orqali mijozlar qarzdorligi va ombor qoldig&apos;ini baza bilan tekshirish
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsAdminComparisonOpen(!isAdminComparisonOpen);
+                  }}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition min-h-[40px] cursor-pointer ${
+                    isAdminComparisonOpen
+                      ? 'bg-neutral-100 text-neutral-800 hover:bg-neutral-200'
+                      : 'bg-neutral-900 text-white hover:bg-neutral-800 shadow-xs'
+                  }`}
+                >
+                  {isAdminComparisonOpen ? (
+                    <>
+                      <ChevronUp className="w-4 h-4" />
+                      <span>Yopish</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="w-4 h-4" />
+                      <span>Ochish</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {isAdminComparisonOpen && (
+              <div className="p-5 sm:p-6 pt-0 border-t border-neutral-200 animate-in fade-in duration-150">
+                <div className="pt-5">
+                  <AdminExcelComparisonSection
+                    clients={clients}
+                    warehouseProducts={warehouseProducts}
                   />
                 </div>
               </div>

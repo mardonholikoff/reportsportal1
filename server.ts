@@ -396,7 +396,10 @@ function mergePayloadIntoState(payload: any, triggerCloudPush = true): void {
         const existingMs = getRecordTimestamp(existing);
         const incomingLogsLen = Array.isArray(c.logs) ? c.logs.length : 0;
         const existingLogsLen = Array.isArray(existing.logs) ? existing.logs.length : 0;
-        if (incomingMs >= existingMs || incomingLogsLen >= existingLogsLen) {
+        if (
+          incomingMs > existingMs ||
+          (incomingMs === existingMs && incomingLogsLen >= existingLogsLen)
+        ) {
           sharedState.clients[c.id] = c;
         }
       }

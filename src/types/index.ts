@@ -79,6 +79,7 @@ export interface Client {
   initialDebt?: number; // Dastlabki (boshlang'ich) qarzdorlik summasi (USD)
   currentDebt: number; // Joriy qarzdorlik
   currentAdvance: number; // Joriy haqdorlik
+  manualBalanceOverride?: boolean; // Admin joriy qarz/avansni qo'lda alohida o'zgartirgan bo'lsa
   notes?: string;
   createdAt: string;
   updatedAt: string;

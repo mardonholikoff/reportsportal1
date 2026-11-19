@@ -1,6 +1,14 @@
 import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { Client, DailyPlanItem } from '../types';
-import { formatMoney, formatNumber, formatDate, formatDateDMY, getAgentDisplayName, getInitialDebtForClient } from '../utils/format';
+import {
+  formatMoney,
+  formatNumber,
+  formatDate,
+  formatDateDMY,
+  getAgentDisplayName,
+  getInitialDebtForClient,
+  getClientLogNetDelta,
+} from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
 import { storageService } from '../services/storage';
 import {
@@ -340,11 +348,9 @@ export const ClientTable: React.FC<Props> = ({
       logs.forEach((l) => {
         const dStr = (l.timestamp || '').slice(0, 10);
         if (dStr > endStr && l.amountChanged) {
-          const amt = Number(l.amountChanged) || 0;
-          if (l.type === 'product_added') {
-            net -= amt;
-          } else if (l.type === 'payment') {
-            net += amt;
+          const delta = getClientLogNetDelta(l);
+          if (delta !== 0) {
+            net = Math.round((net - delta) * 100) / 100;
           }
         }
       });
