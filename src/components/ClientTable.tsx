@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
-import { Client, DailyPlanItem } from '../types';
+import { Client, DailyPlanItem, ProductItem, WarehouseProduct } from '../types';
 import {
   formatMoney,
   formatNumber,
@@ -10,7 +10,11 @@ import {
   getClientLogNetDelta,
 } from '../utils/format';
 import { parseLegacyAddress } from '../utils/location';
-import { storageService } from '../services/storage';
+import { storageService, getPlanDateKey, getClosedDateKey } from '../services/storage';
+import {
+  isMatchingWarehouseProduct,
+  convertQuantityToPieces,
+} from '../utils/warehouseChronology';
 import {
   exportClientsToXLSX,
   exportClientProductAnalyticsToXLSX,
@@ -67,13 +71,51 @@ type Block2OrderMode =
 
 type Block2ProductTypeFilter = 'any_taken' | 'single_type' | 'multi_type';
 
+const formatLocalYMD = (d: Date): string => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const toLocalDateKey = (value?: string | null): string => {
+  if (!value) return '';
+  const trimmed = String(value).trim();
+  if (!trimmed) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) {
+    return formatLocalYMD(parsed);
+  }
+  const match = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : '';
+};
+
+const normalizeSpaces = (str?: string): string => (str || '').replace(/\s+/g, ' ').trim();
+
+const buildWarehouseDisplayName = (wh: WarehouseProduct): string => {
+  const brand = normalizeSpaces(wh.brand);
+  const name = normalizeSpaces(wh.name);
+  const mark1 = normalizeSpaces(wh.mark1);
+  const base =
+    brand && !name.toLowerCase().startsWith(brand.toLowerCase())
+      ? `${brand} - ${name}`
+      : name || brand;
+  if (mark1 && !base.toLowerCase().includes(mark1.toLowerCase())) {
+    return `${base} [${mark1}]`;
+  }
+  return base;
+};
+
 interface ProductDeliveryOccurrence {
   clientId: string;
-  date: string; // YYYY-MM-DD
+  date: string; // YYYY-MM-DD (local)
   productName: string;
   productKey: string;
   unit: string;
-  quantity: number;
+  quantity: number; // pieces (dona)
+  rawQuantity?: number;
+  rawUnit?: string;
   totalPriceUsd: number;
   paidUsd: number;
   creditUsd: number;
@@ -90,6 +132,13 @@ interface ClientAggregatedProductRow {
   paidSumUsd: number;
   creditSumUsd: number;
   dates: string[];
+  deliveries: Array<{
+    date: string;
+    quantity: number;
+    sumUsd: number;
+    rawQuantity?: number;
+    rawUnit?: string;
+  }>;
 }
 
 interface ClientBlock2ComputedItem {
@@ -152,21 +201,65 @@ export const ClientTable: React.FC<Props> = ({
   const [minProductQty, setMinProductQty] = useState<string>('');
   const [maxProductQty, setMaxProductQty] = useState<string>('');
   const [block2Page, setBlock2Page] = useState<number>(1);
-  const [block2PageSize, setBlock2PageSize] = useState<number | 'all'>(50);
+  const [block2PageSize, setBlock2PageSize] = useState<number | 'all'>('all');
   const [isExportingBlock2, setIsExportingBlock2] = useState(false);
 
   // Faqat adminc va adminc1 o'chirish huquqiga ega
   const canDelete = currentUsername === 'adminc' || currentUsername === 'adminc1';
 
   const resolvedDailyPlans = useMemo(() => {
-    return propDailyPlans && propDailyPlans.length > 0
-      ? propDailyPlans
-      : storageService.getDailyPlans();
+    const merged = new Map<string, DailyPlanItem>();
+    storageService.getDailyPlans().forEach((p) => {
+      if (p && p.id) merged.set(p.id, p);
+    });
+    (propDailyPlans || []).forEach((p) => {
+      if (p && p.id) merged.set(p.id, p);
+    });
+    return Array.from(merged.values());
   }, [propDailyPlans, clients]);
+
+  const warehouseProducts = useMemo<WarehouseProduct[]>(() => {
+    return storageService.getWarehouseProducts();
+  }, [clients, resolvedDailyPlans]);
+
+  const resolveCanonicalProduct = useMemo(() => {
+    const whById = new Map<string, WarehouseProduct>();
+    warehouseProducts.forEach((w) => {
+      if (w && w.id) whById.set(w.id, w);
+    });
+
+    return (prod: Partial<ProductItem> & { name?: string }) => {
+      let matchedWh: WarehouseProduct | undefined;
+      if (prod.warehouseId && whById.has(prod.warehouseId)) {
+        matchedWh = whById.get(prod.warehouseId);
+      }
+      if (!matchedWh && prod.id && whById.has(prod.id)) {
+        matchedWh = whById.get(prod.id);
+      }
+      if (!matchedWh && prod.name) {
+        matchedWh = warehouseProducts.find((wh) =>
+          isMatchingWarehouseProduct(wh, prod as ProductItem, warehouseProducts)
+        );
+      }
+      if (matchedWh) {
+        return {
+          key: `wh:${matchedWh.id}`,
+          displayName: buildWarehouseDisplayName(matchedWh),
+          whProduct: matchedWh,
+        };
+      }
+      const cleanName = normalizeSpaces(prod.name);
+      return {
+        key: `name:${cleanName.toLowerCase()}`,
+        displayName: cleanName,
+        whProduct: undefined as WarehouseProduct | undefined,
+      };
+    };
+  }, [warehouseProducts]);
 
   const applyBlock1QuickDate = (preset: 'all' | 'today' | 'yesterday' | 7 | 'month' | 30) => {
     const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
+    const todayStr = formatLocalYMD(now);
     if (preset === 'all') {
       setBlock1StartDate('');
       setBlock1EndDate('');
@@ -178,7 +271,7 @@ export const ClientTable: React.FC<Props> = ({
       return;
     }
     if (preset === 'yesterday') {
-      const y = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+      const y = formatLocalYMD(new Date(now.getTime() - 86400000));
       setBlock1StartDate(y);
       setBlock1EndDate(y);
       return;
@@ -190,7 +283,7 @@ export const ClientTable: React.FC<Props> = ({
       return;
     }
     const startDt = new Date(now.getTime() - preset * 86400000);
-    setBlock1StartDate(startDt.toISOString().slice(0, 10));
+    setBlock1StartDate(formatLocalYMD(startDt));
     setBlock1EndDate(todayStr);
   };
 
@@ -621,6 +714,7 @@ export const ClientTable: React.FC<Props> = ({
       const occurrences: ProductDeliveryOccurrence[] = [];
       const coveredProductIds = new Set<string>();
       const coveredQtyByProdKey = new Map<string, number>();
+      const coveredDates = new Set<string>();
 
       // Mijozning barcha qarz/haqdorlik tarixidan har bir mahsulot topshirish vaqtidagi oldingi haqdorlikni tiklaymiz
       const balanceLogs = (client.logs || [])
@@ -660,7 +754,7 @@ export const ClientTable: React.FC<Props> = ({
         if (isProductDeliveryLog) {
           prodLogPriorAdvances.push({
             timestamp: l.timestamp || '',
-            dateStr: (l.timestamp || '').slice(0, 10),
+            dateStr: toLocalDateKey(l.timestamp),
             priorAdvanceUsd: netBefore < -0.005 ? Math.round(Math.abs(netBefore) * 100) / 100 : 0,
             used: false,
           });
@@ -688,10 +782,9 @@ export const ClientTable: React.FC<Props> = ({
             return byDate.priorAdvanceUsd;
           }
         }
-        // Fallback if no _prod log exists for this action
         let netAtEndOfDate = (Number(client.currentDebt) || 0) - (Number(client.currentAdvance) || 0);
         balanceLogs.forEach(({ l }) => {
-          const ld = (l.timestamp || '').slice(0, 10);
+          const ld = toLocalDateKey(l.timestamp);
           if (dateStr && ld > dateStr) {
             const amt = Number(l.amountChanged) || 0;
             const isRet =
@@ -708,128 +801,278 @@ export const ClientTable: React.FC<Props> = ({
           : 0;
       };
 
-      const cPlans = plansByClient.get(client.id) || [];
-      cPlans.forEach((plan) => {
-        const actions =
-          plan.actionsHistory && plan.actionsHistory.length > 0
-            ? plan.actionsHistory.map((act) => ({
-                timestamp: act.timestamp || plan.closedAt || plan.completedAt || plan.createdAt,
-                dateStr: (
-                  act.timestamp ||
-                  plan.closedAt ||
-                  plan.completedAt ||
-                  plan.planDate ||
-                  plan.createdAt ||
-                  ''
-                ).slice(0, 10),
-                productsDelivered: act.productsDelivered,
-                deliveryPayment: act.deliveryPayment,
-              }))
-            : plan.productsDelivered && plan.productsDelivered.length > 0
-            ? [
-                {
-                  timestamp: plan.closedAt || plan.completedAt || plan.createdAt,
-                  dateStr: (
-                    plan.closedAt ||
-                    plan.completedAt ||
-                    plan.planDate ||
-                    plan.createdAt ||
-                    ''
-                  ).slice(0, 10),
-                  productsDelivered: plan.productsDelivered,
-                  deliveryPayment: plan.deliveryPayment,
-                },
-              ]
-            : [];
-
-        actions.forEach((act) => {
-          const prods = (act.productsDelivered || []).filter(
-            (p) => p && (p.name || '').trim() !== '' && (Number(p.quantity) || 0) > 0
-          );
-          if (prods.length === 0) return;
-
-          const eventTotal = prods.reduce(
-            (s, p) => s + (Number(p.totalPrice) || (Number(p.quantity) || 0) * (Number(p.unitPrice) || 0)),
-            0
-          );
-
-          const dp = act.deliveryPayment;
-          let paidRatio = 0;
-          let creditRatio = 1;
-
-          if (!dp || dp.paymentType === 'qarzga') {
-            paidRatio = 0;
-            creditRatio = 1;
-          } else if (dp.paidAmount !== undefined || dp.debtAmount !== undefined) {
-            const paid = Math.max(0, Number(dp.paidAmount) || 0);
-            const debt =
-              dp.debtAmount !== undefined
-                ? Math.max(0, Number(dp.debtAmount) || 0)
-                : Math.max(0, eventTotal - paid);
-            const denom = paid + debt > 0 ? paid + debt : eventTotal;
-            if (denom > 0) {
-              paidRatio = Math.min(1, paid / denom);
-              creditRatio = Math.max(0, 1 - paidRatio);
-            } else {
-              paidRatio = 1;
-              creditRatio = 0;
-            }
+      const computePaidAndCreditRatios = (
+        dp: DailyPlanItem['deliveryPayment'] | undefined,
+        eventTotal: number
+      ) => {
+        let paidRatio = 0;
+        let creditRatio = 1;
+        if (!dp || dp.paymentType === 'qarzga') {
+          paidRatio = 0;
+          creditRatio = 1;
+        } else if (dp.paidAmount !== undefined || dp.debtAmount !== undefined) {
+          const paid = Math.max(0, Number(dp.paidAmount) || 0);
+          const debt =
+            dp.debtAmount !== undefined
+              ? Math.max(0, Number(dp.debtAmount) || 0)
+              : Math.max(0, eventTotal - paid);
+          const denom = paid + debt > 0 ? paid + debt : eventTotal;
+          if (denom > 0) {
+            paidRatio = Math.min(1, paid / denom);
+            creditRatio = Math.max(0, 1 - paidRatio);
           } else {
             paidRatio = 1;
             creditRatio = 0;
           }
+        } else {
+          paidRatio = 1;
+          creditRatio = 0;
+        }
+        return { paidRatio, creditRatio };
+      };
 
-          const batchCreditTotal = Math.round(eventTotal * creditRatio * 100) / 100;
-          const batchPriorAdvanceUsd =
-            batchCreditTotal > 0
-              ? getPriorAdvanceAtCredit(act.timestamp, act.dateStr, batchCreditTotal)
-              : 0;
+      const pushBatchOccurrences = (
+        prods: ProductItem[],
+        batchDate: string,
+        batchTimestamp: string | undefined,
+        deliveryPayment: DailyPlanItem['deliveryPayment'] | undefined
+      ) => {
+        if (prods.length === 0) return;
 
-          // Bir amaliyot ichida bir xil mahsulot bir necha qatorda bo'lsa ham 1 marta berilgan deb guruhlaymiz
-          const groupedInBatch = new Map<
-            string,
-            { name: string; unit: string; qty: number; sum: number }
-          >();
+        const eventTotal = prods.reduce(
+          (s, p) =>
+            s + (Number(p.totalPrice) || (Number(p.quantity) || 0) * (Number(p.unitPrice) || 0)),
+          0
+        );
+        const { paidRatio, creditRatio } = computePaidAndCreditRatios(deliveryPayment, eventTotal);
+        const batchCreditTotal = Math.round(eventTotal * creditRatio * 100) / 100;
+        const batchPriorAdvanceUsd =
+          batchCreditTotal > 0
+            ? getPriorAdvanceAtCredit(batchTimestamp, batchDate, batchCreditTotal)
+            : 0;
 
-          prods.forEach((p) => {
-            if (p.id) coveredProductIds.add(p.id);
-            const cleanName = p.name.trim();
-            const pKey = cleanName.toLowerCase();
-            const q = Number(p.quantity) || 0;
-            const s = Number(p.totalPrice) || q * (Number(p.unitPrice) || 0);
+        // Bir amaliyot ichida bir xil mahsulot bir necha qatorda bo'lsa ham 1 marta berilgan deb guruhlaymiz
+        const groupedInBatch = new Map<
+          string,
+          {
+            name: string;
+            date: string;
+            qtyPieces: number;
+            rawQty: number;
+            rawUnit: string;
+            sum: number;
+          }
+        >();
 
-            coveredQtyByProdKey.set(pKey, (coveredQtyByProdKey.get(pKey) || 0) + q);
+        prods.forEach((p) => {
+          if (p.id) coveredProductIds.add(p.id);
+          const canonical = resolveCanonicalProduct(p);
+          const rawQty = Number(p.quantity) || 0;
+          const rawUnitRaw = (p.unit || '').trim();
+          const rawUnit =
+            !rawUnitRaw || rawUnitRaw.toLowerCase() === 'birlik' ? 'dona' : rawUnitRaw;
+          const qtyPieces = canonical.whProduct
+            ? convertQuantityToPieces(canonical.whProduct, rawQty, rawUnit)
+            : rawQty;
+          const s = Number(p.totalPrice) || rawQty * (Number(p.unitPrice) || 0);
+          const itemDate =
+            toLocalDateKey((p as any).date || (p as any).deliveredAt) || batchDate;
 
-            const rawUnit = (p.unit || '').trim();
-            const normUnit = !rawUnit || rawUnit.toLowerCase() === 'birlik' ? 'dona' : rawUnit;
-            const ex = groupedInBatch.get(pKey) || {
-              name: cleanName,
-              unit: normUnit,
-              qty: 0,
-              sum: 0,
-            };
-            ex.qty += q;
-            ex.sum += s;
-            groupedInBatch.set(pKey, ex);
-          });
+          coveredQtyByProdKey.set(
+            canonical.key,
+            (coveredQtyByProdKey.get(canonical.key) || 0) + qtyPieces
+          );
+          if (itemDate) coveredDates.add(itemDate);
 
-          groupedInBatch.forEach((g, pKey) => {
-            const creditUsd = Math.round(g.sum * creditRatio * 100) / 100;
-            occurrences.push({
-              clientId: client.id,
-              date: act.dateStr || (client.createdAt || '').slice(0, 10),
-              productName: g.name,
-              productKey: pKey,
-              unit: g.unit,
-              quantity: Math.round(g.qty * 100) / 100,
-              totalPriceUsd: Math.round(g.sum * 100) / 100,
-              paidUsd: Math.round(g.sum * paidRatio * 100) / 100,
-              creditUsd,
-              priorAdvanceUsd: creditUsd > 0 ? batchPriorAdvanceUsd : 0,
-            });
+          const groupMapKey = `${canonical.key}__${itemDate}`;
+          const ex = groupedInBatch.get(groupMapKey) || {
+            name: canonical.displayName,
+            date: itemDate,
+            qtyPieces: 0,
+            rawQty: 0,
+            rawUnit,
+            sum: 0,
+          };
+          ex.qtyPieces += qtyPieces;
+          ex.rawQty += rawQty;
+          ex.sum += s;
+          groupedInBatch.set(groupMapKey, ex);
+        });
+
+        groupedInBatch.forEach((g, groupMapKey) => {
+          const pKey = groupMapKey.split('__')[0];
+          const creditUsd = Math.round(g.sum * creditRatio * 100) / 100;
+          occurrences.push({
+            clientId: client.id,
+            date: g.date || toLocalDateKey(client.updatedAt || client.createdAt),
+            productName: g.name,
+            productKey: pKey,
+            unit: 'dona',
+            quantity: Math.round(g.qtyPieces * 100) / 100,
+            rawQuantity: Math.round(g.rawQty * 100) / 100,
+            rawUnit: g.rawUnit,
+            totalPriceUsd: Math.round(g.sum * 100) / 100,
+            paidUsd: Math.round(g.sum * paidRatio * 100) / 100,
+            creditUsd,
+            priorAdvanceUsd: creditUsd > 0 ? batchPriorAdvanceUsd : 0,
           });
         });
+      };
+
+      const cPlans = plansByClient.get(client.id) || [];
+      cPlans.forEach((plan) => {
+        const seenInPlan = new Set<string>();
+        const planTargetDate = getClosedDateKey(plan) || getPlanDateKey(plan);
+
+        // Determine if actionsHistory contains deliveries on multiple distinct dates
+        const historyDeliveries = (plan.actionsHistory || []).filter(
+          (act) => act && Array.isArray(act.productsDelivered) && act.productsDelivered.length > 0
+        );
+        const distinctActionDates = new Set(
+          historyDeliveries.map((a) => toLocalDateKey(a.timestamp)).filter(Boolean)
+        );
+        const hasMultiDayActions = distinctActionDates.size > 1;
+
+        // 1) Scan actionsHistory deliveries
+        historyDeliveries.forEach((act) => {
+          const actProds: ProductItem[] = [];
+          (act.productsDelivered || []).forEach((p, idx) => {
+            if (!p || !(p.name || '').trim() || (Number(p.quantity) || 0) <= 0) return;
+            const canonical = resolveCanonicalProduct(p);
+            const dedupSig = p.id
+              ? `id:${p.id}_${p.quantity}_${p.unitPrice}`
+              : `k:${canonical.key}_${p.quantity}_${p.unitPrice}_${idx}`;
+            if (seenInPlan.has(dedupSig)) return;
+            seenInPlan.add(dedupSig);
+            actProds.push(p);
+          });
+
+          const actTsDate = toLocalDateKey(act.timestamp);
+          const effectiveDate =
+            (hasMultiDayActions && actTsDate) ||
+            planTargetDate ||
+            actTsDate ||
+            toLocalDateKey(plan.completedAt || plan.createdAt);
+
+          pushBatchOccurrences(
+            actProds,
+            effectiveDate,
+            act.timestamp || plan.closedAt || plan.completedAt || plan.createdAt,
+            act.deliveryPayment || plan.deliveryPayment
+          );
+        });
+
+        // 2) Also scan plan.productsDelivered for any items not already captured in actionsHistory
+        if (plan.productsDelivered && plan.productsDelivered.length > 0) {
+          const planProds: ProductItem[] = [];
+          plan.productsDelivered.forEach((p, idx) => {
+            if (!p || !(p.name || '').trim() || (Number(p.quantity) || 0) <= 0) return;
+            const canonical = resolveCanonicalProduct(p);
+            const dedupSig = p.id
+              ? `id:${p.id}_${p.quantity}_${p.unitPrice}`
+              : `k:${canonical.key}_${p.quantity}_${p.unitPrice}_${idx}`;
+            if (seenInPlan.has(dedupSig)) return;
+            // Also skip if exact same canonical key + qty + unitPrice already captured from actionsHistory in this plan
+            const looseSig = `loose:${canonical.key}_${p.quantity}_${p.unitPrice}`;
+            if (seenInPlan.has(looseSig)) return;
+            seenInPlan.add(dedupSig);
+            seenInPlan.add(looseSig);
+            planProds.push(p);
+          });
+
+          // If actionsHistory already captured items by id, ensure we don't duplicate by loose signature either
+          if (historyDeliveries.length > 0 && planProds.length > 0) {
+            const historyCanonicalCounts = new Map<string, number>();
+            historyDeliveries.forEach((act) => {
+              (act.productsDelivered || []).forEach((hp) => {
+                if (!hp || !(hp.name || '').trim()) return;
+                const c = resolveCanonicalProduct(hp);
+                const sig = `${c.key}_${hp.quantity}_${hp.unitPrice}`;
+                historyCanonicalCounts.set(sig, (historyCanonicalCounts.get(sig) || 0) + 1);
+              });
+            });
+            const filteredPlanProds: ProductItem[] = [];
+            planProds.forEach((p) => {
+              const c = resolveCanonicalProduct(p);
+              const sig = `${c.key}_${p.quantity}_${p.unitPrice}`;
+              const cnt = historyCanonicalCounts.get(sig) || 0;
+              if (cnt > 0) {
+                historyCanonicalCounts.set(sig, cnt - 1);
+              } else {
+                filteredPlanProds.push(p);
+              }
+            });
+            if (filteredPlanProds.length > 0) {
+              const effectiveDate =
+                planTargetDate || toLocalDateKey(plan.completedAt || plan.createdAt);
+              pushBatchOccurrences(
+                filteredPlanProds,
+                effectiveDate,
+                plan.closedAt || plan.completedAt || plan.createdAt,
+                plan.deliveryPayment
+              );
+            }
+          } else if (planProds.length > 0) {
+            const effectiveDate =
+              planTargetDate || toLocalDateKey(plan.completedAt || plan.createdAt);
+            pushBatchOccurrences(
+              planProds,
+              effectiveDate,
+              plan.closedAt || plan.completedAt || plan.createdAt,
+              plan.deliveryPayment
+            );
+          }
+        }
       });
+
+      // Mijozning product_added loglarini tayyorlab olamiz (direct delivery sanasini aniqlash uchun)
+      const clientProductLogs = (client.logs || []).filter(
+        (l) =>
+          l &&
+          l.type === 'product_added' &&
+          !String(l.id || '').endsWith('_ret') &&
+          !(l.title || '').toLowerCase().includes('qaytarildi')
+      );
+
+      const inferFallbackProductDate = (p: ProductItem, displayName: string): string => {
+        const directDate = toLocalDateKey((p as any).date || (p as any).deliveredAt);
+        if (directDate) return directDate;
+
+        const nameTokens = displayName
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+          .split(/\s+/)
+          .filter((t) => t.length >= 2);
+        const rawLower = normalizeSpaces(p.name).toLowerCase();
+
+        // Try finding a product_added log whose details mention this product
+        const matchingLog = clientProductLogs.find((l) => {
+          const text = `${l.title || ''} ${l.details || ''}`.toLowerCase();
+          if (rawLower && text.includes(rawLower)) return true;
+          if (nameTokens.length >= 2) {
+            const hits = nameTokens.filter((t) => text.includes(t)).length;
+            return hits >= Math.min(2, nameTokens.length);
+          }
+          return false;
+        });
+        if (matchingLog?.timestamp) {
+          const d = toLocalDateKey(matchingLog.timestamp);
+          if (d) return d;
+        }
+
+        if (clientProductLogs.length > 0 && clientProductLogs[0]?.timestamp) {
+          const d = toLocalDateKey(clientProductLogs[0].timestamp);
+          if (d) return d;
+        }
+
+        const closeDate = toLocalDateKey(client.lastPlanClosedAt);
+        if (closeDate) return closeDate;
+
+        const updDate = toLocalDateKey(client.updatedAt);
+        if (updDate) return updDate;
+
+        return toLocalDateKey(client.createdAt) || formatLocalYMD(new Date());
+      };
 
       // Mijozning client.products ro'yxatida bo'lib, dailyPlans ichida qamrab olinmagan mahsulotlarni ham qo'shamiz
       const clientProds = (client.products || []).filter(
@@ -837,54 +1080,77 @@ export const ClientTable: React.FC<Props> = ({
       );
       if (clientProds.length > 0) {
         const totalClientProdVal = clientProds.reduce(
-          (s, p) => s + (Number(p.totalPrice) || (Number(p.quantity) || 0) * (Number(p.unitPrice) || 0)),
+          (s, p) =>
+            s + (Number(p.totalPrice) || (Number(p.quantity) || 0) * (Number(p.unitPrice) || 0)),
           0
         );
         const clientDebt = Math.max(0, Number(client.currentDebt) || 0);
         const fallbackCreditRatio =
-          totalClientProdVal > 0 ? Math.min(1, clientDebt / totalClientProdVal) : clientDebt > 0 ? 1 : 0;
+          totalClientProdVal > 0
+            ? Math.min(1, clientDebt / totalClientProdVal)
+            : clientDebt > 0
+            ? 1
+            : 0;
         const fallbackPaidRatio = Math.max(0, 1 - fallbackCreditRatio);
 
-        // Track remaining covered quantities for products without matching ID
         const remainingCoveredQty = new Map(coveredQtyByProdKey);
         const fallbackGrouped = new Map<
           string,
-          { name: string; unit: string; qty: number; sum: number }
+          {
+            productKey: string;
+            name: string;
+            date: string;
+            qtyPieces: number;
+            rawQty: number;
+            rawUnit: string;
+            sum: number;
+          }
         >();
 
         clientProds.forEach((p) => {
           if (p.id && coveredProductIds.has(p.id)) return;
-          const cleanName = p.name.trim();
-          const pKey = cleanName.toLowerCase();
-          const q = Number(p.quantity) || 0;
+          const canonical = resolveCanonicalProduct(p);
+          const rawQty = Number(p.quantity) || 0;
+          const rawUnitRaw = (p.unit || '').trim();
+          const rawUnit =
+            !rawUnitRaw || rawUnitRaw.toLowerCase() === 'birlik' ? 'dona' : rawUnitRaw;
+          const qtyPieces = canonical.whProduct
+            ? convertQuantityToPieces(canonical.whProduct, rawQty, rawUnit)
+            : rawQty;
           const unitP = Number(p.unitPrice) || 0;
-          const totalP = Number(p.totalPrice) || q * unitP;
+          const totalP = Number(p.totalPrice) || rawQty * unitP;
 
-          const alreadyCov = remainingCoveredQty.get(pKey) || 0;
-          if (alreadyCov >= q) {
-            remainingCoveredQty.set(pKey, alreadyCov - q);
+          const alreadyCov = remainingCoveredQty.get(canonical.key) || 0;
+          if (alreadyCov >= qtyPieces - 0.001) {
+            remainingCoveredQty.set(canonical.key, Math.max(0, alreadyCov - qtyPieces));
             return;
           }
 
-          const uncoveredQty = q - alreadyCov;
-          remainingCoveredQty.set(pKey, 0);
-          const ratio = q > 0 ? uncoveredQty / q : 1;
+          const uncoveredPieces = Math.max(0, qtyPieces - alreadyCov);
+          remainingCoveredQty.set(canonical.key, 0);
+          const ratio = qtyPieces > 0 ? uncoveredPieces / qtyPieces : 1;
           const uncoveredSum = totalP * ratio;
-          const rawUnit = (p.unit || '').trim();
-          const normUnit = !rawUnit || rawUnit.toLowerCase() === 'birlik' ? 'dona' : rawUnit;
+          const uncoveredRawQty = rawQty * ratio;
+          const prodDate = inferFallbackProductDate(p, canonical.displayName);
+          if (prodDate) coveredDates.add(prodDate);
 
-          const ex = fallbackGrouped.get(pKey) || {
-            name: cleanName,
-            unit: normUnit,
-            qty: 0,
+          const groupKey = `${canonical.key}__${prodDate}`;
+          const ex = fallbackGrouped.get(groupKey) || {
+            productKey: canonical.key,
+            name: canonical.displayName,
+            date: prodDate,
+            qtyPieces: 0,
+            rawQty: 0,
+            rawUnit,
             sum: 0,
           };
-          ex.qty += uncoveredQty;
+          ex.qtyPieces += uncoveredPieces;
+          ex.rawQty += uncoveredRawQty;
           ex.sum += uncoveredSum;
-          fallbackGrouped.set(pKey, ex);
+          fallbackGrouped.set(groupKey, ex);
         });
 
-        fallbackGrouped.forEach((g, pKey) => {
+        fallbackGrouped.forEach((g) => {
           const fallbackCreditUsd = Math.round(g.sum * fallbackCreditRatio * 100) / 100;
           const fallbackPriorAdv =
             fallbackCreditUsd > 0 && prodLogPriorAdvances.length === 0 && (client.currentAdvance || 0) > 0
@@ -892,11 +1158,13 @@ export const ClientTable: React.FC<Props> = ({
               : 0;
           occurrences.push({
             clientId: client.id,
-            date: (client.createdAt || new Date().toISOString()).slice(0, 10),
+            date: g.date,
             productName: g.name,
-            productKey: pKey,
-            unit: g.unit,
-            quantity: Math.round(g.qty * 100) / 100,
+            productKey: g.productKey,
+            unit: 'dona',
+            quantity: Math.round(g.qtyPieces * 100) / 100,
+            rawQuantity: Math.round(g.rawQty * 100) / 100,
+            rawUnit: g.rawUnit,
             totalPriceUsd: Math.round(g.sum * 100) / 100,
             paidUsd: Math.round(g.sum * fallbackPaidRatio * 100) / 100,
             creditUsd: fallbackCreditUsd,
@@ -905,17 +1173,135 @@ export const ClientTable: React.FC<Props> = ({
         });
       }
 
+      // 3) Agar client.logs ichida dailyPlans va client.products da yo'q bo'lgan topshirish logi bo'lsa (masalan reja o'chirilgan yoki client.products tahrirlangan bo'lsa)
+      clientProductLogs.forEach((log) => {
+        if (!log.details) return;
+        const logDate = toLocalDateKey(log.timestamp);
+        if (!logDate || coveredDates.has(logDate)) return;
+
+        const m = log.details.match(/(?:topshirildi|tahrirlandi|berildi):\s*(.+?)\.\s*(?:Qiymati|Jami):/i);
+        if (!m || !m[1]) return;
+
+        const itemsRaw = m[1]
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const parsedItems: Array<{
+          canonical: ReturnType<typeof resolveCanonicalProduct>;
+          qtyPieces: number;
+          rawQty: number;
+          rawUnit: string;
+          estPrice: number;
+        }> = [];
+
+        itemsRaw.forEach((itemStr) => {
+          const itemMatch = itemStr.match(/^(.+?)\s*\(([\d.]+)\s*([^)]+)\)$/);
+          const parsedName = itemMatch ? itemMatch[1].trim() : itemStr;
+          const parsedQty = itemMatch ? parseFloat(itemMatch[2]) || 0 : 0;
+          if (!parsedName || parsedQty <= 0) return;
+          const parsedUnit = itemMatch ? itemMatch[3].trim() : 'dona';
+          const canonical = resolveCanonicalProduct({ name: parsedName });
+          const qtyPieces = canonical.whProduct
+            ? convertQuantityToPieces(canonical.whProduct, parsedQty, parsedUnit)
+            : parsedQty;
+          const estUnitPrice = canonical.whProduct
+            ? canonical.whProduct.minSellingPrice || canonical.whProduct.price || 0
+            : 0;
+          parsedItems.push({
+            canonical,
+            qtyPieces,
+            rawQty: parsedQty,
+            rawUnit: parsedUnit,
+            estPrice: qtyPieces * estUnitPrice,
+          });
+        });
+
+        if (parsedItems.length === 0) return;
+
+        const logTotalVal = Math.max(
+          0,
+          Number(log.amountChanged) ||
+            parsedItems.reduce((s, it) => s + it.estPrice, 0)
+        );
+        const estSumTotal = parsedItems.reduce((s, it) => s + it.estPrice, 0);
+        const totalPiecesInLog = parsedItems.reduce((s, it) => s + it.qtyPieces, 0);
+        const payLabel = `${log.paymentMethodLabel || ''} ${log.details || ''}`.toLowerCase();
+        const isPaid =
+          (payLabel.includes('naqd') ||
+            payLabel.includes('karta') ||
+            payLabel.includes('bank') ||
+            payLabel.includes('qr')) &&
+          !payLabel.includes('qarz');
+
+        parsedItems.forEach((it) => {
+          const share =
+            estSumTotal > 0
+              ? it.estPrice / estSumTotal
+              : totalPiecesInLog > 0
+              ? it.qtyPieces / totalPiecesInLog
+              : 1 / parsedItems.length;
+          const itemSum = Math.round(logTotalVal * share * 100) / 100;
+          occurrences.push({
+            clientId: client.id,
+            date: logDate,
+            productName: it.canonical.displayName,
+            productKey: it.canonical.key,
+            unit: 'dona',
+            quantity: Math.round(it.qtyPieces * 100) / 100,
+            rawQuantity: Math.round(it.rawQty * 100) / 100,
+            rawUnit: it.rawUnit,
+            totalPriceUsd: itemSum,
+            paidUsd: isPaid ? itemSum : 0,
+            creditUsd: isPaid ? 0 : itemSum,
+            priorAdvanceUsd: 0,
+          });
+        });
+      });
+
       map.set(client.id, occurrences);
     });
 
     return map;
-  }, [clients, resolvedDailyPlans]);
+  }, [clients, resolvedDailyPlans, resolveCanonicalProduct]);
+
+  // Normalize reversed date range automatically if start > end
+  const { effectiveBlock2Start, effectiveBlock2End } = useMemo(() => {
+    if (block2StartDate && block2EndDate && block2StartDate > block2EndDate) {
+      return {
+        effectiveBlock2Start: block2EndDate,
+        effectiveBlock2End: block2StartDate,
+      };
+    }
+    return {
+      effectiveBlock2Start: block2StartDate,
+      effectiveBlock2End: block2EndDate,
+    };
+  }, [block2StartDate, block2EndDate]);
+
+  // Lookup map for product display names across all time & warehouse (so selected chips keep labels across date changes)
+  const productNameByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    warehouseProducts.forEach((wh) => {
+      if (wh && wh.id) {
+        map.set(`wh:${wh.id}`, buildWarehouseDisplayName(wh));
+      }
+    });
+    allDeliveryOccurrencesByClient.forEach((occurrences) => {
+      occurrences.forEach((occ) => {
+        if (!map.has(occ.productKey)) {
+          map.set(occ.productKey, occ.productName);
+        }
+      });
+    });
+    return map;
+  }, [warehouseProducts, allDeliveryOccurrencesByClient]);
 
   // Catalog of all unique products available in the selected date range (for the multi-select picker)
   const uniqueProductCatalog = useMemo(() => {
     const map = new Map<
       string,
       {
+        key: string;
         name: string;
         unit: string;
         clientsSet: Set<string>;
@@ -927,10 +1313,11 @@ export const ClientTable: React.FC<Props> = ({
 
     allDeliveryOccurrencesByClient.forEach((occurrences, clientId) => {
       occurrences.forEach((occ) => {
-        if (block2StartDate && occ.date < block2StartDate) return;
-        if (block2EndDate && occ.date > block2EndDate) return;
+        if (effectiveBlock2Start && occ.date < effectiveBlock2Start) return;
+        if (effectiveBlock2End && occ.date > effectiveBlock2End) return;
 
         const existing = map.get(occ.productKey) || {
+          key: occ.productKey,
           name: occ.productName,
           unit: occ.unit,
           clientsSet: new Set<string>(),
@@ -949,7 +1336,7 @@ export const ClientTable: React.FC<Props> = ({
     return Array.from(map.values())
       .map((item) => ({
         name: item.name,
-        key: item.name.toLowerCase(),
+        key: item.key,
         unit: item.unit,
         clientsCount: item.clientsSet.size,
         totalQty: Math.round(item.totalQty * 100) / 100,
@@ -957,20 +1344,18 @@ export const ClientTable: React.FC<Props> = ({
         totalTimes: item.totalTimes,
       }))
       .sort((a, b) => b.clientsCount - a.clientsCount || a.name.localeCompare(b.name, 'uz'));
-  }, [allDeliveryOccurrencesByClient, block2StartDate, block2EndDate]);
+  }, [allDeliveryOccurrencesByClient, effectiveBlock2Start, effectiveBlock2End]);
 
-  const toggleProductSelection = (prodName: string) => {
+  const toggleProductSelection = (prodKey: string) => {
     setSelectedProducts((prev) => {
-      const exists = prev.some((p) => p.toLowerCase() === prodName.toLowerCase());
-      return exists
-        ? prev.filter((p) => p.toLowerCase() !== prodName.toLowerCase())
-        : [...prev, prodName];
+      const exists = prev.includes(prodKey);
+      return exists ? prev.filter((p) => p !== prodKey) : [...prev, prodKey];
     });
   };
 
   // Compute filtered & sorted Block 2 rows
   const block2FilteredRows = useMemo<ClientBlock2ComputedItem[]>(() => {
-    const selectedSet = new Set(selectedProducts.map((s) => s.toLowerCase()));
+    const selectedSet = new Set(selectedProducts);
     const minQ = minProductQty.trim() !== '' ? Number(minProductQty) : null;
     const maxQ = maxProductQty.trim() !== '' ? Number(maxProductQty) : null;
     const qSearch = deferredBlock2Search.toLowerCase().trim();
@@ -978,13 +1363,12 @@ export const ClientTable: React.FC<Props> = ({
     const rows: ClientBlock2ComputedItem[] = [];
 
     clients.forEach((client) => {
-      // Search filter on client or product
       const rawOccurrences = allDeliveryOccurrencesByClient.get(client.id) || [];
 
       // Filter occurrences by date range first
       const dateMatchedOccurrences = rawOccurrences.filter((occ) => {
-        if (block2StartDate && occ.date < block2StartDate) return false;
-        if (block2EndDate && occ.date > block2EndDate) return false;
+        if (effectiveBlock2Start && occ.date < effectiveBlock2Start) return false;
+        if (effectiveBlock2End && occ.date > effectiveBlock2End) return false;
         return true;
       });
 
@@ -996,14 +1380,12 @@ export const ClientTable: React.FC<Props> = ({
       // If specific products are selected:
       if (selectedSet.size > 0) {
         if (productMatchMode === 'all') {
-          // Mijoz tanlangan mahsulotlarning barchasini olgan bo'lishi kerak
           let hasAll = true;
           selectedSet.forEach((selKey) => {
             if (!allPeriodProductKeys.has(selKey)) hasAll = false;
           });
           if (!hasAll) return;
         } else {
-          // Mijoz tanlangan mahsulotlardan kamida bittasini olgan bo'lishi kerak
           let hasAny = false;
           selectedSet.forEach((selKey) => {
             if (allPeriodProductKeys.has(selKey)) hasAny = true;
@@ -1034,6 +1416,7 @@ export const ClientTable: React.FC<Props> = ({
           paidSumUsd: 0,
           creditSumUsd: 0,
           dates: [],
+          deliveries: [],
         };
         existing.timesDelivered += 1;
         existing.totalQuantity = Math.round((existing.totalQuantity + occ.quantity) * 100) / 100;
@@ -1043,7 +1426,19 @@ export const ClientTable: React.FC<Props> = ({
         if (occ.date && !existing.dates.includes(occ.date)) {
           existing.dates.push(occ.date);
         }
+        existing.deliveries.push({
+          date: occ.date,
+          quantity: occ.quantity,
+          sumUsd: occ.totalPriceUsd,
+          rawQuantity: occ.rawQuantity,
+          rawUnit: occ.rawUnit,
+        });
         prodAggMap.set(occ.productKey, existing);
+      });
+
+      prodAggMap.forEach((agg) => {
+        agg.dates.sort((a, b) => b.localeCompare(a));
+        agg.deliveries.sort((a, b) => b.date.localeCompare(a.date));
       });
 
       const matchedProducts = Array.from(prodAggMap.values()).sort(
@@ -1151,8 +1546,8 @@ export const ClientTable: React.FC<Props> = ({
   }, [
     clients,
     allDeliveryOccurrencesByClient,
-    block2StartDate,
-    block2EndDate,
+    effectiveBlock2Start,
+    effectiveBlock2End,
     selectedProducts,
     productMatchMode,
     productTypeCountFilter,
@@ -1249,7 +1644,7 @@ export const ClientTable: React.FC<Props> = ({
 
   const applyQuickDateRange = (days: number | 'month' | 'today' | 'yesterday' | 'all') => {
     const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
+    const todayStr = formatLocalYMD(now);
     if (days === 'all') {
       setBlock2StartDate('');
       setBlock2EndDate('');
@@ -1261,7 +1656,7 @@ export const ClientTable: React.FC<Props> = ({
       return;
     }
     if (days === 'yesterday') {
-      const yStr = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+      const yStr = formatLocalYMD(new Date(now.getTime() - 86400000));
       setBlock2StartDate(yStr);
       setBlock2EndDate(yStr);
       return;
@@ -1273,7 +1668,7 @@ export const ClientTable: React.FC<Props> = ({
       return;
     }
     const startDt = new Date(now.getTime() - days * 86400000);
-    setBlock2StartDate(startDt.toISOString().slice(0, 10));
+    setBlock2StartDate(formatLocalYMD(startDt));
     setBlock2EndDate(todayStr);
   };
 
@@ -1281,9 +1676,9 @@ export const ClientTable: React.FC<Props> = ({
     try {
       setIsExportingBlock2(true);
       const periodLabel =
-        block2StartDate || block2EndDate
-          ? `${block2StartDate ? formatDateDMY(block2StartDate) : 'Boshidan'} — ${
-              block2EndDate ? formatDateDMY(block2EndDate) : 'Bugungacha'
+        effectiveBlock2Start || effectiveBlock2End
+          ? `${effectiveBlock2Start ? formatDateDMY(effectiveBlock2Start) : 'Boshidan'} — ${
+              effectiveBlock2End ? formatDateDMY(effectiveBlock2End) : 'Bugungacha'
             }`
           : 'Barcha vaqt';
 
@@ -2540,14 +2935,12 @@ export const ClientTable: React.FC<Props> = ({
                           }
 
                           return matchingCatalog.map((prod) => {
-                            const isSel = selectedProducts.some(
-                              (s) => s.toLowerCase() === prod.key
-                            );
+                            const isSel = selectedProducts.includes(prod.key);
                             return (
                               <button
                                 key={prod.key}
                                 type="button"
-                                onClick={() => toggleProductSelection(prod.name)}
+                                onClick={() => toggleProductSelection(prod.key)}
                                 className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 text-xs transition cursor-pointer ${
                                   isSel
                                     ? 'bg-indigo-50/90 text-indigo-950 font-bold'
@@ -2614,22 +3007,25 @@ export const ClientTable: React.FC<Props> = ({
                   <span className="text-[10px] font-bold text-indigo-700 uppercase mr-1">
                     Tanlangan mahsulotlar ({selectedProducts.length}):
                   </span>
-                  {selectedProducts.map((prodName) => (
-                    <span
-                      key={prodName}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-700 text-white shadow-2xs"
-                    >
-                      <span>{prodName}</span>
-                      <button
-                        type="button"
-                        onClick={() => toggleProductSelection(prodName)}
-                        className="hover:bg-white/20 rounded p-0.5 cursor-pointer"
-                        title="Tanlovdan olib tashlash"
+                  {selectedProducts.map((prodKey) => {
+                    const label = productNameByKey.get(prodKey) || prodKey.replace(/^(wh|name):/, '');
+                    return (
+                      <span
+                        key={prodKey}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-700 text-white shadow-2xs"
                       >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
+                        <span>{label}</span>
+                        <button
+                          type="button"
+                          onClick={() => toggleProductSelection(prodKey)}
+                          className="hover:bg-white/20 rounded p-0.5 cursor-pointer"
+                          title="Tanlovdan olib tashlash"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
                   <button
                     type="button"
                     onClick={() => setSelectedProducts([])}
@@ -2923,31 +3319,44 @@ export const ClientTable: React.FC<Props> = ({
                           </td>
 
                           {/* Qaysi mahsulotni necha marta olgani (bitta ustunda har bir turdagi mahsulot bo'yicha) */}
-                          <td className="py-3.5 px-4 max-w-[360px]">
+                          <td className="py-3.5 px-4 max-w-[380px]">
                             <div className="space-y-1.5">
                               {matchedProducts.map((mp) => (
                                 <div
                                   key={mp.productKey}
-                                  className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-neutral-50 border border-neutral-200/80"
+                                  className="px-2.5 py-1.5 rounded-xl bg-neutral-50 border border-neutral-200/80 space-y-1"
                                 >
-                                  <div className="min-w-0">
-                                    <span className="font-bold text-neutral-900 block truncate">
-                                      {mp.productName}
-                                    </span>
-                                    <span className="text-[11px] text-neutral-500 font-mono block">
-                                      Miqdori: {formatNumber(mp.totalQuantity)} dona (
-                                      {formatMoney(mp.totalSumUsd)})
-                                    </span>
-                                    {mp.dates && mp.dates.length > 0 && (
-                                      <span className="text-[10px] text-neutral-400 font-mono block">
-                                        Sana: {mp.dates.slice(0, 3).map(formatDateDMY).join(', ')}
-                                        {mp.dates.length > 3 ? ` (+${mp.dates.length - 3})` : ''}
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <span className="font-bold text-neutral-900 block truncate">
+                                        {mp.productName}
                                       </span>
-                                    )}
+                                      <span className="text-[11px] text-neutral-600 font-mono block">
+                                        Jami: {formatNumber(mp.totalQuantity)} dona (
+                                        {formatMoney(mp.totalSumUsd)})
+                                      </span>
+                                    </div>
+                                    <span className="px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 border border-indigo-200 font-mono font-extrabold text-[11px] shrink-0">
+                                      {mp.timesDelivered} marta olgan
+                                    </span>
                                   </div>
-                                  <span className="px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 border border-indigo-200 font-mono font-extrabold text-[11px] shrink-0">
-                                    {mp.timesDelivered} marta olgan
-                                  </span>
+                                  {mp.deliveries && mp.deliveries.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 pt-0.5">
+                                      {mp.deliveries.map((del, dIdx) => (
+                                        <span
+                                          key={`${mp.productKey}_${del.date}_${dIdx}`}
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white border border-neutral-200 text-[10px] font-mono text-neutral-700"
+                                        >
+                                          <span className="text-neutral-500">
+                                            {del.date ? formatDateDMY(del.date) : '—'}:
+                                          </span>
+                                          <span className="font-bold text-indigo-900">
+                                            {formatNumber(del.quantity)} dona
+                                          </span>
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                               ))}
                             </div>
@@ -3084,20 +3493,39 @@ export const ClientTable: React.FC<Props> = ({
                       {matchedProducts.map((mp) => (
                         <div
                           key={mp.productKey}
-                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-neutral-50 border border-neutral-200 text-xs"
+                          className="px-2.5 py-1.5 rounded-xl bg-neutral-50 border border-neutral-200 text-xs space-y-1"
                         >
-                          <div className="min-w-0">
-                            <span className="font-bold text-neutral-900 block truncate">
-                              {mp.productName}
-                            </span>
-                            <span className="text-[11px] text-neutral-500 font-mono">
-                              {formatNumber(mp.totalQuantity)} dona •{' '}
-                              {formatMoney(mp.totalSumUsd)}
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="font-bold text-neutral-900 block truncate">
+                                {mp.productName}
+                              </span>
+                              <span className="text-[11px] text-neutral-500 font-mono">
+                                {formatNumber(mp.totalQuantity)} dona •{' '}
+                                {formatMoney(mp.totalSumUsd)}
+                              </span>
+                            </div>
+                            <span className="px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 font-mono font-extrabold text-[11px] shrink-0">
+                              {mp.timesDelivered} marta olgan
                             </span>
                           </div>
-                          <span className="px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-900 font-mono font-extrabold text-[11px] shrink-0">
-                            {mp.timesDelivered} marta olgan
-                          </span>
+                          {mp.deliveries && mp.deliveries.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pt-0.5">
+                              {mp.deliveries.map((del, dIdx) => (
+                                <span
+                                  key={`${mp.productKey}_m_${del.date}_${dIdx}`}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-white border border-neutral-200 text-[10px] font-mono text-neutral-700"
+                                >
+                                  <span className="text-neutral-500">
+                                    {del.date ? formatDateDMY(del.date) : '—'}:
+                                  </span>
+                                  <span className="font-bold text-indigo-900">
+                                    {formatNumber(del.quantity)} dona
+                                  </span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

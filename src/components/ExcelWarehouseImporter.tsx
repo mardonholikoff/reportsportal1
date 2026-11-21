@@ -702,7 +702,7 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
 
       if (manualVal !== '' && (indices.length === 0 || manualOverrideActive[field])) {
         const parsedManual = parseNumericValue(manualVal);
-        if (parsedManual > 0 || manualVal === '0') {
+        if (/\d/.test(manualVal) && parsedManual >= 0) {
           return parsedManual;
         }
       }
@@ -712,14 +712,14 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
           const raw = (recordVector[idx] || '').trim();
           if (raw !== '') {
             const parsed = parseNumericValue(raw);
-            if (parsed > 0 || raw === '0') return parsed;
+            if (/\d/.test(raw) && parsed >= 0) return parsed;
           }
         }
       }
 
       if (manualVal !== '') {
         const parsedManual = parseNumericValue(manualVal);
-        if (parsedManual > 0 || manualVal === '0') {
+        if (/\d/.test(manualVal) && parsedManual >= 0) {
           return parsedManual;
         }
       }
@@ -777,21 +777,21 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
       const mappedTotalPieces = resolveNumericField(vec.values, 'totalPieces');
 
       const intakeUnitType: 'package' | 'piece' = hasPackage ? 'package' : 'piece';
-      let intakeQuantity = 1;
-      let totalPieces = 1;
+      let intakeQuantity = 0;
+      let totalPieces = 0;
 
-      if (mappedIntakeQty !== null && mappedIntakeQty > 0) {
+      if (mappedIntakeQty !== null && mappedIntakeQty >= 0) {
         intakeQuantity = mappedIntakeQty;
         totalPieces =
-          mappedTotalPieces !== null && mappedTotalPieces > 0
+          mappedTotalPieces !== null && mappedTotalPieces >= 0
             ? mappedTotalPieces
             : hasPackage
             ? intakeQuantity * piecesPerPackage
             : intakeQuantity;
-      } else if (mappedTotalPieces !== null && mappedTotalPieces > 0) {
+      } else if (mappedTotalPieces !== null && mappedTotalPieces >= 0) {
         totalPieces = mappedTotalPieces;
         intakeQuantity = hasPackage
-          ? Math.max(1, Math.round((totalPieces / piecesPerPackage) * 100) / 100)
+          ? Math.round((totalPieces / piecesPerPackage) * 100) / 100
           : totalPieces;
       }
 
@@ -815,7 +815,7 @@ export const ExcelWarehouseImporter: React.FC<Props> = ({
 
       // Check if row in Excel actually has any content (to avoid importing blank rows if name was manually filled)
       const rowHasAnyExcelData = vec.values.some((v) => v.trim() !== '');
-      const isValid = rowHasAnyExcelData && rawName.length > 0 && totalPieces > 0;
+      const isValid = rowHasAnyExcelData && rawName.length > 0 && totalPieces >= 0;
 
       const payload: ImportedWarehouseProductPayload = {
         brand: rawBrand,

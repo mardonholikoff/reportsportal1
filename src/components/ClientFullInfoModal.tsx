@@ -930,9 +930,20 @@ export const ClientFullInfoModal: React.FC<ClientFullInfoModalProps> = ({
                 <span>Mijoz haqida to&apos;liq ma&apos;lumot</span>
               </h3>
               {client.businessType && (
-                <span className="px-2.5 py-1 rounded-lg bg-rose-700 text-white text-xs font-bold shadow-2xs">
-                  {client.businessType}
-                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {client.businessType
+                    .split(',')
+                    .map((t) => t.trim())
+                    .filter(Boolean)
+                    .map((t) => (
+                      <span
+                        key={t}
+                        className="px-2.5 py-1 rounded-lg bg-rose-700 text-white text-xs font-bold shadow-2xs"
+                      >
+                        {t}
+                      </span>
+                    ))}
+                </div>
               )}
             </div>
 
@@ -969,7 +980,22 @@ export const ClientFullInfoModal: React.FC<ClientFullInfoModalProps> = ({
                   Do&apos;kon / Servis / Moy almashtirish turi
                 </div>
                 <div className="text-sm font-bold text-neutral-900 mt-0.5">
-                  {client.businessType || (
+                  {client.businessType ? (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {client.businessType
+                        .split(',')
+                        .map((t) => t.trim())
+                        .filter(Boolean)
+                        .map((t) => (
+                          <span
+                            key={t}
+                            className="inline-block px-2 py-0.5 rounded-md bg-rose-50 text-rose-800 border border-rose-200 text-xs font-bold"
+                          >
+                            {t}
+                          </span>
+                        ))}
+                    </div>
+                  ) : (
                     <span className="text-neutral-400 font-normal">
                       Tanlanmagan
                     </span>

@@ -74,7 +74,19 @@ export const ClientFormModal: React.FC<Props> = ({
   const [clientCode, setClientCode] = useState('');
   const [name, setName] = useState('');
   const [contactName, setContactName] = useState('');
-  const [businessType, setBusinessType] = useState<"Do'kon" | 'Servis' | 'Moy almashtirish' | ''>('');
+  const BUSINESS_TYPE_OPTIONS = ["Do'kon", 'Servis', 'Moy almashtirish'] as const;
+  type BusinessTypeOption = (typeof BUSINESS_TYPE_OPTIONS)[number];
+  const parseBusinessTypes = (raw?: string | null): BusinessTypeOption[] => {
+    if (!raw) return [];
+    const parts = raw
+      .split(/[,/+]+/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    return BUSINESS_TYPE_OPTIONS.filter((opt) =>
+      parts.some((p) => p === opt.toLowerCase() || raw.toLowerCase().includes(opt.toLowerCase()))
+    );
+  };
+  const [businessTypes, setBusinessTypes] = useState<BusinessTypeOption[]>([]);
   const [employeesCount, setEmployeesCount] = useState('');
   const [apprenticesInfo, setApprenticesInfo] = useState('');
   const [mainOils, setMainOils] = useState('');
@@ -148,7 +160,7 @@ export const ClientFormModal: React.FC<Props> = ({
       setClientCode(editingClient.clientCode || '');
       setName(editingClient.name);
       setContactName(editingClient.contactName || '');
-      setBusinessType(editingClient.businessType || '');
+      setBusinessTypes(parseBusinessTypes(editingClient.businessType));
       setEmployeesCount(editingClient.employeesCount || '');
       setApprenticesInfo(editingClient.apprenticesInfo || '');
       setMainOils(editingClient.mainOils || '');
@@ -211,7 +223,7 @@ export const ClientFormModal: React.FC<Props> = ({
       setClientCode('');
       setName('');
       setContactName('');
-      setBusinessType('');
+      setBusinessTypes([]);
       setEmployeesCount('');
       setApprenticesInfo('');
       setMainOils('');
@@ -651,7 +663,7 @@ export const ClientFormModal: React.FC<Props> = ({
       name: resolvedName,
       clientCode: clientCode.trim() || undefined,
       contactName: contactName.trim() || undefined,
-      businessType: businessType || undefined,
+      businessType: businessTypes.length > 0 ? businessTypes.join(', ') : undefined,
       employeesCount: employeesCount.trim() || undefined,
       apprenticesInfo: apprenticesInfo.trim() || undefined,
       mainOils: mainOils.trim() || undefined,
@@ -822,23 +834,32 @@ export const ClientFormModal: React.FC<Props> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-neutral-800 mb-1">
-                    Turi: Do&apos;kon / Servis / Moy almashtirish <span className="text-neutral-400 font-normal">(ixtiyoriy)</span>
+                    Turi: Do&apos;kon / Servis / Moy almashtirish{' '}
+                    <span className="text-neutral-400 font-normal">(bir nechta tanlash mumkin)</span>
                   </label>
                   <div className="grid grid-cols-3 gap-1.5">
-                    {(["Do'kon", 'Servis', 'Moy almashtirish'] as const).map((opt) => {
-                      const active = businessType === opt;
+                    {BUSINESS_TYPE_OPTIONS.map((opt) => {
+                      const active = businessTypes.includes(opt);
                       return (
                         <button
                           key={opt}
                           type="button"
-                          onClick={() => setBusinessType(active ? '' : opt)}
-                          className={`px-2 py-2 rounded-xl text-[11px] font-bold border transition cursor-pointer text-center leading-tight min-h-[42px] flex items-center justify-center ${
+                          onClick={() =>
+                            setBusinessTypes((prev) =>
+                              prev.includes(opt)
+                                ? prev.filter((item) => item !== opt)
+                                : [...prev, opt]
+                            )
+                          }
+                          aria-pressed={active}
+                          className={`px-2 py-2 rounded-xl text-[11px] font-bold border transition cursor-pointer text-center leading-tight min-h-[42px] flex items-center justify-center gap-1 ${
                             active
                               ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
                               : 'bg-white text-neutral-700 border-neutral-200 hover:bg-rose-50'
                           }`}
                         >
-                          {opt}
+                          {active && <span className="text-[10px]">✓</span>}
+                          <span>{opt}</span>
                         </button>
                       );
                     })}

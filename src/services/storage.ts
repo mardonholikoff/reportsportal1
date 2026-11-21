@@ -3152,15 +3152,16 @@ class StorageService {
     const ensureInitialMetadata = (p: WarehouseProduct): WarehouseProduct => {
       const calcIntakePieces =
         p.intakeUnitType === 'package' && p.packageUnitName && (p.piecesPerPackage || 1) > 1
-          ? (p.intakeQuantity || 0) * (p.piecesPerPackage || 1)
-          : p.intakeQuantity || p.totalPieces || 0;
-      const hasEdits = (p.initialEditCount || 0) > 0;
+          ? (p.intakeQuantity ?? 0) * (p.piecesPerPackage || 1)
+          : p.intakeQuantity !== undefined
+          ? p.intakeQuantity
+          : p.totalPieces ?? 0;
       const initPieces =
-        p.initialTotalPieces !== undefined && (p.initialTotalPieces > 0 || hasEdits)
+        p.initialTotalPieces !== undefined && p.initialTotalPieces >= 0
           ? p.initialTotalPieces
           : Math.max(calcIntakePieces, p.totalPieces || 0);
       const initVol =
-        p.initialTotalVolume !== undefined && (p.initialTotalVolume > 0 || hasEdits)
+        p.initialTotalVolume !== undefined && p.initialTotalVolume >= 0
           ? p.initialTotalVolume
           : initPieces * (p.volumePerPiece || 1);
       const initDate =
@@ -3169,7 +3170,7 @@ class StorageService {
         (p.createdAt ? p.createdAt.slice(0, 10) : new Date().toISOString().slice(0, 10));
       const initUnitType = p.initialIntakeUnitType || p.intakeUnitType || 'piece';
       const initQty =
-        p.initialIntakeQuantity !== undefined && (p.initialIntakeQuantity > 0 || hasEdits)
+        p.initialIntakeQuantity !== undefined && p.initialIntakeQuantity >= 0
           ? p.initialIntakeQuantity
           : initUnitType === 'package' && (p.piecesPerPackage || 1) > 1
           ? Math.round((initPieces / (p.piecesPerPackage || 1)) * 100) / 100
@@ -3372,12 +3373,13 @@ class StorageService {
       existing.intakeUnitType === 'package' &&
       existing.packageUnitName &&
       (existing.piecesPerPackage || 1) > 1
-        ? (existing.intakeQuantity || 0) * (existing.piecesPerPackage || 1)
-        : existing.intakeQuantity || existing.totalPieces || 0;
+        ? (existing.intakeQuantity ?? 0) * (existing.piecesPerPackage || 1)
+        : existing.intakeQuantity !== undefined
+        ? existing.intakeQuantity
+        : existing.totalPieces ?? 0;
 
     const oldInitialPieces =
-      existing.initialTotalPieces !== undefined &&
-      (existing.initialTotalPieces > 0 || (existing.initialEditCount || 0) > 0)
+      existing.initialTotalPieces !== undefined && existing.initialTotalPieces >= 0
         ? existing.initialTotalPieces
         : oldIntakePieces;
 
@@ -3491,29 +3493,41 @@ class StorageService {
 
     const oldIntakePieces =
       existing.intakeUnitType === 'package' && hasPkg
-        ? (existing.intakeQuantity || 0) * piecesPerPkg
-        : existing.intakeQuantity || existing.totalPieces || 0;
+        ? (existing.intakeQuantity ?? 0) * piecesPerPkg
+        : existing.intakeQuantity !== undefined
+        ? existing.intakeQuantity
+        : existing.totalPieces ?? 0;
 
     const oldInitialPieces =
       params.oldInitialPiecesOverride !== undefined && params.oldInitialPiecesOverride >= 0
         ? params.oldInitialPiecesOverride
-        : existing.initialTotalPieces !== undefined &&
-          (existing.initialTotalPieces > 0 || (existing.initialEditCount || 0) > 0)
+        : existing.initialTotalPieces !== undefined && existing.initialTotalPieces >= 0
         ? existing.initialTotalPieces
         : Math.max(oldIntakePieces, existing.totalPieces || 0);
 
     const deltaInitialPieces = Math.round((newInitialPieces - oldInitialPieces) * 100) / 100;
 
-    // Bugungi kungacha bo'lgan amallar (sotilgan - qaytarilgan) shu bosh qoldiqqa asosan bo'ladi:
-    // Hozirgi qoldiq = Yangi bosh qoldiq - (bugungi kungacha sof sotilganlar)
+    const existingRestockedPieces = Array.isArray(existing.stockHistory)
+      ? Math.round(
+          existing.stockHistory
+            .filter((h) => h && h.changeType === 'restock_intake')
+            .reduce((sum, h) => sum + Math.max(0, Number(h.deltaPieces) || 0), 0) * 100
+        ) / 100
+      : 0;
+
+    // Bugungi kungacha bo'lgan amallar (sotilgan - qaytarilgan) va yangi kirimlar shu bosh qoldiqqa asosan bo'ladi:
+    // Hozirgi qoldiq = Yangi bosh qoldiq + Yangi kelganlar - (bugungi kungacha sof sotilganlar)
     const netSoldUpToToday =
       params.netSoldPiecesUpToToday !== undefined
         ? params.netSoldPiecesUpToToday
-        : Math.max(0, Math.round((oldInitialPieces - (existing.totalPieces || 0)) * 100) / 100);
+        : Math.max(
+            0,
+            Math.round((oldInitialPieces + existingRestockedPieces - (existing.totalPieces || 0)) * 100) / 100
+          );
 
     const newCurrentPieces = Math.max(
       0,
-      Math.round((newInitialPieces - netSoldUpToToday) * 100) / 100
+      Math.round((newInitialPieces + existingRestockedPieces - netSoldUpToToday) * 100) / 100
     );
     const newCurrentVolume = Math.round(newCurrentPieces * volPerPiece * 100) / 100;
 
@@ -3547,7 +3561,7 @@ class StorageService {
       newInitialPieces: newInitialPieces,
       unit: unitLabel,
       quantityInUnit: cleanQty,
-      note: `Bazaga kiritilgandagi dastlabki soni (bosh qoldiq) o'zgartirildi: ${oldInitialPieces} donadan ${newInitialPieces} donaga (${deltaInitialPieces >= 0 ? '+' : ''}${deltaInitialPieces} dona). Bugungi kungacha amallar: -${netSoldUpToToday} dona -> Hozirgi qoldiq: ${existing.totalPieces} donadan ${newCurrentPieces} donaga o'zgardi.${params.note ? ` Izoh: ${params.note}` : ''}`,
+      note: `Bazaga kiritilgandagi dastlabki soni (bosh qoldiq) o'zgartirildi: ${oldInitialPieces} donadan ${newInitialPieces} donaga (${deltaInitialPieces >= 0 ? '+' : ''}${deltaInitialPieces} dona).${existingRestockedPieces > 0 ? ` Yangi kelganlar: +${existingRestockedPieces} dona.` : ''} Bugungi kungacha amallar: -${netSoldUpToToday} dona -> Hozirgi qoldiq: ${existing.totalPieces} donadan ${newCurrentPieces} donaga o'zgardi.${params.note ? ` Izoh: ${params.note}` : ''}`,
     };
 
     nextHistory.unshift(changeLog);
@@ -3570,8 +3584,125 @@ class StorageService {
       initialTotalVolume: newInitialVolume,
       totalPieces: newCurrentPieces,
       totalVolume: newCurrentVolume,
-      totalSum: newTotalSum > 0 ? newTotalSum : existing.totalSum,
+      totalSum: costPerPiece > 0 || newCurrentPieces === 0 ? newTotalSum : existing.totalSum,
       initialEditCount: (existing.initialEditCount || 0) + 1,
+      stockHistory: nextHistory,
+    };
+    (updatedProduct as any).updatedAt = nowIso;
+
+    products[index] = updatedProduct;
+    this.saveWarehouseProducts(products);
+    return updatedProduct;
+  }
+
+  public addWarehouseProductRestock(
+    id: string,
+    params: {
+      quantity: number;
+      unitType: 'package' | 'piece';
+      intakeDate?: string;
+      note?: string;
+      baseInitialPiecesOverride?: number;
+    },
+    author: string = 'adminc'
+  ): WarehouseProduct | null {
+    const products = [...this.getWarehouseProducts()];
+    const index = products.findIndex((p) => p.id === id);
+    if (index === -1) return null;
+
+    const existing = products[index];
+    const parsedNum = Number(params.quantity);
+    if (isNaN(parsedNum) || parsedNum < 0) return null;
+    const cleanQty = Math.round(parsedNum * 100) / 100;
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const localTodayYmd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')}`;
+    const effectiveDate =
+      params.intakeDate && /^\d{4}-\d{2}-\d{2}$/.test(params.intakeDate.trim())
+        ? params.intakeDate.trim()
+        : localTodayYmd;
+    const eventTimestamp =
+      effectiveDate === localTodayYmd ? nowIso : `${effectiveDate}T12:00:00.000Z`;
+
+    const hasPkg = Boolean(
+      existing.packageUnitName &&
+        existing.packageUnitName.trim() &&
+        (existing.piecesPerPackage || 1) > 1
+    );
+    const piecesPerPkg = hasPkg ? existing.piecesPerPackage || 1 : 1;
+    const unitType: 'package' | 'piece' = hasPkg ? params.unitType : 'piece';
+
+    const addedPieces =
+      unitType === 'package'
+        ? Math.round(cleanQty * piecesPerPkg * 100) / 100
+        : cleanQty;
+    if (addedPieces < 0) return null;
+
+    const volPerPiece = existing.volumePerPiece || 1;
+    const prevCurrentPieces = Math.max(0, Math.round((Number(existing.totalPieces) || 0) * 100) / 100);
+    const newCurrentPieces = Math.round((prevCurrentPieces + addedPieces) * 100) / 100;
+    const newCurrentVolume = Math.round(newCurrentPieces * volPerPiece * 100) / 100;
+
+    // Preserve initialTotalPieces before adding restock so historical initial stock never inflates
+    const existingInitialPieces =
+      params.baseInitialPiecesOverride !== undefined && params.baseInitialPiecesOverride >= 0
+        ? params.baseInitialPiecesOverride
+        : existing.initialTotalPieces !== undefined && existing.initialTotalPieces >= 0
+        ? existing.initialTotalPieces
+        : existing.intakeUnitType === 'package' && hasPkg
+        ? Math.max(prevCurrentPieces, (existing.intakeQuantity || 0) * piecesPerPkg)
+        : Math.max(prevCurrentPieces, existing.intakeQuantity || 0);
+
+    const costPerPiece =
+      (existing.price || 0) > 0
+        ? existing.pricingUnitType === 'package' && hasPkg
+          ? (existing.price || 0) / piecesPerPkg
+          : existing.price || 0
+        : 0;
+    const newTotalSum =
+      costPerPiece > 0
+        ? Math.round(newCurrentPieces * costPerPiece * 100) / 100
+        : existing.totalSum || 0;
+
+    const unitLabel =
+      unitType === 'package' && existing.packageUnitName
+        ? existing.packageUnitName
+        : existing.pieceUnitName || 'dona';
+
+    const nextHistory: WarehouseStockChangeLog[] = Array.isArray(existing.stockHistory)
+      ? [...existing.stockHistory]
+      : [];
+
+    const restockLog: WarehouseStockChangeLog = {
+      id: `whlog_restock_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: eventTimestamp,
+      dateStr: effectiveDate,
+      author: author || 'adminc',
+      changeType: 'restock_intake',
+      previousPieces: prevCurrentPieces,
+      newPieces: newCurrentPieces,
+      deltaPieces: addedPieces,
+      unit: unitLabel,
+      quantityInUnit: cleanQty,
+      note: `Omborga yangi keldi (kirim): +${cleanQty} ${unitLabel}${
+        unitType === 'package' ? ` (+${addedPieces} ${existing.pieceUnitName || 'dona'})` : ''
+      }. Qoldiq: ${prevCurrentPieces} → ${newCurrentPieces} dona.${
+        params.note && params.note.trim() ? ` Izoh: ${params.note.trim()}` : ''
+      }`,
+    };
+
+    nextHistory.unshift(restockLog);
+
+    const updatedProduct: WarehouseProduct = {
+      ...existing,
+      initialTotalPieces: existingInitialPieces,
+      initialTotalVolume: Math.round(existingInitialPieces * volPerPiece * 100) / 100,
+      totalPieces: newCurrentPieces,
+      totalVolume: newCurrentVolume,
+      totalSum: newTotalSum,
       stockHistory: nextHistory,
     };
     (updatedProduct as any).updatedAt = nowIso;

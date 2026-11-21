@@ -16,6 +16,7 @@ export interface ProductChronologyTimelineItem {
   eventType:
     | 'initial_intake'
     | 'initial_edit'
+    | 'restock_intake'
     | 'manual_adjustment'
     | 'sale'
     | 'return';
@@ -49,6 +50,7 @@ export interface ProductDateStockSnapshot {
   soldOnDatePieces: number;
   soldUpToDatePieces: number;
   returnedUpToDatePieces: number;
+  restockedUpToDatePieces: number;
   initialEditCount: number;
 }
 
@@ -65,6 +67,7 @@ export interface WarehouseProductChronologyResult {
     primary: string;
     secondary: string;
   };
+  totalRestockedPieces: number;
   totalSoldPieces: number;
   totalReturnedPieces: number;
   initialEditCount: number;
@@ -607,6 +610,14 @@ export function buildWarehouseProductChronology(
     .filter((h) => h && h.changeType === 'initial_edit')
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
+  const restockLogsOnly = rawHistory
+    .filter((h) => h && h.changeType === 'restock_intake' && (Number(h.deltaPieces) || 0) > 0)
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  const totalRestockedPieces = Math.round(
+    restockLogsOnly.reduce((sum, h) => sum + Math.max(0, Number(h.deltaPieces) || 0), 0) * 100
+  ) / 100;
+
   const editLogsOnly = rawHistory
     .filter((h) => h && (h.changeType === 'initial_edit' || h.changeType === 'manual_adjustment'))
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -622,11 +633,13 @@ export function buildWarehouseProductChronology(
   const hasExplicitInitialEdit =
     (product.initialEditCount || 0) > 0 || initialEditLogsOnly.length > 0;
 
-  // Conservation formula: Initial - Sold + Returned = Current
-  // => Reconstructed Initial = Current + Sold - Returned
+  // Conservation formula: Initial + Restocked - Sold + Returned = Current
+  // => Reconstructed Initial = Current - Restocked + Sold - Returned
   const reconstructedInitialFromConservation = Math.max(
     0,
-    Math.round((rawCurrentPieces + totalSoldPieces - totalReturnedPieces) * 100) / 100
+    Math.round(
+      (rawCurrentPieces - totalRestockedPieces + totalSoldPieces - totalReturnedPieces) * 100
+    ) / 100
   );
 
   const initialPieces =
@@ -634,15 +647,24 @@ export function buildWarehouseProductChronology(
     product.initialTotalPieces !== undefined &&
     product.initialTotalPieces >= 0
       ? product.initialTotalPieces
+      : restockLogsOnly.length > 0 &&
+        product.initialTotalPieces !== undefined &&
+        product.initialTotalPieces >= 0
+      ? product.initialTotalPieces
       : Math.max(
           product.initialTotalPieces || 0,
           configuredIntakePieces,
           reconstructedInitialFromConservation
         );
 
-  // Hozirgi qoldiq bosh qoldiqqa va bugungi kungacha bo'lgan amallarga (sotuv va qaytarishlarga) asoslanadi
+  // Hozirgi qoldiq bosh qoldiq + yangi kelganlar - sotuv + qaytarishlarga asoslanadi
   const currentPieces = hasExplicitInitialEdit
-    ? Math.max(0, Math.round((initialPieces - totalSoldPieces + totalReturnedPieces) * 100) / 100)
+    ? Math.max(
+        0,
+        Math.round(
+          (initialPieces + totalRestockedPieces - totalSoldPieces + totalReturnedPieces) * 100
+        ) / 100
+      )
     : rawCurrentPieces;
 
   const initialVolume = Math.round(initialPieces * (product.volumePerPiece || 1) * 100) / 100;
@@ -659,9 +681,9 @@ export function buildWarehouseProductChronology(
   const firstOriginalInitialPieces =
     initialEditLogsOnly.length > 0 &&
     initialEditLogsOnly[0].previousInitialPieces !== undefined &&
-    initialEditLogsOnly[0].previousInitialPieces > 0
+    initialEditLogsOnly[0].previousInitialPieces >= 0
       ? initialEditLogsOnly[0].previousInitialPieces
-      : existingInitLog && existingInitLog.newPieces > 0 && initialEditLogsOnly.length > 0
+      : existingInitLog && existingInitLog.newPieces >= 0 && initialEditLogsOnly.length > 0
       ? existingInitLog.newPieces
       : initialPieces;
 
@@ -712,7 +734,12 @@ export function buildWarehouseProductChronology(
   const allInitialAndEditLogs: WarehouseStockChangeLog[] = [
     initialIntakeLog,
     ...normalizedEditLogs,
-  ];
+    ...restockLogsOnly,
+  ].sort((a, b) => {
+    if (a.changeType === 'initial_intake') return -1;
+    if (b.changeType === 'initial_intake') return 1;
+    return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+  });
 
   // Build unified step-by-step timeline in chronological order (oldest -> newest) then reverse for display
   // Barcha sotuv va qaytarish amallari yangilangan bosh qoldiqdan (initialPieces) boshlab hisoblanadi
@@ -773,6 +800,27 @@ export function buildWarehouseProductChronology(
         });
       }
     });
+
+  restockLogsOnly.forEach((rl) => {
+    const added = Math.max(0, Number(rl.deltaPieces) || 0);
+    if (added <= 0) return;
+    const unitDisplay =
+      rl.quantityInUnit && rl.unit
+        ? `${rl.quantityInUnit} ${rl.unit}`
+        : formatPiecesForWarehouseProduct(product, added).primary;
+    rawTimeline.push({
+      id: rl.id,
+      timestamp: rl.timestamp,
+      dateStr: rl.dateStr || (rl.timestamp ? rl.timestamp.slice(0, 10) : nowYmd),
+      eventType: 'restock_intake',
+      title: 'Omborga yangi keldi (Kirim)',
+      subtitle: `+${unitDisplay} (${formatPiecesForWarehouseProduct(product, added).primary})`,
+      author: rl.author || 'adminc',
+      quantityDisplay: `+${added} dona (${unitDisplay})`,
+      deltaPieces: added,
+      note: rl.note,
+    });
+  });
 
   rawTimeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
@@ -847,6 +895,7 @@ export function buildWarehouseProductChronology(
     let soldOnDate = 0;
     let soldUpToDate = 0;
     let returnedUpToDate = 0;
+    let restockedUpToDate = 0;
 
     flowEvents.forEach((fe) => {
       if (fe.type === 'sale') {
@@ -863,9 +912,16 @@ export function buildWarehouseProductChronology(
       }
     });
 
+    restockLogsOnly.forEach((rl) => {
+      const rDate = rl.dateStr || (rl.timestamp ? rl.timestamp.slice(0, 10) : '');
+      if (!rDate || rDate <= cleanDate) {
+        restockedUpToDate += Math.max(0, Number(rl.deltaPieces) || 0);
+      }
+    });
+
     const piecesAtDate = Math.max(
       0,
-      Math.round((initialPieces - soldUpToDate + returnedUpToDate) * 100) / 100
+      Math.round((initialPieces + restockedUpToDate - soldUpToDate + returnedUpToDate) * 100) / 100
     );
     const formattedAtDate = formatPiecesForWarehouseProduct(product, piecesAtDate);
 
@@ -882,6 +938,7 @@ export function buildWarehouseProductChronology(
       soldOnDatePieces: Math.round(soldOnDate * 100) / 100,
       soldUpToDatePieces: Math.round(soldUpToDate * 100) / 100,
       returnedUpToDatePieces: Math.round(returnedUpToDate * 100) / 100,
+      restockedUpToDatePieces: Math.round(restockedUpToDate * 100) / 100,
       initialEditCount: editLogsOnly.length,
     };
   };
@@ -899,6 +956,7 @@ export function buildWarehouseProductChronology(
       primary: currentFormatted.primary,
       secondary: currentFormatted.secondary,
     },
+    totalRestockedPieces,
     totalSoldPieces: Math.round(totalSoldPieces * 100) / 100,
     totalReturnedPieces: Math.round(totalReturnedPieces * 100) / 100,
     initialEditCount: editLogsOnly.length,

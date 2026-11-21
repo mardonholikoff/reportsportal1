@@ -119,7 +119,12 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
         ? editingProduct.initialIntakeUnitType || editingProduct.intakeUnitType || 'package'
         : 'piece';
       setIntakeUnitType(initUnit);
-      const initQty = editingProduct.initialIntakeQuantity || editingProduct.intakeQuantity || 1;
+      const initQty =
+        editingProduct.initialIntakeQuantity !== undefined
+          ? editingProduct.initialIntakeQuantity
+          : editingProduct.intakeQuantity !== undefined
+          ? editingProduct.intakeQuantity
+          : editingProduct.totalPieces ?? 0;
       setIntakeQuantity(String(initQty));
       setCustomRemainingPieces(String(editingProduct.totalPieces ?? 0));
       setIsRemainingManuallyEdited(true);
@@ -241,18 +246,22 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
     : 'piece';
 
   // Real-time Calculations for Block 4 & Block 5
-  const parsedIntakeQty = parseFloat(intakeQuantity) || 0;
+  const hasValidIntakeQty =
+    intakeQuantity.trim() !== '' &&
+    !isNaN(parseFloat(intakeQuantity)) &&
+    parseFloat(intakeQuantity) >= 0;
+  const parsedIntakeQty = hasValidIntakeQty ? Math.max(0, parseFloat(intakeQuantity)) : 0;
   const parsedPrice = skipPricing ? 0 : Math.max(0, parseFloat(price) || 0);
   const parsedPiecesPerPkg = hasPackageUnit ? Math.max(1, parseInt(piecesPerPackage, 10) || 1) : 1;
   const parsedVolumePerPiece = parseFloat(volumePerPiece) || 0;
   const parsedMinSellingPrice = Math.max(0, parseFloat(minSellingPrice) || 0);
 
-  // 5-blok 4-blok ochilganda va kirim soni kiritilganda ochiladi
-  const isBlock5Unlocked = isBlock4Unlocked && parsedIntakeQty > 0;
+  // 5-blok 4-blok ochilganda va kirim soni (0 yoki undan katta) kiritilganda ochiladi
+  const isBlock5Unlocked = isBlock4Unlocked && hasValidIntakeQty;
   const isBlock5Valid = useMemo(() => {
     if (!isBlock5Unlocked) return false;
     const val = parseFloat(minSellingPrice);
-    return minSellingPrice.trim() !== '' && !isNaN(val) && val > 0;
+    return minSellingPrice.trim() !== '' && !isNaN(val) && val >= 0;
   }, [isBlock5Unlocked, minSellingPrice]);
 
   // Sotib olish va Sotish narxi bo'yicha birlik tannarxi hamda foyda marjasi hisobi
@@ -383,12 +392,12 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
       setFormError("3-blokda narx summasini to'g'ri kiriting yoki 3-blokni o'tkazib yuboring!");
       return;
     }
-    if (parsedIntakeQty <= 0) {
-      setFormError('4-blokda qabul qilinayotgan mahsulot sonini musbat kiriting!');
+    if (!hasValidIntakeQty) {
+      setFormError('4-blokda qabul qilinayotgan mahsulot sonini 0 yoki undan katta son qilib kiriting!');
       return;
     }
     if (!isBlock5Valid) {
-      setFormError('5-blokda eng kam sotilish narxini (USD) musbat kiriting!');
+      setFormError('5-blokda eng kam sotilish narxini (USD) to‘g‘ri kiriting!');
       return;
     }
 
@@ -1223,14 +1232,14 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                 <input
                   type="number"
                   disabled={!isBlock4Unlocked}
-                  min="1"
+                  min="0"
                   step="any"
                   value={intakeQuantity}
                   onChange={(e) => {
                     const nextVal = e.target.value;
                     setIntakeQuantity(nextVal);
                     setIsRemainingManuallyEdited(false);
-                    const qtyNum = parseFloat(nextVal) || 0;
+                    const qtyNum = Math.max(0, parseFloat(nextVal) || 0);
                     const nextPieces =
                       effectiveIntakeUnitType === 'package'
                         ? qtyNum * parsedPiecesPerPkg
@@ -1240,7 +1249,7 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                       : nextPieces;
                     setCustomRemainingPieces(String(remainingPieces));
                   }}
-                  placeholder="Masalan: 10"
+                  placeholder="Masalan: 0 yoki 10"
                   className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-neutral-900 text-xs sm:text-sm focus:outline-emerald-600 bg-white font-semibold"
                 />
               </div>
@@ -1436,7 +1445,7 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
                 <input
                   type="number"
                   disabled={!isBlock5Unlocked}
-                  min="0.01"
+                  min="0"
                   step="any"
                   required
                   value={minSellingPrice}
@@ -1583,7 +1592,7 @@ export const WarehouseIntakeModal: React.FC<Props> = ({
 
               <button
                 type="submit"
-                disabled={!isBlock4Unlocked || parsedIntakeQty <= 0 || !isBlock5Valid}
+                disabled={!isBlock4Unlocked || !hasValidIntakeQty || !isBlock5Valid}
                 className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-xs transition-all min-h-[42px] cursor-pointer"
               >
                 {editingProduct ? (

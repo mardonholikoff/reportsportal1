@@ -24,6 +24,7 @@ import {
   Save,
   Plus,
   Minus,
+  PackagePlus,
 } from 'lucide-react';
 import { WarehouseProduct, DailyPlanItem, Client, ProductItem } from '../types';
 import { storageService, getPlanDateKey, getClosedDateKey } from '../services/storage';
@@ -190,6 +191,102 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     setSaveSuccessMsg(null);
   }, [isOpen, activeProduct?.id, chronology?.initialPieces, hasPackageForInit, piecesPerPkgForInit]);
 
+  // Yangi keldi (omborga qo'shimcha kirim) holatlari (Faqat adminlar)
+  const [isRestockPanelOpen, setIsRestockPanelOpen] = useState(false);
+  const [restockUnitType, setRestockUnitType] = useState<'package' | 'piece'>('piece');
+  const [restockQtyStr, setRestockQtyStr] = useState<string>('');
+  const [restockDate, setRestockDate] = useState<string>(() => formatYMD(new Date()));
+  const [restockNote, setRestockNote] = useState<string>('');
+  const [restockSuccessMsg, setRestockSuccessMsg] = useState<string | null>(null);
+  const [restockErrorMsg, setRestockErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !activeProduct) return;
+    setIsRestockPanelOpen(false);
+    setRestockUnitType(
+      hasPackageForInit && activeProduct.intakeUnitType === 'package' ? 'package' : 'piece'
+    );
+    setRestockQtyStr('');
+    setRestockDate(todayYmd);
+    setRestockNote('');
+    setRestockSuccessMsg(null);
+    setRestockErrorMsg(null);
+  }, [isOpen, activeProduct?.id, hasPackageForInit, todayYmd]);
+
+  const hasValidRestockQty =
+    restockQtyStr.trim() !== '' &&
+    !isNaN(parseFloat(restockQtyStr)) &&
+    parseFloat(restockQtyStr) >= 0;
+  const parsedRestockQty = hasValidRestockQty ? Math.max(0, parseFloat(restockQtyStr)) : 0;
+  const previewRestockAddedPieces = useMemo(() => {
+    if (!activeProduct || !hasValidRestockQty) return 0;
+    if (restockUnitType === 'package' && hasPackageForInit) {
+      return Math.round(parsedRestockQty * piecesPerPkgForInit * 100) / 100;
+    }
+    return Math.round(parsedRestockQty * 100) / 100;
+  }, [activeProduct, restockUnitType, hasPackageForInit, parsedRestockQty, hasValidRestockQty, piecesPerPkgForInit]);
+
+  const previewAfterRestockPieces = useMemo(() => {
+    const baseCurrent = chronology ? chronology.currentPieces : activeProduct?.totalPieces || 0;
+    return Math.round((baseCurrent + previewRestockAddedPieces) * 100) / 100;
+  }, [chronology, activeProduct, previewRestockAddedPieces]);
+
+  const previewAfterRestockFormatted = useMemo(() => {
+    if (!activeProduct) return { primary: '0 dona', secondary: '', pieces: 0, volume: 0 };
+    return formatPiecesForWarehouseProduct(activeProduct, previewAfterRestockPieces);
+  }, [activeProduct, previewAfterRestockPieces]);
+
+  const handleSaveRestock = () => {
+    if (!isAdmin || !activeProduct || !chronology) return;
+    if (!hasValidRestockQty) {
+      setRestockErrorMsg("Kirim miqdorini 0 yoki undan katta son qilib kiriting.");
+      return;
+    }
+    setRestockErrorMsg(null);
+    const editorUsername = user?.username || 'adminc';
+    const updated = storageService.addWarehouseProductRestock(
+      activeProduct.id,
+      {
+        quantity: parsedRestockQty,
+        unitType: hasPackageForInit ? restockUnitType : 'piece',
+        intakeDate: restockDate || todayYmd,
+        note: restockNote.trim() || undefined,
+        baseInitialPiecesOverride: chronology.initialPieces,
+      },
+      editorUsername
+    );
+    if (!updated) {
+      setRestockErrorMsg("Omborga kirim qo'shishda xatolik yuz berdi.");
+      return;
+    }
+
+    syncWarehouseProductToFirestore(updated);
+    const unitLabel =
+      hasPackageForInit && restockUnitType === 'package' && activeProduct.packageUnitName
+        ? activeProduct.packageUnitName
+        : activeProduct.pieceUnitName || 'dona';
+    addSystemLog({
+      userId: editorUsername,
+      userRole: 'admin',
+      actionType: 'ombor_kirimi',
+      actionTitle: `Omborga yangi keldi (kirim): ${updated.brand} - ${updated.name}`,
+      details: `+${parsedRestockQty} ${unitLabel} (+${previewRestockAddedPieces} dona) omborga qo'shildi. Sana: ${restockDate || todayYmd}. Yangi joriy qoldiq: ${updated.totalPieces} dona (${updated.totalVolume} ${updated.baseUnit}).${restockNote.trim() ? ` Izoh: ${restockNote.trim()}` : ''}`,
+      metadata: {
+        productId: updated.id,
+        addedPieces: previewRestockAddedPieces,
+        intakeDate: restockDate || todayYmd,
+      },
+    });
+
+    const formattedAfter = formatPiecesForWarehouseProduct(updated, updated.totalPieces);
+    setStorageTick((t) => t + 1);
+    setRestockQtyStr('');
+    setRestockNote('');
+    setRestockSuccessMsg(
+      `+${parsedRestockQty} ${unitLabel} (+${previewRestockAddedPieces} dona) omborga muvaffaqiyatli qo'shildi! Yangi joriy qoldiq: ${formattedAfter.primary} (${updated.totalPieces} dona).`
+    );
+  };
+
   const parsedNewInitQty = Math.max(0, parseFloat(editInitQtyStr) || 0);
   const previewNewInitialPieces = useMemo(() => {
     if (!activeProduct) return 0;
@@ -204,9 +301,14 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     return Math.round((chronology.totalSoldPieces - chronology.totalReturnedPieces) * 100) / 100;
   }, [chronology]);
 
+  const totalRestockedPieces = chronology?.totalRestockedPieces || 0;
+
   const previewNewCurrentPieces = useMemo(() => {
-    return Math.max(0, Math.round((previewNewInitialPieces - netSoldUpToTodayPieces) * 100) / 100);
-  }, [previewNewInitialPieces, netSoldUpToTodayPieces]);
+    return Math.max(
+      0,
+      Math.round((previewNewInitialPieces + totalRestockedPieces - netSoldUpToTodayPieces) * 100) / 100
+    );
+  }, [previewNewInitialPieces, totalRestockedPieces, netSoldUpToTodayPieces]);
 
   const previewNewInitialFormatted = useMemo(() => {
     if (!activeProduct) return { primary: '0 dona', secondary: '', pieces: 0, volume: 0 };
@@ -241,7 +343,7 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
       userRole: 'admin',
       actionType: 'ombor_kirimi',
       actionTitle: `Ombor mahsuloti bosh qoldig'i tahrirlandi: ${updated.brand} - ${updated.name}`,
-      details: `Bazaga kiritilgandagi soni (bosh qoldiq): ${oldInitPieces} donadan ${updated.initialTotalPieces} donaga o'zgartirildi. Bugungi kungacha amallar: -${netSoldUpToTodayPieces} dona. Yangi hozirgi qoldiq: ${updated.totalPieces} dona (${updated.totalVolume} ${updated.baseUnit}).`,
+      details: `Bazaga kiritilgandagi soni (bosh qoldiq): ${oldInitPieces} donadan ${updated.initialTotalPieces} donaga o'zgartirildi.${totalRestockedPieces > 0 ? ` Yangi kelganlar: +${totalRestockedPieces} dona.` : ''} Bugungi kungacha amallar: -${netSoldUpToTodayPieces} dona. Yangi hozirgi qoldiq: ${updated.totalPieces} dona (${updated.totalVolume} ${updated.baseUnit}).`,
       metadata: {
         productId: updated.id,
       },
@@ -908,13 +1010,32 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            type="button"
-            className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRestockPanelOpen((prev) => !prev);
+                  setRestockErrorMsg(null);
+                }}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer ${
+                  isRestockPanelOpen
+                    ? 'bg-emerald-500 text-white ring-2 ring-emerald-300/60'
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                }`}
+              >
+                <PackagePlus className="w-4 h-4 shrink-0" />
+                <span>Yangi keldi</span>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              type="button"
+              className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Scrollable Modal Body (No sticky giant top panels blocking chronology) */}
@@ -922,6 +1043,204 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
           {/* Dastlabki qoldiq, Tanlangan sanadagi qoldiq va Joriy holat panellari */}
           {chronology && activeProduct && (
             <div className="p-3.5 sm:p-4 bg-gradient-to-r from-slate-50 via-neutral-50 to-rose-50/40 border-b border-neutral-200 space-y-2.5">
+              {/* YANGI KELDI (OMBORGA KIRIM) PANELI — FAQAT ADMINLAR UCHUN */}
+              {isAdmin && (isRestockPanelOpen || restockSuccessMsg) && (
+                <div className="p-3 sm:p-3.5 rounded-2xl bg-emerald-50/90 border border-emerald-300 shadow-2xs space-y-2.5 animate-in fade-in duration-150">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-700 text-white text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                        <PackagePlus className="w-3 h-3" />
+                        <span>Yangi keldi</span>
+                      </span>
+                      <span className="text-xs font-bold text-emerald-950">
+                        Omborga yangi partiya kirim qilish
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRestockPanelOpen(false);
+                        setRestockSuccessMsg(null);
+                        setRestockErrorMsg(null);
+                      }}
+                      className="text-xs font-bold text-emerald-800 hover:text-emerald-950 px-2 py-0.5 rounded-lg hover:bg-emerald-100 cursor-pointer"
+                    >
+                      Yopish ✕
+                    </button>
+                  </div>
+
+                  {restockSuccessMsg && (
+                    <div className="p-2 rounded-xl bg-emerald-100 border border-emerald-400 text-emerald-950 text-xs font-bold flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                        <span>{restockSuccessMsg}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setRestockSuccessMsg(null)}
+                        className="text-emerald-800 hover:text-emerald-950 px-1.5 py-0.5 text-xs font-bold cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+
+                  {restockErrorMsg && (
+                    <div className="p-2 rounded-xl bg-rose-50 border border-rose-300 text-rose-800 text-xs font-bold">
+                      {restockErrorMsg}
+                    </div>
+                  )}
+
+                  {isRestockPanelOpen && (
+                    <div className="space-y-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2 items-end">
+                        {/* 1. Birlik tanlash */}
+                        {hasPackageForInit && (
+                          <div className="lg:col-span-3">
+                            <label className="block text-[10.5px] font-bold text-emerald-900 mb-1">
+                              Kirim birligi
+                            </label>
+                            <div className="grid grid-cols-2 gap-1 p-0.5 rounded-xl bg-white border border-emerald-200">
+                              <button
+                                type="button"
+                                onClick={() => setRestockUnitType('package')}
+                                className={`py-1.5 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                                  restockUnitType === 'package'
+                                    ? 'bg-emerald-700 text-white shadow-2xs'
+                                    : 'text-emerald-900 hover:bg-emerald-50'
+                                }`}
+                              >
+                                {activeProduct.packageUnitName} (1={piecesPerPkgForInit})
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRestockUnitType('piece')}
+                                className={`py-1.5 px-2 rounded-lg text-[10.5px] font-bold transition cursor-pointer ${
+                                  restockUnitType === 'piece'
+                                    ? 'bg-emerald-700 text-white shadow-2xs'
+                                    : 'text-emerald-900 hover:bg-emerald-50'
+                                }`}
+                              >
+                                {activeProduct.pieceUnitName || 'dona'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 2. Kelgan miqdor */}
+                        <div className={hasPackageForInit ? 'lg:col-span-3' : 'lg:col-span-4'}>
+                          <label className="block text-[10.5px] font-bold text-emerald-900 mb-1">
+                            Kelgan miqdor ({hasPackageForInit && restockUnitType === 'package' ? activeProduct.packageUnitName : activeProduct.pieceUnitName || 'dona'})
+                          </label>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = Math.max(0, (parseFloat(restockQtyStr) || 0) - 1);
+                                setRestockQtyStr(String(next));
+                                setRestockErrorMsg(null);
+                              }}
+                              className="w-9 h-9 rounded-xl bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              placeholder="0"
+                              value={restockQtyStr}
+                              onChange={(e) => {
+                                setRestockQtyStr(e.target.value);
+                                setRestockErrorMsg(null);
+                                setRestockSuccessMsg(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleSaveRestock();
+                                }
+                              }}
+                              className="w-full h-9 px-2.5 rounded-xl border border-emerald-400 bg-white font-mono font-extrabold text-sm text-emerald-950 text-center focus:outline-none focus:border-emerald-700"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = (parseFloat(restockQtyStr) || 0) + 1;
+                                setRestockQtyStr(String(next));
+                                setRestockErrorMsg(null);
+                              }}
+                              className="w-9 h-9 rounded-xl bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 font-bold flex items-center justify-center transition cursor-pointer shrink-0"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 3. Kirim sanasi */}
+                        <div className="lg:col-span-2">
+                          <label className="block text-[10.5px] font-bold text-emerald-900 mb-1">
+                            Kirim sanasi
+                          </label>
+                          <input
+                            type="date"
+                            value={restockDate}
+                            onChange={(e) => setRestockDate(e.target.value || todayYmd)}
+                            className="w-full h-9 px-2 rounded-xl border border-emerald-300 bg-white font-mono font-bold text-xs text-emerald-950 focus:outline-none focus:border-emerald-700"
+                          />
+                        </div>
+
+                        {/* 4. Izoh */}
+                        <div className={hasPackageForInit ? 'lg:col-span-2' : 'lg:col-span-3'}>
+                          <label className="block text-[10.5px] font-bold text-emerald-900 mb-1">
+                            Izoh (ixtiyoriy)
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Partiya / yetkazuvchi..."
+                            value={restockNote}
+                            onChange={(e) => setRestockNote(e.target.value)}
+                            className="w-full h-9 px-2.5 rounded-xl border border-emerald-300 bg-white text-xs text-neutral-900 placeholder:text-neutral-400 focus:outline-none focus:border-emerald-700"
+                          />
+                        </div>
+
+                        {/* 5. Tasdiqlash tugmasi */}
+                        <div className={hasPackageForInit ? 'lg:col-span-2' : 'lg:col-span-3'}>
+                          <button
+                            type="button"
+                            onClick={handleSaveRestock}
+                            className="w-full h-9 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                          >
+                            <PackagePlus className="w-3.5 h-3.5 shrink-0" />
+                            <span>Omborga qo&apos;shish</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Jonli natija ko'rinishi */}
+                      <div className="px-3 py-2 rounded-xl bg-white border border-emerald-200 text-[11px] flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap font-mono">
+                          <span className="text-neutral-600">
+                            Hozirgi:{' '}
+                            <strong className="text-neutral-900">
+                              {chronology.currentPieces} dona
+                            </strong>
+                          </span>
+                          <span className="text-emerald-700 font-bold">+</span>
+                          <span className="text-emerald-800 font-bold">
+                            Yangi keldi: +{previewRestockAddedPieces} dona
+                          </span>
+                          <ArrowRight className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span className="text-emerald-950 font-extrabold">
+                            Yangi qoldiq: {previewAfterRestockFormatted.primary} ({previewAfterRestockPieces} dona)
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* BAZAGA KIRITILGANDAGI SONI (BOSH QOLDIQ) VA UNI O'ZGARTIRISH PANELI — IXCHAM KO'RINISHDA */}
               <div className="p-2.5 sm:p-3 rounded-2xl bg-indigo-50/90 border border-indigo-300 shadow-2xs space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -942,6 +1261,14 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                     <span className="px-2 py-0.5 rounded-lg bg-white border border-indigo-200 text-indigo-950">
                       Bosh: {chronology.initialPieces}
                     </span>
+                    {totalRestockedPieces > 0 && (
+                      <>
+                        <span className="text-emerald-700">+</span>
+                        <span className="px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800">
+                          Yangi keldi: +{totalRestockedPieces}
+                        </span>
+                      </>
+                    )}
                     <span className="text-indigo-700">&minus;</span>
                     <span className="px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800">
                       Amallar: {netSoldUpToTodayPieces}
@@ -1439,8 +1766,9 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                     <tbody className="divide-y divide-neutral-100">
                       {chronology.initialAndEditLogs.map((log, idx) => {
                         const isInitial = log.changeType === 'initial_intake';
+                        const isRestock = log.changeType === 'restock_intake';
                         return (
-                          <tr key={log.id || idx} className="hover:bg-amber-50/20">
+                          <tr key={log.id || idx} className={isRestock ? 'hover:bg-emerald-50/30 bg-emerald-50/15' : 'hover:bg-amber-50/20'}>
                             <td className="py-2.5 px-3 text-center font-mono text-neutral-400">
                               {idx + 1}
                             </td>
@@ -1455,11 +1783,15 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                                 className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10.5px] font-bold border ${
                                   isInitial
                                     ? 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                                    : isRestock
+                                    ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
                                     : 'bg-amber-50 text-amber-900 border-amber-200'
                                 }`}
                               >
                                 {isInitial
                                   ? 'Baza yaratilganda dastlabki kiritish'
+                                  : isRestock
+                                  ? 'Yangi keldi (Omborga kirim)'
                                   : log.changeType === 'initial_edit'
                                   ? "Dastlabki kirim miqdori o'zgartirildi"
                                   : "Ombor qoldig'i qo'lda tahrirlandi"}

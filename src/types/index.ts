@@ -61,7 +61,7 @@ export interface Client {
   name: string;
   clientCode?: string; // Klient kodi (ixtiyoriy)
   contactName?: string; // Ismi (ixtiyoriy)
-  businessType?: "Do'kon" | 'Servis' | 'Moy almashtirish'; // Turi (ixtiyoriy)
+  businessType?: string; // Turi (ixtiyoriy, bir nechta tanlanishi mumkin: "Do'kon", "Servis", "Moy almashtirish")
   employeesCount?: string; // Ishchilar soni (ixtiyoriy)
   apprenticesInfo?: string; // Shogirtlar va hamkasblar haqida ma'lumot (ixtiyoriy)
   mainOils?: string; // Asosiy sotadigan moylari (ixtiyoriy)
@@ -237,6 +237,7 @@ export interface WarehouseStockChangeLog {
   changeType:
     | 'initial_intake' // Baza yaratilganda dastlabki kiritilgan qoldiq
     | 'initial_edit' // Dastlabki kirim miqdori tahrirlandi
+    | 'restock_intake' // Omborga yangi partiya keldi (yangi kirim)
     | 'manual_adjustment' // Ombordagi joriy qoldiq qo'lda o'zgartirildi
     | 'sale' // Mijozga sotildi
     | 'sale_edit' // Sotilgan mahsulot tahrirlandi
