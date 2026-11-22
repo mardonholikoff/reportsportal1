@@ -26,7 +26,7 @@ import {
   Minus,
   PackagePlus,
 } from 'lucide-react';
-import { WarehouseProduct, DailyPlanItem, Client, ProductItem } from '../types';
+import { WarehouseProduct, DailyPlanItem, Client, ProductItem, WarehouseStockChangeLog } from '../types';
 import { storageService, getPlanDateKey, getClosedDateKey } from '../services/storage';
 import { syncWarehouseProductToFirestore, addSystemLog } from '../services/firebase';
 import { formatMoney, formatDateDMY, getAgentDisplayName } from '../utils/format';
@@ -200,6 +200,14 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
   const [restockSuccessMsg, setRestockSuccessMsg] = useState<string | null>(null);
   const [restockErrorMsg, setRestockErrorMsg] = useState<string | null>(null);
 
+  // Existing "Yangi keldi" (restock_intake) entry edit state (Admin only)
+  const [editingRestockLog, setEditingRestockLog] = useState<WarehouseStockChangeLog | null>(null);
+  const [editRestockUnitType, setEditRestockUnitType] = useState<'package' | 'piece'>('piece');
+  const [editRestockQtyStr, setEditRestockQtyStr] = useState<string>('');
+  const [editRestockDate, setEditRestockDate] = useState<string>(todayYmd);
+  const [editRestockNote, setEditRestockNote] = useState<string>('');
+  const [editRestockError, setEditRestockError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isOpen || !activeProduct) return;
     setIsRestockPanelOpen(false);
@@ -211,7 +219,144 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
     setRestockNote('');
     setRestockSuccessMsg(null);
     setRestockErrorMsg(null);
+    setEditingRestockLog(null);
+    setEditRestockError(null);
   }, [isOpen, activeProduct?.id, hasPackageForInit, todayYmd]);
+
+  const openRestockEditor = (restockLogId: string) => {
+    if (!isAdmin || !activeProduct) return;
+    const rawHist = Array.isArray(activeProduct.stockHistory) ? activeProduct.stockHistory : [];
+    const found = rawHist.find(
+      (h) => h && h.id === restockLogId && h.changeType === 'restock_intake'
+    );
+    if (!found) return;
+
+    const isPkgLog = Boolean(
+      hasPackageForInit &&
+        activeProduct.packageUnitName &&
+        found.unit &&
+        found.unit.toLowerCase() === activeProduct.packageUnitName.toLowerCase()
+    );
+    const initialQty =
+      isPkgLog && found.quantityInUnit !== undefined
+        ? found.quantityInUnit
+        : Math.max(0, Number(found.deltaPieces) || 0);
+    const initialDate =
+      found.dateStr && /^\d{4}-\d{2}-\d{2}$/.test(found.dateStr)
+        ? found.dateStr
+        : found.timestamp
+        ? found.timestamp.slice(0, 10)
+        : todayYmd;
+
+    // Extract custom "Izoh: ..." if previously attached
+    let extractedNote = '';
+    if (found.note) {
+      const m = found.note.match(/Izoh:\s*(.+)$/);
+      if (m && m[1]) extractedNote = m[1].trim();
+    }
+
+    setEditingRestockLog(found);
+    setEditRestockUnitType(isPkgLog ? 'package' : 'piece');
+    setEditRestockQtyStr(String(initialQty));
+    setEditRestockDate(initialDate);
+    setEditRestockNote(extractedNote);
+    setEditRestockError(null);
+  };
+
+  const hasValidEditRestockQty =
+    editRestockQtyStr.trim() !== '' &&
+    !isNaN(parseFloat(editRestockQtyStr)) &&
+    parseFloat(editRestockQtyStr) >= 0;
+  const parsedEditRestockQty = hasValidEditRestockQty ? Math.max(0, parseFloat(editRestockQtyStr)) : 0;
+
+  const previewEditedRestockPieces = useMemo(() => {
+    if (!activeProduct || !hasValidEditRestockQty) return 0;
+    if (editRestockUnitType === 'package' && hasPackageForInit) {
+      return Math.round(parsedEditRestockQty * piecesPerPkgForInit * 100) / 100;
+    }
+    return Math.round(parsedEditRestockQty * 100) / 100;
+  }, [
+    activeProduct,
+    editRestockUnitType,
+    hasPackageForInit,
+    parsedEditRestockQty,
+    hasValidEditRestockQty,
+    piecesPerPkgForInit,
+  ]);
+
+  const previewCurrentAfterRestockEdit = useMemo(() => {
+    if (!chronology || !editingRestockLog) return chronology?.currentPieces || 0;
+    const oldDelta = Math.max(0, Number(editingRestockLog.deltaPieces) || 0);
+    const diff = previewEditedRestockPieces - oldDelta;
+    return Math.max(0, Math.round((chronology.currentPieces + diff) * 100) / 100);
+  }, [chronology, editingRestockLog, previewEditedRestockPieces]);
+
+  const handleSaveEditedRestock = () => {
+    if (!isAdmin || !activeProduct || !chronology || !editingRestockLog) return;
+    if (!hasValidEditRestockQty) {
+      setEditRestockError("Miqdorni 0 yoki undan katta son qilib kiriting.");
+      return;
+    }
+    if (!editRestockDate || !/^\d{4}-\d{2}-\d{2}$/.test(editRestockDate)) {
+      setEditRestockError("Sanani to'g'ri tanlang.");
+      return;
+    }
+
+    const editorUsername = user?.username || 'adminc';
+    const netSold = Math.round((chronology.totalSoldPieces - chronology.totalReturnedPieces) * 100) / 100;
+
+    const result = storageService.updateWarehouseProductRestock(
+      activeProduct.id,
+      editingRestockLog.id,
+      {
+        quantity: parsedEditRestockQty,
+        unitType: hasPackageForInit ? editRestockUnitType : 'piece',
+        intakeDate: editRestockDate,
+        note: editRestockNote.trim() || undefined,
+        baseInitialPiecesOverride: chronology.initialPieces,
+        netSoldPiecesUpToToday: netSold,
+        currentPiecesOverride: chronology.currentPieces,
+      },
+      editorUsername
+    );
+
+    if (!result) {
+      setEditRestockError("Yangi keldi yozuvini tahrirlashda xatolik yuz berdi.");
+      return;
+    }
+
+    const { updatedProduct, oldPieces, newPieces, oldDate, newDate } = result;
+    syncWarehouseProductToFirestore(updatedProduct);
+
+    const unitLabel =
+      hasPackageForInit && editRestockUnitType === 'package' && activeProduct.packageUnitName
+        ? activeProduct.packageUnitName
+        : activeProduct.pieceUnitName || 'dona';
+
+    addSystemLog({
+      userId: editorUsername,
+      userRole: 'admin',
+      actionType: 'ombor_kirimi',
+      actionTitle: `Yangi keldi (kirim) tahrirlandi: ${updatedProduct.brand} - ${updatedProduct.name}`,
+      details: `Kirim miqdori: ${oldPieces} → ${newPieces} dona (${parsedEditRestockQty} ${unitLabel}). Sana: ${oldDate} → ${newDate}. Yangi joriy qoldiq: ${updatedProduct.totalPieces} dona (${updatedProduct.totalVolume} ${updatedProduct.baseUnit}).${editRestockNote.trim() ? ` Izoh: ${editRestockNote.trim()}` : ''}`,
+      metadata: {
+        productId: updatedProduct.id,
+        restockLogId: editingRestockLog.id,
+        oldPieces,
+        newPieces,
+        oldDate,
+        newDate,
+      },
+    });
+
+    const formattedAfter = formatPiecesForWarehouseProduct(updatedProduct, updatedProduct.totalPieces);
+    setEditingRestockLog(null);
+    setEditRestockError(null);
+    setStorageTick((t) => t + 1);
+    setRestockSuccessMsg(
+      `Yangi keldi yozuvi yangilandi (${oldPieces} → ${newPieces} dona, sana: ${newDate}). Yangi joriy qoldiq: ${formattedAfter.primary} (${updatedProduct.totalPieces} dona).`
+    );
+  };
 
   const hasValidRestockQty =
     restockQtyStr.trim() !== '' &&
@@ -252,6 +397,7 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
         intakeDate: restockDate || todayYmd,
         note: restockNote.trim() || undefined,
         baseInitialPiecesOverride: chronology.initialPieces,
+        currentPiecesOverride: chronology.currentPieces,
       },
       editorUsername
     );
@@ -1767,8 +1913,24 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                       {chronology.initialAndEditLogs.map((log, idx) => {
                         const isInitial = log.changeType === 'initial_intake';
                         const isRestock = log.changeType === 'restock_intake';
+                        const canEditRestock = isAdmin && isRestock;
                         return (
-                          <tr key={log.id || idx} className={isRestock ? 'hover:bg-emerald-50/30 bg-emerald-50/15' : 'hover:bg-amber-50/20'}>
+                          <tr
+                            key={log.id || idx}
+                            onClick={canEditRestock ? () => openRestockEditor(log.id) : undefined}
+                            title={
+                              canEditRestock
+                                ? "Yangi keldi soni yoki sanasini tahrirlash uchun bosing"
+                                : undefined
+                            }
+                            className={
+                              canEditRestock
+                                ? 'hover:bg-emerald-100/60 bg-emerald-50/20 cursor-pointer transition-colors'
+                                : isRestock
+                                ? 'hover:bg-emerald-50/30 bg-emerald-50/15'
+                                : 'hover:bg-amber-50/20'
+                            }
+                          >
                             <td className="py-2.5 px-3 text-center font-mono text-neutral-400">
                               {idx + 1}
                             </td>
@@ -1779,23 +1941,38 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                               </span>
                             </td>
                             <td className="py-2.5 px-3">
-                              <span
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10.5px] font-bold border ${
-                                  isInitial
-                                    ? 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10.5px] font-bold border ${
+                                    isInitial
+                                      ? 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                                      : isRestock
+                                      ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                                      : 'bg-amber-50 text-amber-900 border-amber-200'
+                                  }`}
+                                >
+                                  {isInitial
+                                    ? 'Baza yaratilganda dastlabki kiritish'
                                     : isRestock
-                                    ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
-                                    : 'bg-amber-50 text-amber-900 border-amber-200'
-                                }`}
-                              >
-                                {isInitial
-                                  ? 'Baza yaratilganda dastlabki kiritish'
-                                  : isRestock
-                                  ? 'Yangi keldi (Omborga kirim)'
-                                  : log.changeType === 'initial_edit'
-                                  ? "Dastlabki kirim miqdori o'zgartirildi"
-                                  : "Ombor qoldig'i qo'lda tahrirlandi"}
-                              </span>
+                                    ? 'Yangi keldi (Omborga kirim)'
+                                    : log.changeType === 'initial_edit'
+                                    ? "Dastlabki kirim miqdori o'zgartirildi"
+                                    : "Ombor qoldig'i qo'lda tahrirlandi"}
+                                </span>
+                                {canEditRestock && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openRestockEditor(log.id);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                  >
+                                    <Edit3 className="w-2.5 h-2.5" />
+                                    <span>Tahrirlash</span>
+                                  </button>
+                                )}
+                              </div>
                             </td>
                             <td className="py-2.5 px-3 text-center font-mono text-neutral-600">
                               {log.previousPieces.toLocaleString()} dona
@@ -1861,52 +2038,83 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100">
-                      {chronology.timelineEvents.map((ev, idx) => (
-                        <tr key={ev.id || idx} className="hover:bg-indigo-50/20">
-                          <td className="py-2 px-3 text-center font-mono text-neutral-400">
-                            {idx + 1}
-                          </td>
-                          <td className="py-2 px-3 font-mono whitespace-nowrap font-bold text-neutral-800">
-                            {formatDateDMY(ev.timestamp)}
-                          </td>
-                          <td className="py-2 px-3 font-bold text-neutral-900">
-                            {ev.title}
-                          </td>
-                          <td className="py-2 px-3 text-center font-mono text-neutral-600">
-                            {ev.beforePieces.toLocaleString()} dona
-                          </td>
-                          <td className="py-2 px-3 text-center font-mono font-extrabold">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded-md ${
-                                ev.deltaPieces > 0
-                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                  : ev.deltaPieces < 0
-                                  ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                                  : 'bg-neutral-100 text-neutral-600'
-                              }`}
-                            >
-                              {ev.deltaPieces > 0
-                                ? `+${ev.deltaPieces.toLocaleString()}`
-                                : ev.deltaPieces.toLocaleString()}{' '}
-                              dona
-                            </span>
-                          </td>
-                          <td className="py-2 px-3 text-center font-mono font-extrabold text-indigo-950">
-                            <div>{ev.afterPieces.toLocaleString()} dona</div>
-                            <div className="text-[10px] text-neutral-500 font-normal">
-                              ({ev.formattedAfter})
-                            </div>
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            <span className="px-2 py-0.5 rounded-lg bg-neutral-100 text-[11px] font-bold">
-                              {getAgentDisplayName(ev.author || 'adminc')}
-                            </span>
-                          </td>
-                          <td className="py-2 px-3 text-[11px] text-neutral-600 max-w-xs">
-                            {ev.description}
-                          </td>
-                        </tr>
-                      ))}
+                      {chronology.timelineEvents.map((ev, idx) => {
+                        const isEditableRestock = isAdmin && ev.eventType === 'restock_intake';
+                        return (
+                          <tr
+                            key={ev.id || idx}
+                            onClick={isEditableRestock ? () => openRestockEditor(ev.id) : undefined}
+                            title={
+                              isEditableRestock
+                                ? "Yangi keldi soni yoki sanasini tahrirlash uchun bosing"
+                                : undefined
+                            }
+                            className={
+                              isEditableRestock
+                                ? 'bg-emerald-50/20 hover:bg-emerald-100/60 cursor-pointer transition-colors'
+                                : 'hover:bg-indigo-50/20'
+                            }
+                          >
+                            <td className="py-2 px-3 text-center font-mono text-neutral-400">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2 px-3 font-mono whitespace-nowrap font-bold text-neutral-800">
+                              {formatDateDMY(ev.timestamp)}
+                            </td>
+                            <td className="py-2 px-3 font-bold text-neutral-900">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span>{ev.title}</span>
+                                {isEditableRestock && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openRestockEditor(ev.id);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold transition cursor-pointer shadow-2xs"
+                                  >
+                                    <Edit3 className="w-2.5 h-2.5" />
+                                    <span>Tahrirlash</span>
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono text-neutral-600">
+                              {ev.beforePieces.toLocaleString()} dona
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono font-extrabold">
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded-md ${
+                                  ev.deltaPieces > 0
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : ev.deltaPieces < 0
+                                    ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                    : 'bg-neutral-100 text-neutral-600'
+                                }`}
+                              >
+                                {ev.deltaPieces > 0
+                                  ? `+${ev.deltaPieces.toLocaleString()}`
+                                  : ev.deltaPieces.toLocaleString()}{' '}
+                                dona
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono font-extrabold text-indigo-950">
+                              <div>{ev.afterPieces.toLocaleString()} dona</div>
+                              <div className="text-[10px] text-neutral-500 font-normal">
+                                ({ev.formattedAfter})
+                              </div>
+                            </td>
+                            <td className="py-2 px-3 text-center">
+                              <span className="px-2 py-0.5 rounded-lg bg-neutral-100 text-[11px] font-bold">
+                                {getAgentDisplayName(ev.author || 'adminc')}
+                              </span>
+                            </td>
+                            <td className="py-2 px-3 text-[11px] text-neutral-600 max-w-xs">
+                              {ev.description}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -2165,6 +2373,172 @@ export const ProductDeliveryHistoryModal: React.FC<Props> = ({
           </button>
         </div>
       </div>
+
+      {/* Yangi keldi (restock_intake) yozuvini tahrirlash modali (Admin) */}
+      {isAdmin && editingRestockLog && activeProduct && chronology && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-neutral-900/65 backdrop-blur-xs"
+          onClick={() => setEditingRestockLog(null)}
+        >
+          <div
+            className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-emerald-200 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 bg-emerald-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center">
+                  <Edit3 className="w-4 h-4 text-emerald-200" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold">Yangi keldi (kirim) yozuvini tahrirlash</h3>
+                  <p className="text-[11px] text-emerald-200">
+                    {activeProduct.brand} — {activeProduct.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingRestockLog(null)}
+                className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              {hasPackageForInit && (
+                <div>
+                  <label className="block text-[11px] font-bold text-neutral-700 mb-1.5">
+                    O'lchov birligi
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditRestockUnitType('piece')}
+                      className={`py-2 px-3 rounded-xl font-bold border transition cursor-pointer ${
+                        editRestockUnitType === 'piece'
+                          ? 'bg-emerald-700 text-white border-emerald-700'
+                          : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-50'
+                      }`}
+                    >
+                      {activeProduct.pieceUnitName || 'dona'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditRestockUnitType('package')}
+                      className={`py-2 px-3 rounded-xl font-bold border transition cursor-pointer ${
+                        editRestockUnitType === 'package'
+                          ? 'bg-emerald-700 text-white border-emerald-700'
+                          : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-50'
+                      }`}
+                    >
+                      {activeProduct.packageUnitName} (1 = {piecesPerPkgForInit}{' '}
+                      {activeProduct.pieceUnitName || 'dona'})
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-neutral-700 mb-1">
+                    Kirim soni (
+                    {editRestockUnitType === 'package' && hasPackageForInit
+                      ? activeProduct.packageUnitName
+                      : activeProduct.pieceUnitName || 'dona'}
+                    )
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={editRestockQtyStr}
+                    onChange={(e) => {
+                      setEditRestockQtyStr(e.target.value);
+                      setEditRestockError(null);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl border border-neutral-300 font-mono font-bold text-sm text-neutral-900 focus:outline-emerald-600"
+                    placeholder="Masalan: 100"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-neutral-700 mb-1">
+                    Kirim sanasi
+                  </label>
+                  <input
+                    type="date"
+                    value={editRestockDate}
+                    onChange={(e) => {
+                      setEditRestockDate(e.target.value);
+                      setEditRestockError(null);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl border border-neutral-300 font-mono font-bold text-sm text-neutral-900 focus:outline-emerald-600"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-neutral-700 mb-1">
+                  Izoh (ixtiyoriy)
+                </label>
+                <input
+                  type="text"
+                  value={editRestockNote}
+                  onChange={(e) => setEditRestockNote(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-neutral-300 text-xs text-neutral-900 focus:outline-emerald-600"
+                  placeholder="Masalan: Partiya soni qayta tekshirildi"
+                />
+              </div>
+
+              {/* Live recalculation preview */}
+              <div className="p-3.5 rounded-2xl bg-emerald-50/80 border border-emerald-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-neutral-600 font-medium">Ushbu kirim:</span>
+                  <span className="font-mono font-extrabold text-emerald-900">
+                    {(Number(editingRestockLog.deltaPieces) || 0).toLocaleString()} dona &rarr;{' '}
+                    {previewEditedRestockPieces.toLocaleString()} dona
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-neutral-600 font-medium">Bazadagi joriy qoldiq:</span>
+                  <span className="font-mono font-extrabold text-indigo-950">
+                    {chronology.currentPieces.toLocaleString()} dona &rarr;{' '}
+                    {previewCurrentAfterRestockEdit.toLocaleString()} dona
+                  </span>
+                </div>
+                <p className="text-[11px] text-emerald-800 pt-1 border-t border-emerald-200/70">
+                  Saqlanganda ushbu mahsulotning barcha qoldiq hisob-kitoblari va xronologiyasi yangi son va sanaga mos ravishda avtomatik qayta hisoblanadi.
+                </p>
+              </div>
+
+              {editRestockError && (
+                <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 font-bold text-xs">
+                  {editRestockError}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingRestockLog(null)}
+                  className="px-4 py-2 rounded-xl border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-700 font-bold text-xs transition cursor-pointer"
+                >
+                  Bekor qilish
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveEditedRestock}
+                  className="flex items-center gap-1.5 px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Saqlash va qoldiqni yangilash</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

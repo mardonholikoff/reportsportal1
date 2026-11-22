@@ -212,10 +212,12 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
             : w.stockHistory || [],
       }));
       const compactPlans = snapshot.dailyPlans || [];
+      const compactLogs = (snapshot.systemLogs || []).slice(0, 2500);
 
       const clientChunks = chunkItemsBySize(compactClients, 320_000);
       const warehouseChunks = chunkItemsBySize(compactWh, 320_000);
       const planChunks = chunkItemsBySize(compactPlans, 320_000);
+      const logChunks = chunkItemsBySize(compactLogs, 300_000);
 
       let aborted = false;
       for (let i = 0; i < clientChunks.length; i++) {
@@ -239,6 +241,13 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
         }
       }
       if (aborted) break;
+      for (let i = 0; i < logChunks.length; i++) {
+        if ((await patchServerFirestoreDoc(`sync_snap_v2_logs_${i}`, JSON.stringify({ items: logChunks[i] }))) === 'quota') {
+          aborted = true;
+          break;
+        }
+      }
+      if (aborted) break;
 
       await patchServerFirestoreDoc(
         SNAP_META_DOC_ID,
@@ -246,7 +255,8 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
           clientChunksCount: clientChunks.length,
           warehouseChunksCount: warehouseChunks.length,
           planChunksCount: planChunks.length,
-          systemLogs: (snapshot.systemLogs || []).slice(0, 80),
+          logChunksCount: logChunks.length,
+          systemLogs: compactLogs.slice(0, 80),
           deletedClientIds: snapshot.deletedClientIds || [],
           deletedWarehouseIds: snapshot.deletedWarehouseIds || [],
           deletedPlanIds: snapshot.deletedPlanIds || [],
@@ -267,9 +277,11 @@ async function pullServerStateFromFirestoreCloud(): Promise<void> {
       const clientChunksCount = Math.max(Number(meta.clientChunksCount) || 0, 1);
       const warehouseChunksCount = Math.max(Number(meta.warehouseChunksCount) || 0, 1);
       const planChunksCount = Math.max(Number(meta.planChunksCount) || 0, 1);
+      const logChunksCount = Number(meta.logChunksCount) || 0;
       const clients: any[] = [];
       const warehouseProducts: any[] = [];
       const dailyPlans: any[] = [];
+      const chunkedLogs: any[] = [];
       for (let i = 0; i < clientChunksCount; i++) {
         const d = await readServerFirestoreDoc(`sync_snap_v2_clients_${i}`);
         if (Array.isArray(d?.items)) clients.push(...d.items);
@@ -282,12 +294,25 @@ async function pullServerStateFromFirestoreCloud(): Promise<void> {
         const d = await readServerFirestoreDoc(`sync_snap_v2_plans_${i}`);
         if (Array.isArray(d?.items)) dailyPlans.push(...d.items);
       }
+      for (let i = 0; i < logChunksCount; i++) {
+        const d = await readServerFirestoreDoc(`sync_snap_v2_logs_${i}`);
+        if (Array.isArray(d?.items)) chunkedLogs.push(...d.items);
+      }
+      const combinedLogsMap = new Map<string, any>();
+      if (Array.isArray(meta.systemLogs)) {
+        meta.systemLogs.forEach((l: any) => {
+          if (l && l.id) combinedLogsMap.set(l.id, l);
+        });
+      }
+      chunkedLogs.forEach((l: any) => {
+        if (l && l.id) combinedLogsMap.set(l.id, l);
+      });
       mergePayloadIntoState(
         {
           clients,
           warehouseProducts,
           dailyPlans,
-          systemLogs: Array.isArray(meta.systemLogs) ? meta.systemLogs : [],
+          systemLogs: Array.from(combinedLogsMap.values()),
           deletedClientIds: Array.isArray(meta.deletedClientIds) ? meta.deletedClientIds : [],
           deletedWarehouseIds: Array.isArray(meta.deletedWarehouseIds) ? meta.deletedWarehouseIds : [],
           deletedPlanIds: Array.isArray(meta.deletedPlanIds) ? meta.deletedPlanIds : [],
@@ -468,13 +493,20 @@ function mergePayloadIntoState(payload: any, triggerCloudPush = true): void {
       if (!l || !l.id || isLegacyWipedRecord(l.id)) continue;
       sharedState.systemLogs[l.id] = l;
     }
-    // Keep most recent 600 logs
+    // Retain at least all logs from the last 15 days (min 5+ days guaranteed), up to 3000 entries
     const allLogs: any[] = Object.values(sharedState.systemLogs).sort(
       (a: any, b: any) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
     );
-    if (allLogs.length > 600) {
+    const cutoff15Days = Date.now() - 15 * 24 * 60 * 60 * 1000;
+    const retained = allLogs.filter((item: any, idx: number) => {
+      if (idx >= 3000) return false;
+      if (idx < 2500) return true;
+      const ts = new Date(item?.timestamp || 0).getTime();
+      return !isNaN(ts) && ts >= cutoff15Days;
+    });
+    if (retained.length < allLogs.length) {
       const nextLogs: Record<string, any> = {};
-      for (const item of allLogs.slice(0, 600)) {
+      for (const item of retained) {
         nextLogs[item.id] = item;
       }
       sharedState.systemLogs = nextLogs;

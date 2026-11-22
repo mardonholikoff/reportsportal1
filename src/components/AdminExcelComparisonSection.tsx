@@ -1,8 +1,10 @@
 import React, { useState, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
-import { Client, WarehouseProduct } from '../types';
+import { Client, DailyPlanItem, WarehouseProduct } from '../types';
 import { formatMoney, formatNumber } from '../utils/format';
+import { buildWarehouseProductChronology } from '../utils/warehouseChronology';
+import { storageService } from '../services/storage';
 import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   FileSpreadsheet,
@@ -23,6 +25,7 @@ import {
 interface Props {
   clients: Client[];
   warehouseProducts: WarehouseProduct[];
+  dailyPlans?: DailyPlanItem[];
 }
 
 type CompareTab = 'clients' | 'warehouse';
@@ -175,7 +178,7 @@ function normalizeText(raw?: string | null): string {
   if (!raw) return '';
   return String(raw)
     .toLowerCase()
-    .replace(/[`'’‘ʻʼ"]/g, "'")
+    .replace(/[`'’‘ʻʼʼʼ′"«»]/g, '')
     .replace(/[–—]/g, '-')
     .replace(/\s+/g, ' ')
     .trim();
@@ -183,6 +186,169 @@ function normalizeText(raw?: string | null): string {
 
 function normalizeLooseKey(raw?: string | null): string {
   return normalizeText(raw).replace(/[^a-z0-9а-яёўқғҳ]/gi, '');
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = new Array<number>(b.length + 1);
+  const curr = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    const chA = a.charCodeAt(i - 1);
+    for (let j = 1; j <= b.length; j++) {
+      const cost = chA === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+function tokenizeProductForMatch(raw?: string | null): string[] {
+  if (!raw) return [];
+  let s = normalizeText(raw);
+  if (!s) return [];
+  // Normalize common oil/unit patterns so "5w-30" == "5w30", "5 kg" == "5kg", "4 l" == "4l"
+  s = s
+    .replace(/\b(\d{1,2})\s*w\s*[-]?\s*(\d{2})\b/gi, '$1w$2')
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*(l|lt|litr|liter|л|литр)\b/gi, (_, num) => `${num.replace(',', '.')}l`)
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*(kg|кг)\b/gi, (_, num) => `${num.replace(',', '.')}kg`)
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*(ml|мл)\b/gi, (_, num) => `${num.replace(',', '.')}ml`)
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*(gr|g|гр|г)\b/gi, (_, num) => `${num.replace(',', '.')}g`)
+    .replace(/\b(\d+)\s*(pcs|шт|dona)\b/gi, '$1pcs')
+    .replace(/(\d+),(\d+)/g, '$1.$2');
+
+  const rawTokens = s
+    .replace(/[^a-z0-9а-яёўқғҳ.]+/gi, ' ')
+    .split(/\s+/)
+    .map((t) => t.replace(/^\.+|\.+$/g, ''))
+    .filter(Boolean);
+
+  return rawTokens;
+}
+
+function extractCriticalSpecTokens(tokens: string[]): {
+  viscosities: Set<string>;
+  volumes: Set<string>;
+  coolants: Set<string>;
+  apiSpecs: Set<string>;
+} {
+  const viscosities = new Set<string>();
+  const volumes = new Set<string>();
+  const coolants = new Set<string>();
+  const apiSpecs = new Set<string>();
+  for (const t of tokens) {
+    if (/^\d{1,2}w\d{2}$/i.test(t)) viscosities.add(t);
+    else if (/^\d+(?:\.\d+)?(l|kg|ml|g)$/i.test(t)) volumes.add(t);
+    else if (/^g(11|12|12\+|13)$/i.test(t)) coolants.add(t);
+    else if (/^(sl|sm|sn|sp|cf|ch4|ci4|cj4|ck4|gl4|gl5)$/i.test(t)) apiSpecs.add(t);
+  }
+  return { viscosities, volumes, coolants, apiSpecs };
+}
+
+function hasConflictingCriticalSpecs(tokensA: string[], tokensB: string[]): boolean {
+  const a = extractCriticalSpecTokens(tokensA);
+  const b = extractCriticalSpecTokens(tokensB);
+  const setsConflict = (s1: Set<string>, s2: Set<string>): boolean => {
+    if (s1.size === 0 || s2.size === 0) return false;
+    for (const v of s1) {
+      if (s2.has(v)) return false;
+    }
+    return true;
+  };
+  return (
+    setsConflict(a.viscosities, b.viscosities) ||
+    setsConflict(a.volumes, b.volumes) ||
+    setsConflict(a.coolants, b.coolants) ||
+    setsConflict(a.apiSpecs, b.apiSpecs)
+  );
+}
+
+/**
+ * Word-order-independent & apostrophe-insensitive similarity score in [0, 1].
+ * Returns >= 0.90 when tokens match >= 90% regardless of word order or apostrophes
+ * (e.g., "seg motol" vs "motol seg", "ozbek" vs "o'zbek").
+ */
+function computeProductOrderInsensitiveSimilarity(tokensA: string[], tokensB: string[]): number {
+  const a = tokensA.filter((t) => t !== 'umumiy');
+  const b = tokensB.filter((t) => t !== 'umumiy');
+  if (a.length === 0 || b.length === 0) return 0;
+
+  if (hasConflictingCriticalSpecs(a, b)) return 0;
+
+  // Fast exact multiset match (100% match regardless of word order)
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  const joinedA = sortedA.join(' ');
+  const joinedB = sortedB.join(' ');
+  if (joinedA === joinedB) return 1;
+
+  // 1. Greedy best 1-to-1 token pairing weighted by token length
+  const usedB = new Set<number>();
+  let matchedWeight = 0;
+  const totalWeightA = a.reduce((s, t) => s + t.length, 0);
+  const totalWeightB = b.reduce((s, t) => s + t.length, 0);
+
+  // First pass: exact token matches
+  const unmatchedAIdx: number[] = [];
+  for (let i = 0; i < a.length; i++) {
+    let foundIdx = -1;
+    for (let j = 0; j < b.length; j++) {
+      if (!usedB.has(j) && a[i] === b[j]) {
+        foundIdx = j;
+        break;
+      }
+    }
+    if (foundIdx !== -1) {
+      usedB.add(foundIdx);
+      matchedWeight += a[i].length;
+    } else {
+      unmatchedAIdx.push(i);
+    }
+  }
+
+  // Second pass: fuzzy token matches for remaining tokens (handles minor spelling diffs)
+  const pairCandidates: Array<{ i: number; j: number; sim: number }> = [];
+  for (const i of unmatchedAIdx) {
+    const tA = a[i];
+    for (let j = 0; j < b.length; j++) {
+      if (usedB.has(j)) continue;
+      const tB = b[j];
+      // Do not fuzzy-match purely numeric tokens with different numbers (e.g. 564 vs 565)
+      if (/^\d+(?:\.\d+)?$/.test(tA) && /^\d+(?:\.\d+)?$/.test(tB) && tA !== tB) continue;
+      const maxLen = Math.max(tA.length, tB.length);
+      if (maxLen === 0) continue;
+      const dist = levenshteinDistance(tA, tB);
+      const sim = 1 - dist / maxLen;
+      if (sim >= 0.75) {
+        pairCandidates.push({ i, j, sim });
+      }
+    }
+  }
+  pairCandidates.sort((x, y) => y.sim - x.sim);
+  const usedA = new Set<number>();
+  for (const cand of pairCandidates) {
+    if (usedA.has(cand.i) || usedB.has(cand.j)) continue;
+    usedA.add(cand.i);
+    usedB.add(cand.j);
+    const weight = Math.max(a[cand.i].length, b[cand.j].length);
+    matchedWeight += cand.sim * weight;
+  }
+
+  const maxTotalWeight = Math.max(totalWeightA, totalWeightB);
+  const weightedTokenSim = maxTotalWeight > 0 ? matchedWeight / maxTotalWeight : 0;
+
+  // 2. Sorted-token string Levenshtein similarity
+  const maxJoinedLen = Math.max(joinedA.length, joinedB.length);
+  const sortedLevenshteinSim =
+    maxJoinedLen > 0 ? 1 - levenshteinDistance(joinedA, joinedB) / maxJoinedLen : 0;
+
+  // Also check loose-key sorted chars/tokens similarity when word spacing differs (e.g. "motol seg" vs "segmotol")
+  const score = Math.max(weightedTokenSim, sortedLevenshteinSim);
+  return Math.min(1, Math.max(0, score));
 }
 
 function extractLeadingClientCode(name?: string | null, explicitCode?: string | null): string {
@@ -617,6 +783,7 @@ async function parseSpreadsheetFile(file: File): Promise<ParsedSheet[]> {
 export const AdminExcelComparisonSection: React.FC<Props> = ({
   clients,
   warehouseProducts,
+  dailyPlans,
 }) => {
   const [activeTab, setActiveTab] = useState<CompareTab>('clients');
 
@@ -1017,7 +1184,26 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
     const dbByLooseFull = new Map<string, WarehouseProduct>();
     const dbByLooseName = new Map<string, WarehouseProduct>();
 
+    const resolvedPlans =
+      dailyPlans && dailyPlans.length > 0 ? dailyPlans : storageService.getDailyPlans();
+    const dbLivePiecesMap = new Map<string, number>();
+    const dbTokenCache: Array<{
+      product: WarehouseProduct;
+      nameTokens: string[];
+      fullTokens: string[];
+      fullWithMarkTokens: string[];
+    }> = [];
+
     warehouseProducts.forEach((w) => {
+      const chron = buildWarehouseProductChronology(
+        w,
+        resolvedPlans,
+        clients,
+        undefined,
+        warehouseProducts
+      );
+      dbLivePiecesMap.set(w.id, Math.round((chron ? chron.currentPieces : Number(w.totalPieces) || 0) * 100) / 100);
+
       const m1 = normalizeLooseKey(w.mark1);
       if (m1) {
         const arr = dbByMark.get(m1) || [];
@@ -1026,6 +1212,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       }
       const fullStr = `${w.brand || ''} ${w.name || ''}`.trim();
       const fullDashStr = `${w.brand || ''} - ${w.name || ''}`.trim();
+      const fullWithMarkStr = `${w.brand || ''} ${w.name || ''} ${w.mark1 || ''}`.trim();
       const nFull = normalizeText(fullStr);
       const nDash = normalizeText(fullDashStr);
       const nName = normalizeText(w.name);
@@ -1037,7 +1224,20 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       const lName = normalizeLooseKey(w.name);
       if (lFull && !dbByLooseFull.has(lFull)) dbByLooseFull.set(lFull, w);
       if (lName && !dbByLooseName.has(lName)) dbByLooseName.set(lName, w);
+
+      dbTokenCache.push({
+        product: w,
+        nameTokens: tokenizeProductForMatch(w.name),
+        fullTokens: tokenizeProductForMatch(fullStr),
+        fullWithMarkTokens: tokenizeProductForMatch(fullWithMarkStr),
+      });
     });
+
+    const getDbLivePieces = (w: WarehouseProduct): number => {
+      return dbLivePiecesMap.has(w.id)
+        ? dbLivePiecesMap.get(w.id)!
+        : Math.round((Number(w.totalPieces) || 0) * 100) / 100;
+    };
 
     const matchDbProduct = (
       rawBrand: string,
@@ -1061,10 +1261,9 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       if (nName && dbByFullNorm.has(nName)) return dbByFullNorm.get(nName);
       if (nName && dbByNameNorm.has(nName)) return dbByNameNorm.get(nName);
 
-      // Strip leading "Brand - " if present in Excel name
-      const strippedDash = rawName.includes(' - ')
-        ? rawName.split(' - ').slice(1).join(' - ').trim()
-        : '';
+      // Strip leading "Brand - " or "Brand — " if present in Excel name
+      const dashSplit = rawName.split(/\s+[-—–]\s+/);
+      const strippedDash = dashSplit.length > 1 ? dashSplit.slice(1).join(' - ').trim() : '';
       if (strippedDash) {
         const nStripped = normalizeText(strippedDash);
         if (dbByNameNorm.has(nStripped)) return dbByNameNorm.get(nStripped);
@@ -1078,15 +1277,64 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       if (lName && dbByLooseFull.has(lName)) return dbByLooseFull.get(lName);
       if (lName && dbByLooseName.has(lName)) return dbByLooseName.get(lName);
 
-      // Unique substring match when name is descriptive enough
+      // Word-order-independent & apostrophe-insensitive >= 90% token similarity match
+      // Handles reversed word order ("seg motol" vs "motol seg") & Uzbek apostrophes ("ozbek" vs "o'zbek")
+      const queryTokenSets: string[][] = [];
+      const qCombinedTokens = tokenizeProductForMatch(
+        rawMark ? `${combined} ${rawMark}` : combined
+      );
+      if (qCombinedTokens.length > 0) queryTokenSets.push(qCombinedTokens);
+      const qNameTokens = tokenizeProductForMatch(rawName);
+      if (qNameTokens.length > 0) queryTokenSets.push(qNameTokens);
+      if (strippedDash) {
+        const qStrippedTokens = tokenizeProductForMatch(strippedDash);
+        if (qStrippedTokens.length > 0) queryTokenSets.push(qStrippedTokens);
+      }
+
+      if (queryTokenSets.length > 0) {
+        let bestProduct: WarehouseProduct | undefined;
+        let bestScore = 0;
+
+        for (const item of dbTokenCache) {
+          let itemBest = 0;
+          for (const qTokens of queryTokenSets) {
+            const s1 = computeProductOrderInsensitiveSimilarity(qTokens, item.nameTokens);
+            if (s1 > itemBest) itemBest = s1;
+            const s2 = computeProductOrderInsensitiveSimilarity(qTokens, item.fullTokens);
+            if (s2 > itemBest) itemBest = s2;
+            if (item.fullWithMarkTokens.length > item.fullTokens.length) {
+              const s3 = computeProductOrderInsensitiveSimilarity(qTokens, item.fullWithMarkTokens);
+              if (s3 > itemBest) itemBest = s3;
+            }
+          }
+          if (itemBest >= 0.9 && itemBest > bestScore) {
+            bestScore = itemBest;
+            bestProduct = item.product;
+          }
+        }
+
+        if (bestProduct) {
+          return bestProduct;
+        }
+      }
+
+      // Unique substring match when name is descriptive enough (and specs don't conflict)
       if (lName.length >= 6) {
         const candidates = warehouseProducts.filter((w) => {
           const wLoose = normalizeLooseKey(`${w.brand || ''} ${w.name || ''}`);
           const wNameLoose = normalizeLooseKey(w.name);
-          return (
-            wLoose.includes(lName) ||
-            wNameLoose.includes(lName) ||
-            (wNameLoose.length >= 6 && lName.includes(wNameLoose))
+          if (
+            !(
+              wLoose.includes(lName) ||
+              wNameLoose.includes(lName) ||
+              (wNameLoose.length >= 6 && lName.includes(wNameLoose))
+            )
+          ) {
+            return false;
+          }
+          return !hasConflictingCriticalSpecs(
+            qNameTokens,
+            tokenizeProductForMatch(`${w.brand || ''} ${w.name || ''}`)
           );
         });
         if (candidates.length === 1) return candidates[0];
@@ -1096,7 +1344,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
     };
 
     const getDbProductValue = (w: WarehouseProduct): number => {
-      const pieces = Number(w.totalPieces) || 0;
+      const pieces = getDbLivePieces(w);
       const pkgCount = Math.max(1, Number(w.piecesPerPackage) || 1);
       const basePrice = Number(w.price || w.minSellingPrice || 0);
       const unitPrice =
@@ -1168,7 +1416,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
     excelAggMap.forEach((entry, aggKey) => {
       if (entry.dbProduct) {
         matchedDbIds.add(entry.dbProduct.id);
-        const dbQty = Math.round((Number(entry.dbProduct.totalPieces) || 0) * 100) / 100;
+        const dbQty = getDbLivePieces(entry.dbProduct);
         const qtyDiff = Math.round((entry.excelQty - dbQty) * 100) / 100;
         const dbValue = getDbProductValue(entry.dbProduct);
         const valueDiff = hasExcelValueCol
@@ -1216,7 +1464,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
 
     warehouseProducts.forEach((w) => {
       if (matchedDbIds.has(w.id)) return;
-      const dbQty = Math.round((Number(w.totalPieces) || 0) * 100) / 100;
+      const dbQty = getDbLivePieces(w);
       const dbValue = getDbProductValue(w);
       rows.push({
         key: `only_db:${w.id}`,
@@ -1284,7 +1532,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       isPerfectMatch,
       isMatchedZeroDiff,
     };
-  }, [activeWhSheet, whHeaderRow, whMapping, warehouseProducts]);
+  }, [activeWhSheet, whHeaderRow, whMapping, warehouseProducts, clients, dailyPlans]);
 
   const filteredWhRows = useMemo(() => {
     if (!warehouseComparison) return [];

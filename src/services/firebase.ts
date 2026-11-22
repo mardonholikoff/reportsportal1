@@ -315,9 +315,16 @@ export function getLocalSystemLogs(): SystemLog[] {
 
 export function saveLocalSystemLogs(logs: SystemLog[]): void {
   try {
-    const sliced = logs.slice(0, 500);
+    const sliced = logs.slice(0, 2500);
     localSystemLogsCache = sliced;
-    localStorage.setItem(SYSTEM_LOGS_STORAGE_KEY, JSON.stringify(sliced));
+    try {
+      localStorage.setItem(SYSTEM_LOGS_STORAGE_KEY, JSON.stringify(sliced));
+    } catch {
+      // Fallback if localStorage quota is tight
+      const compact = logs.slice(0, 1200);
+      localSystemLogsCache = compact;
+      localStorage.setItem(SYSTEM_LOGS_STORAGE_KEY, JSON.stringify(compact));
+    }
   } catch (e) {
     console.error('Failed to save local system logs', e);
   }
@@ -404,6 +411,7 @@ interface CloudStatePayload {
   _metaClientChunks?: number;
   _metaWarehouseChunks?: number;
   _metaPlanChunks?: number;
+  _metaLogChunks?: number;
 }
 
 async function readFirestoreDocJson(docId: string): Promise<any | null> {
@@ -491,6 +499,7 @@ function parseMonthlySnapshotDocs(
     const clientChunks = new Map<number, any[]>();
     const whChunks = new Map<number, any[]>();
     const planChunks = new Map<number, any[]>();
+    const logChunks = new Map<number, any[]>();
     let legacySnap: CloudStatePayload | null = null;
 
     for (const d of docs) {
@@ -510,12 +519,22 @@ function parseMonthlySnapshotDocs(
         const idx = Number(d.id.replace('sync_snap_v2_plans_', ''));
         const parsed = JSON.parse(data.payloadJson);
         if (!isNaN(idx) && Array.isArray(parsed?.items)) planChunks.set(idx, parsed.items);
+      } else if (d.id.startsWith('sync_snap_v2_logs_')) {
+        const idx = Number(d.id.replace('sync_snap_v2_logs_', ''));
+        const parsed = JSON.parse(data.payloadJson);
+        if (!isNaN(idx) && Array.isArray(parsed?.items)) logChunks.set(idx, parsed.items);
       } else if (d.id === SHARED_CLOUD_DOC_ID) {
         legacySnap = JSON.parse(data.payloadJson) as CloudStatePayload;
       }
     }
 
-    if (meta || clientChunks.size > 0 || whChunks.size > 0 || planChunks.size > 0) {
+    if (
+      meta ||
+      clientChunks.size > 0 ||
+      whChunks.size > 0 ||
+      planChunks.size > 0 ||
+      logChunks.size > 0
+    ) {
       const clients: Client[] = [];
       Array.from(clientChunks.keys())
         .sort((a, b) => a - b)
@@ -531,11 +550,29 @@ function parseMonthlySnapshotDocs(
         .sort((a, b) => a - b)
         .forEach((k) => dailyPlans.push(...(planChunks.get(k) || [])));
 
+      const combinedLogsMap = new Map<string, SystemLog>();
+      if (Array.isArray(meta?.systemLogs)) {
+        meta.systemLogs.forEach((l: SystemLog) => {
+          if (l && l.id) combinedLogsMap.set(l.id, l);
+        });
+      }
+      Array.from(logChunks.keys())
+        .sort((a, b) => a - b)
+        .forEach((k) => {
+          (logChunks.get(k) || []).forEach((l: SystemLog) => {
+            if (l && l.id) combinedLogsMap.set(l.id, l);
+          });
+        });
+
+      const systemLogs = Array.from(combinedLogsMap.values()).sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+
       return {
         clients,
         warehouseProducts,
         dailyPlans,
-        systemLogs: Array.isArray(meta?.systemLogs) ? meta.systemLogs : [],
+        systemLogs,
         deletedClientIds: Array.isArray(meta?.deletedClientIds) ? meta.deletedClientIds : [],
         deletedWarehouseIds: Array.isArray(meta?.deletedWarehouseIds)
           ? meta.deletedWarehouseIds
@@ -545,6 +582,7 @@ function parseMonthlySnapshotDocs(
         _metaClientChunks: Number(meta?.clientChunksCount) || 0,
         _metaWarehouseChunks: Number(meta?.warehouseChunksCount) || 0,
         _metaPlanChunks: Number(meta?.planChunksCount) || 0,
+        _metaLogChunks: Number(meta?.logChunksCount) || 0,
       };
     }
 
@@ -565,6 +603,7 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
       const metaClientChunks = Number(meta.clientChunksCount) || 0;
       const metaWarehouseChunks = Number(meta.warehouseChunksCount) || 0;
       const metaPlanChunks = Number(meta.planChunksCount) || 0;
+      const metaLogChunks = Number(meta.logChunksCount) || 0;
 
       const clientChunksToRead = Math.max(metaClientChunks, 1);
       const warehouseChunksToRead = Math.max(metaWarehouseChunks, 1);
@@ -595,22 +634,45 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
           }))
         );
       }
+      for (let i = 0; i < metaLogChunks; i++) {
+        fetchPromises.push(
+          readFirestoreDocJson(`sync_snap_v2_logs_${i}`).then((d) => ({
+            type: 'logs',
+            items: Array.isArray(d?.items) ? d.items : [],
+          }))
+        );
+      }
 
       const results = await Promise.all(fetchPromises);
       const clients: Client[] = [];
       const warehouseProducts: WarehouseProduct[] = [];
       const dailyPlans: any[] = [];
+      const logsMap = new Map<string, SystemLog>();
+      if (Array.isArray(meta.systemLogs)) {
+        meta.systemLogs.forEach((l: SystemLog) => {
+          if (l && l.id) logsMap.set(l.id, l);
+        });
+      }
       for (const r of results) {
         if (r.type === 'clients') clients.push(...r.items);
         else if (r.type === 'warehouse') warehouseProducts.push(...r.items);
         else if (r.type === 'plans') dailyPlans.push(...r.items);
+        else if (r.type === 'logs') {
+          r.items.forEach((l: SystemLog) => {
+            if (l && l.id) logsMap.set(l.id, l);
+          });
+        }
       }
+
+      const systemLogs = Array.from(logsMap.values()).sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
 
       restResult = {
         clients,
         warehouseProducts,
         dailyPlans,
-        systemLogs: Array.isArray(meta.systemLogs) ? meta.systemLogs : [],
+        systemLogs,
         deletedClientIds: Array.isArray(meta.deletedClientIds) ? meta.deletedClientIds : [],
         deletedWarehouseIds: Array.isArray(meta.deletedWarehouseIds) ? meta.deletedWarehouseIds : [],
         deletedPlanIds: Array.isArray(meta.deletedPlanIds) ? meta.deletedPlanIds : [],
@@ -618,6 +680,7 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
         _metaClientChunks: metaClientChunks,
         _metaWarehouseChunks: metaWarehouseChunks,
         _metaPlanChunks: metaPlanChunks,
+        _metaLogChunks: metaLogChunks,
       };
     } else {
       // 2. If meta is missing, probe chunk 0 docs or legacy snapshot directly
@@ -739,7 +802,10 @@ function mergeTwoCloudPayloads(
     const newEdits = w.initialEditCount || 0;
     const exHist = Array.isArray(ex.stockHistory) ? ex.stockHistory.length : 0;
     const newHist = Array.isArray(w.stockHistory) ? w.stockHistory.length : 0;
-    if (newUpd > exUpd || newEdits > exEdits || newHist >= exHist) {
+    if (
+      newUpd > exUpd ||
+      (newUpd === exUpd && (newEdits > exEdits || newHist >= exHist))
+    ) {
       whMap.set(w.id, w);
     }
   };
@@ -883,7 +949,8 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
           ((Number(remoteSnap._metaClientChunks) === 0 && remoteSnap.clients.length > 0) ||
             (Number(remoteSnap._metaWarehouseChunks) === 0 &&
               remoteSnap.warehouseProducts.length > 0) ||
-            (Number(remoteSnap._metaPlanChunks) === 0 && remoteSnap.dailyPlans.length > 0))
+            (Number(remoteSnap._metaPlanChunks) === 0 && remoteSnap.dailyPlans.length > 0) ||
+            (Number(remoteSnap._metaLogChunks) === 0 && currentPayload.systemLogs.length > 80))
       );
       if (
         !remoteNeedsMetaHeal &&
@@ -920,10 +987,12 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
         }))
       );
       const compactPlans = cleanFirestoreData(currentPayload.dailyPlans || []);
+      const compactLogs = cleanFirestoreData((currentPayload.systemLogs || []).slice(0, 2500));
 
       const clientChunks = chunkArrayByByteSize(compactClients, 320_000);
       const warehouseChunks = chunkArrayByByteSize(compactWh, 320_000);
       const planChunks = chunkArrayByByteSize(compactPlans, 320_000);
+      const logChunks = chunkArrayByByteSize(compactLogs, 300_000);
 
       let abortedByQuota = false;
       for (let i = 0; i < clientChunks.length; i++) {
@@ -971,13 +1040,29 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
         break;
       }
 
+      for (let i = 0; i < logChunks.length; i++) {
+        const st = await patchFirestoreDocJson(
+          `sync_snap_v2_logs_${i}`,
+          JSON.stringify({ items: logChunks[i] })
+        );
+        if (st === 'quota') {
+          abortedByQuota = true;
+          break;
+        }
+      }
+      if (abortedByQuota) {
+        lastSuccess = false;
+        break;
+      }
+
       const newUpdatedAt = new Date().toISOString();
       const metaJson = JSON.stringify(
         cleanFirestoreData({
           clientChunksCount: clientChunks.length,
           warehouseChunksCount: warehouseChunks.length,
           planChunksCount: planChunks.length,
-          systemLogs: (currentPayload.systemLogs || []).slice(0, 80),
+          logChunksCount: logChunks.length,
+          systemLogs: compactLogs.slice(0, 80),
           deletedClientIds: currentPayload.deletedClientIds || [],
           deletedWarehouseIds: currentPayload.deletedWarehouseIds || [],
           deletedPlanIds: currentPayload.deletedPlanIds || [],
@@ -1701,7 +1786,7 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
         clients: mergedClients,
         warehouseProducts: mergedWh,
         dailyPlans: mergedPlans.map((p) => preparePlanPayloadForFirestore(p)),
-        systemLogs: mergedLogs.slice(0, 150),
+        systemLogs: mergedLogs.slice(0, 2500),
         deletedClientIds: Array.from(allDeletedClients),
         deletedWarehouseIds: Array.from(allDeletedWh),
         deletedPlanIds: Array.from(allDeletedPlans),
@@ -1731,7 +1816,8 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
         cloudSnap &&
           ((Number(cloudSnap._metaClientChunks) === 0 && mergedClients.length > 0) ||
             (Number(cloudSnap._metaWarehouseChunks) === 0 && mergedWh.length > 0) ||
-            (Number(cloudSnap._metaPlanChunks) === 0 && mergedPlans.length > 0))
+            (Number(cloudSnap._metaPlanChunks) === 0 && mergedPlans.length > 0) ||
+            (Number(cloudSnap._metaLogChunks) === 0 && mergedLogs.length > 80))
       );
 
       if (

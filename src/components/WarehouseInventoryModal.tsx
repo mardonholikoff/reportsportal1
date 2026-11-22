@@ -17,11 +17,13 @@ import {
   EyeOff,
   History,
   RotateCcw,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { WarehouseProduct } from '../types';
 import { storageService } from '../services/storage';
 import { formatWarehouseStock, calculateProfitMargin, formatNumber, formatMoney } from '../utils/format';
 import { buildWarehouseProductChronology, ProductChronologyResult } from '../utils/warehouseChronology';
+import { exportWarehouseInventoryToXLSX } from '../utils/excelExport';
 import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
 
 interface Props {
@@ -107,10 +109,9 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
 
   const totalInventorySum = useMemo(() => {
     return filteredProducts.reduce((acc, p) => {
-      if (!snapshotDate) return acc + (p.totalSum || 0);
       const chron = chronologyMap.get(p.id);
-      const snap = chron ? chron.getStockAtDate(snapshotDate) : null;
-      const pieces = snap ? snap.pieces : p.totalPieces || 0;
+      const snap = snapshotDate && chron ? chron.getStockAtDate(snapshotDate) : null;
+      const pieces = snap ? snap.pieces : chron ? chron.currentPieces : p.totalPieces || 0;
       const costPerPiece =
         p.pricingUnitType === 'package' && (p.piecesPerPackage || 1) > 1
           ? (p.price || 0) / (p.piecesPerPackage || 1)
@@ -121,12 +122,33 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
 
   const totalInventoryPieces = useMemo(() => {
     return filteredProducts.reduce((acc, p) => {
-      if (!snapshotDate) return acc + (p.totalPieces || 0);
       const chron = chronologyMap.get(p.id);
-      const snap = chron ? chron.getStockAtDate(snapshotDate) : null;
-      return acc + (snap ? snap.pieces : p.totalPieces || 0);
+      const snap = snapshotDate && chron ? chron.getStockAtDate(snapshotDate) : null;
+      return acc + (snap ? snap.pieces : chron ? chron.currentPieces : p.totalPieces || 0);
     }, 0);
   }, [filteredProducts, snapshotDate, chronologyMap]);
+
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
+
+  const handleExportWarehouseExcel = async () => {
+    if (isExportingExcel || filteredProducts.length === 0) return;
+    setIsExportingExcel(true);
+    try {
+      const filterParts: string[] = [];
+      if (selectedBrand !== 'all') filterParts.push(`Brend: ${selectedBrand}`);
+      if (searchQuery.trim()) filterParts.push(`Qidiruv: "${searchQuery.trim()}"`);
+      await exportWarehouseInventoryToXLSX({
+        products: filteredProducts,
+        chronologyMap,
+        snapshotDate,
+        includeCostPrices: true,
+        includeMinSellingPrice: true,
+        filterSummary: filterParts.join(', '),
+      });
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
 
   const totalInitialPieces = useMemo(() => {
     return filteredProducts.reduce((acc, p) => {
@@ -162,7 +184,17 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <button
+              type="button"
+              onClick={handleExportWarehouseExcel}
+              disabled={isExportingExcel || filteredProducts.length === 0}
+              className="flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer"
+              title="Barcha ko'rinayotgan mahsulotlarni qoldig'i bilan Excel (.xlsx) faylga yuklab olish"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>{isExportingExcel ? 'Yuklanmoqda...' : 'Excelga yuklash (.xlsx)'}</span>
+            </button>
             <button
               onClick={() => {
                 onClose();

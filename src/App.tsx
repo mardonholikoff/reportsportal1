@@ -967,7 +967,12 @@ export default function App() {
               }
               const lwHist = Array.isArray(lw.stockHistory) ? lw.stockHistory : [];
               const rwHist = Array.isArray(rw.stockHistory) ? rw.stockHistory : [];
-              const mergedHist = lwHist.length >= rwHist.length ? lwHist : rwHist;
+              const mergedHist =
+                rwUpdatedTime > lwUpdatedTime || rwEditCount > lwEditCount
+                  ? rwHist
+                  : lwHist.length >= rwHist.length
+                  ? lwHist
+                  : rwHist;
               whMap.set(rw.id, {
                 ...rw,
                 initialIntakeDate: rw.initialIntakeDate || lw.initialIntakeDate,
@@ -2751,6 +2756,7 @@ export default function App() {
                   <AdminExcelComparisonSection
                     clients={clients}
                     warehouseProducts={warehouseProducts}
+                    dailyPlans={dailyPlans}
                   />
                 </div>
               </div>

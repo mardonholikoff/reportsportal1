@@ -17,7 +17,9 @@ import {
   Eye,
   EyeOff,
   History,
+  FileSpreadsheet,
 } from 'lucide-react';
+import { exportWarehouseInventoryToXLSX } from '../utils/excelExport';
 import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
 
 interface Props {
@@ -68,10 +70,12 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
   }, [products]);
 
   const getEffectivePieces = (p: WarehouseProduct): number => {
-    if (!snapshotDate) return p.totalPieces || 0;
     const chron = chronologyMap.get(p.id);
+    if (!snapshotDate) return chron ? chron.currentPieces : p.totalPieces || 0;
     return chron ? chron.getStockAtDate(snapshotDate).pieces : p.totalPieces || 0;
   };
+
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
 
   // Unique Brands
   const uniqueBrands = useMemo(() => {
@@ -196,8 +200,39 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
             />
           </div>
 
-          {/* Quick Summary Badges (Quantities only + Eye toggle for min selling price) */}
+          {/* Quick Summary Badges (Quantities only + Eye toggle for min selling price + Excel Export) */}
           <div className="flex items-center gap-2 text-xs font-semibold shrink-0 flex-wrap">
+            <button
+              type="button"
+              disabled={isExportingExcel || filteredProducts.length === 0}
+              onClick={async () => {
+                if (isExportingExcel || filteredProducts.length === 0) return;
+                setIsExportingExcel(true);
+                try {
+                  const filterParts: string[] = [];
+                  if (selectedBrand !== 'all') filterParts.push(`Brend: ${selectedBrand}`);
+                  if (selectedUnit !== 'all') filterParts.push(`Birlik: ${selectedUnit}`);
+                  if (stockFilter === 'in_stock') filterParts.push('Faqat mavjudlar');
+                  if (stockFilter === 'low_stock') filterParts.push('Kam qolganlar');
+                  if (search.trim()) filterParts.push(`Qidiruv: "${search.trim()}"`);
+                  await exportWarehouseInventoryToXLSX({
+                    products: filteredProducts,
+                    chronologyMap,
+                    snapshotDate,
+                    includeCostPrices: false,
+                    includeMinSellingPrice: showAllMinPrices,
+                    filterSummary: filterParts.join(', '),
+                  });
+                } finally {
+                  setIsExportingExcel(false);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-600 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold transition cursor-pointer shadow-2xs"
+              title="Barcha mahsulotlarni qoldig'i bilan Excel (.xlsx) faylga yuklab olish"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              <span>{isExportingExcel ? 'Yuklanmoqda...' : 'Excelga yuklash (.xlsx)'}</span>
+            </button>
             <button
               type="button"
               onClick={() => setShowAllMinPrices((prev) => !prev)}

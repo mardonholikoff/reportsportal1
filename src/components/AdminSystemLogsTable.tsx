@@ -196,10 +196,8 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
         pNum === 1 ? '15' : String(lastDayOfMonth).padStart(2, '0')
       }`;
 
-      // Check if this 15-day period has elapsed:
-      // 1. Year/Month is in the past, OR
-      // 2. In current month: if period 1 and currentDay > 15, OR
-      // 3. Any log in this group is >= 15 days old
+      // Check if this 15-day period has elapsed, while ALWAYS guaranteeing at least 5 full days of logs remain visible:
+      const minRetain5DaysCutoff = Date.now() - 5 * 24 * 60 * 60 * 1000;
       const isPastMonth =
         y < currentYear || (y === currentYear && mIdx < currentMonthIndex);
       const isPastPeriodInCurrentMonth =
@@ -208,9 +206,14 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
         const t = new Date(l.timestamp).getTime();
         return !isNaN(t) && t <= fifteenDaysAgo;
       });
+      const allLogsOlderThan5Days = pLogs.every((l) => {
+        const t = new Date(l.timestamp).getTime();
+        return !isNaN(t) && t < minRetain5DaysCutoff;
+      });
 
       const isCompleted =
-        isPastMonth || isPastPeriodInCurrentMonth || hasLogsOlderThan15Days;
+        allLogsOlderThan5Days &&
+        (isPastMonth || isPastPeriodInCurrentMonth || hasLogsOlderThan15Days);
 
       groups.push({
         periodKey: key,
@@ -233,7 +236,8 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
 
   // =========================================================================
   // AUTOMATIC 15-DAY TRANSITION:
-  // Har 15 kunda loglar avtomatik tarzda excelga o'tadi va bazadan o'chiriladi.
+  // Har 15 kunda loglar avtomatik tarzda excelga o'tadi va bazadan o'chiriladi,
+  // lekin eng kamida oxirgi 5 kunlik loglar har doim tizimda ko'rinib turadi.
   // =========================================================================
   useEffect(() => {
     if (autoPurgeExecutedRef.current || !onPurgeLogs) return;
@@ -243,9 +247,16 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
 
     autoPurgeExecutedRef.current = true;
 
-    // Process all completed 15-day periods
+    // Process all completed 15-day periods (never purging logs newer than 5 days)
     const runAutoArchive = async () => {
+      const minRetain5DaysCutoff = Date.now() - 5 * 24 * 60 * 60 * 1000;
       for (const group of completed) {
+        const purgeableLogs = group.logs.filter((l) => {
+          const t = new Date(l.timestamp).getTime();
+          return !isNaN(t) && t < minRetain5DaysCutoff;
+        });
+        if (purgeableLogs.length === 0) continue;
+
         const fileName = `Tizim_Audit_15kunlik_${group.periodKey}_Arxiv.xlsx`;
         const archive: SystemLogPeriodArchive = {
           id: `arch_15d_${group.periodKey}_${Date.now()}`,
@@ -253,14 +264,14 @@ export const AdminSystemLogsTable: React.FC<Props> = ({
           periodLabel: group.periodLabel,
           startDate: group.startDate,
           endDate: group.endDate,
-          logsCount: group.count,
+          logsCount: purgeableLogs.length,
           archivedAt: new Date().toISOString(),
           exportedBy: 'adminc1 (Avtomatik 15 kunlik)',
           fileName,
-          logs: [...group.logs],
+          logs: [...purgeableLogs],
         };
 
-        const ids = group.logs.map((l) => l.id);
+        const ids = purgeableLogs.map((l) => l.id);
         await onPurgeLogs(ids, archive);
       }
 

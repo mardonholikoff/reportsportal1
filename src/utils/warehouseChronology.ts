@@ -611,7 +611,7 @@ export function buildWarehouseProductChronology(
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
   const restockLogsOnly = rawHistory
-    .filter((h) => h && h.changeType === 'restock_intake' && (Number(h.deltaPieces) || 0) > 0)
+    .filter((h) => h && h.changeType === 'restock_intake' && (Number(h.deltaPieces) || 0) >= 0)
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
   const totalRestockedPieces = Math.round(
@@ -803,9 +803,8 @@ export function buildWarehouseProductChronology(
 
   restockLogsOnly.forEach((rl) => {
     const added = Math.max(0, Number(rl.deltaPieces) || 0);
-    if (added <= 0) return;
     const unitDisplay =
-      rl.quantityInUnit && rl.unit
+      rl.quantityInUnit !== undefined && rl.unit
         ? `${rl.quantityInUnit} ${rl.unit}`
         : formatPiecesForWarehouseProduct(product, added).primary;
     rawTimeline.push({
