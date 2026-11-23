@@ -392,9 +392,13 @@ function computeProductOrderInsensitiveSimilarity(tokensA: string[], tokensB: st
   }
 
   // Pass 1.75: Reject opposing side/position indicators or conflicting unmatched part codes
-  const remainingA = unmatchedAIdx.filter((i) => !usedA.has(i)).map((i) => a[i]);
-  const remainingB = unmatchedBIdx.filter((j) => !usedB.has(j)).map((j) => b[j]);
-  if (remainingA.length > 0 && remainingB.length > 0) {
+  // (Exception: allow a single 1-char typo in a long >=8-char part code like A370088201 vs A370068201
+  // when at least 2 other tokens already matched and no other digit tokens conflict)
+  const remainingAIdx = unmatchedAIdx.filter((i) => !usedA.has(i));
+  const remainingBIdx = unmatchedBIdx.filter((j) => !usedB.has(j));
+  if (remainingAIdx.length > 0 && remainingBIdx.length > 0) {
+    const remainingA = remainingAIdx.map((i) => a[i]);
+    const remainingB = remainingBIdx.map((j) => b[j]);
     const remASet = new Set(remainingA);
     const remBSet = new Set(remainingB);
     const opposingPairs: Array<[string, string]> = [
@@ -409,16 +413,43 @@ function computeProductOrderInsensitiveSimilarity(tokensA: string[], tokensB: st
       }
     }
 
-    const extractPartDigits = (tokens: string[]): string[] =>
-      tokens
-        .filter((t) => !/x/i.test(t) && !/^\d+(?:\.\d+)?(l|kg|ml|g|ea|pcs)$/i.test(t))
-        .map((t) => t.replace(/\D/g, ''))
-        .filter((d) => d.length >= 4);
+    const isPartCodeToken = (t: string): boolean => {
+      if (/x/i.test(t) || /^\d+(?:\.\d+)?(l|kg|ml|g|ea|pcs)$/i.test(t)) return false;
+      return t.replace(/\D/g, '').length >= 4;
+    };
 
-    const partDigitsA = extractPartDigits(remainingA);
-    const partDigitsB = extractPartDigits(remainingB);
-    if (partDigitsA.length > 0 && partDigitsB.length > 0) {
-      return 0;
+    const partAIdx = remainingAIdx.filter((i) => isPartCodeToken(a[i]));
+    const partBIdx = remainingBIdx.filter((j) => isPartCodeToken(b[j]));
+    if (partAIdx.length > 0 && partBIdx.length > 0) {
+      const matchedTokensCount = a.length - remainingAIdx.length;
+      const otherDigitA = remainingAIdx.some((i) => i !== partAIdx[0] && /\d/.test(a[i]));
+      const otherDigitB = remainingBIdx.some((j) => j !== partBIdx[0] && /\d/.test(b[j]));
+      let matchedSingleLongCodeTypo = false;
+
+      if (
+        partAIdx.length === 1 &&
+        partBIdx.length === 1 &&
+        matchedTokensCount >= 2 &&
+        !otherDigitA &&
+        !otherDigitB
+      ) {
+        const idxA = partAIdx[0];
+        const idxB = partBIdx[0];
+        const tokA = a[idxA];
+        const tokB = b[idxB];
+        const maxLen = Math.max(tokA.length, tokB.length);
+        if (maxLen >= 8 && levenshteinDistance(tokA, tokB) === 1) {
+          usedA.add(idxA);
+          usedB.add(idxB);
+          const sim = 1 - 1 / maxLen;
+          matchedWeight += sim * maxLen;
+          matchedSingleLongCodeTypo = true;
+        }
+      }
+
+      if (!matchedSingleLongCodeTypo) {
+        return 0;
+      }
     }
   }
 
@@ -1382,13 +1413,15 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       if (nName && dbByFullNorm.has(nName)) return dbByFullNorm.get(nName);
       if (nName && dbByNameNorm.has(nName)) return dbByNameNorm.get(nName);
 
-      // Strip leading "Brand - " or "Brand — " if present in Excel name
+      // Strip leading "Brand - ", "Brand — ", or "Umumiy — " if present in Excel name
       const dashSplit = rawName.split(/\s+[-—–]\s+/);
       const strippedDash = dashSplit.length > 1 ? dashSplit.slice(1).join(' - ').trim() : '';
-      if (strippedDash) {
-        const nStripped = normalizeText(strippedDash);
+      const strippedUmumiy = rawName.replace(/^umumiy\s*[-—–:]?\s*/i, '').trim();
+      for (const candidate of [strippedDash, strippedUmumiy !== rawName.trim() ? strippedUmumiy : '']) {
+        if (!candidate) continue;
+        const nStripped = normalizeText(candidate);
         if (dbByNameNorm.has(nStripped)) return dbByNameNorm.get(nStripped);
-        const lStripped = normalizeLooseKey(strippedDash);
+        const lStripped = normalizeLooseKey(candidate);
         if (dbByLooseName.has(lStripped)) return dbByLooseName.get(lStripped);
       }
 

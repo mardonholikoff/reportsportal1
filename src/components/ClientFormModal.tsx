@@ -155,6 +155,13 @@ export const ClientFormModal: React.FC<Props> = ({
     return Math.max(0, Math.round((rowDiscountedSum - extraDisc) * 100) / 100);
   }, [rowDiscountedSum, orderDiscountAmount]);
 
+  const isFullProductsDiscount = useMemo(() => {
+    return (
+      (rawProductsBaseSum > 0 && totalProductsSum <= 0) ||
+      (typeof orderDiscountPercent === 'number' && orderDiscountPercent >= 100)
+    );
+  }, [rawProductsBaseSum, totalProductsSum, orderDiscountPercent]);
+
   useEffect(() => {
     if (editingClient) {
       setClientCode(editingClient.clientCode || '');
@@ -256,10 +263,15 @@ export const ClientFormModal: React.FC<Props> = ({
 
   // Keep creditDebtAmount synced with totalProductsSum when user hasn't manually overridden it
   useEffect(() => {
+    if (isFullProductsDiscount) {
+      setIsGivenOnCredit(false);
+      setCreditDebtAmount(0);
+      return;
+    }
     if (!editingClient && isGivenOnCredit && !hasManuallyEditedDebt) {
       setCreditDebtAmount(totalProductsSum > 0 ? totalProductsSum : '');
     }
-  }, [totalProductsSum, isGivenOnCredit, hasManuallyEditedDebt, editingClient]);
+  }, [totalProductsSum, isGivenOnCredit, hasManuallyEditedDebt, editingClient, isFullProductsDiscount]);
 
   // Multiple phone handlers
   const handleAddPhone = () => {
@@ -592,13 +604,15 @@ export const ClientFormModal: React.FC<Props> = ({
         : 'Yangi mijozga mahsulot topshirish yuk xati (Nakladnoy)',
       productsDelivered: validProducts,
       paymentInfo: {
-        paymentLabel: isGivenOnCredit
+        paymentLabel: isFullProductsDiscount
+          ? '100% chegirma (0 USD)'
+          : isGivenOnCredit
           ? paidPortion > 0
             ? 'Qisman naqd + Nasiya (Qarzga)'
             : 'Nasiya (Qarzga)'
           : "To'liq to'landi (Naqd / O'tkazma)",
-        paidAmount: paidPortion,
-        debtAmount: effectiveProductDebt,
+        paidAmount: isFullProductsDiscount ? 0 : paidPortion,
+        debtAmount: isFullProductsDiscount ? 0 : effectiveProductDebt,
         totalClientDebt: effectiveDebt,
       },
       note: notes.trim() || undefined,
@@ -1328,100 +1342,114 @@ export const ClientFormModal: React.FC<Props> = ({
                   </span>
                 </div>
 
-                {/* Qarzga (Nasiyaga) yoki Naqdga berish */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <label
-                      htmlFor="credit_toggle"
-                      className="flex items-center gap-2 cursor-pointer select-none"
-                    >
-                      <input
-                        id="credit_toggle"
-                        type="checkbox"
-                        checked={isGivenOnCredit}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          setIsGivenOnCredit(checked);
-                          if (!checked) {
-                            setCreditDebtAmount(0);
-                          } else {
-                            setCreditDebtAmount(totalProductsSum);
-                          }
-                        }}
-                        className="w-4 h-4 text-rose-600 rounded-md border-neutral-300 focus:ring-rose-500 cursor-pointer"
-                      />
-                      <span className="text-xs font-bold text-neutral-900 flex items-center gap-1.5">
-                        <CreditCard className="w-3.5 h-3.5 text-rose-600" />
-                        <span>Mahsulotlar qarzga berildi (Nasiya)</span>
+                {/* Qarzga (Nasiyaga) yoki Naqdga berish (100% chegirma bo'lsa avtomatik yopiladi) */}
+                {isFullProductsDiscount ? (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 flex items-start gap-2">
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong className="block text-emerald-950">
+                        100% chegirma qo&apos;llanildi (0 USD)
+                      </strong>
+                      <span className="text-emerald-800">
+                        Yakuniy summa 0 USD bo&apos;lgani sababli to&apos;lov va nasiyaga (qarzga) berish bo&apos;limlari avtomatik yopildi.
                       </span>
-                    </label>
-
-                    {isGivenOnCredit && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCreditDebtAmount(totalProductsSum);
-                          setHasManuallyEditedDebt(false);
-                        }}
-                        className="text-[11px] font-semibold text-rose-700 hover:text-rose-900 underline cursor-pointer"
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <label
+                        htmlFor="credit_toggle"
+                        className="flex items-center gap-2 cursor-pointer select-none"
                       >
-                        To'liq qarzga (100%)
-                      </button>
+                        <input
+                          id="credit_toggle"
+                          type="checkbox"
+                          checked={isGivenOnCredit}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setIsGivenOnCredit(checked);
+                            if (!checked) {
+                              setCreditDebtAmount(0);
+                            } else {
+                              setCreditDebtAmount(totalProductsSum);
+                            }
+                          }}
+                          className="w-4 h-4 text-rose-600 rounded-md border-neutral-300 focus:ring-rose-500 cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-neutral-900 flex items-center gap-1.5">
+                          <CreditCard className="w-3.5 h-3.5 text-rose-600" />
+                          <span>Mahsulotlar qarzga berildi (Nasiya)</span>
+                        </span>
+                      </label>
+
+                      {isGivenOnCredit && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCreditDebtAmount(totalProductsSum);
+                            setHasManuallyEditedDebt(false);
+                          }}
+                          className="text-[11px] font-semibold text-rose-700 hover:text-rose-900 underline cursor-pointer"
+                        >
+                          To'liq qarzga (100%)
+                        </button>
+                      )}
+                    </div>
+
+                    {/* So'mdan USDga konvertatsiya (Nasiyaga yoki Naqdga berishda) */}
+                    <UsdConverterPanel
+                      label="Nasiya yoki naqd to'lovni so'mdan (UZS) USDga konvertatsiya qilish"
+                      onApplyUsd={(usdVal, convNote) => {
+                        if (isGivenOnCredit) {
+                          setHasManuallyEditedDebt(true);
+                          setCreditDebtAmount(usdVal);
+                        }
+                        setNotes((prev) => (prev ? `${prev} | ${convNote}` : convNote));
+                      }}
+                    />
+
+                    {/* Mahsulot qiymatidan qanchasi qarz ekanligini kiritish */}
+                    {isGivenOnCredit && (
+                      <div className="p-3 rounded-xl bg-rose-50/60 border border-rose-200 space-y-2 animate-in fade-in">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <label className="text-xs font-bold text-rose-900">
+                            Mahsulot qiymatidan qanchasi qarz (USD):
+                          </label>
+                          <span className="text-[11px] text-neutral-500">
+                            Oxirgi summadan qarz miqdorini belgilang
+                          </span>
+                        </div>
+
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={creditDebtAmount === '' ? '' : creditDebtAmount}
+                            onChange={(e) => {
+                              setHasManuallyEditedDebt(true);
+                              setCreditDebtAmount(
+                                e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                              );
+                            }}
+                            placeholder={totalProductsSum.toString()}
+                            className="w-full px-3.5 py-2.5 bg-white rounded-xl border border-rose-300 focus:border-rose-600 focus:ring-1 focus:ring-rose-300 text-sm font-bold text-neutral-900 font-mono tabular-nums outline-none"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] font-mono text-rose-800">
+                          <span>Belgilangan qarz: {formatMoney(effectiveDebt)}</span>
+                          {totalProductsSum > effectiveDebt && (
+                            <span className="text-emerald-700 font-sans font-semibold">
+                              (Naqd to'langan qismi: {formatMoney(totalProductsSum - effectiveDebt)})
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
-
-                  {/* So'mdan USDga konvertatsiya (Nasiyaga yoki Naqdga berishda) */}
-                  <UsdConverterPanel
-                    label="Nasiya yoki naqd to'lovni so'mdan (UZS) USDga konvertatsiya qilish"
-                    onApplyUsd={(usdVal, convNote) => {
-                      if (isGivenOnCredit) {
-                        setHasManuallyEditedDebt(true);
-                        setCreditDebtAmount(usdVal);
-                      }
-                      setNotes((prev) => (prev ? `${prev} | ${convNote}` : convNote));
-                    }}
-                  />
-
-                  {/* Mahsulot qiymatidan qanchasi qarz ekanligini kiritish */}
-                  {isGivenOnCredit && (
-                    <div className="p-3 rounded-xl bg-rose-50/60 border border-rose-200 space-y-2 animate-in fade-in">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                        <label className="text-xs font-bold text-rose-900">
-                          Mahsulot qiymatidan qanchasi qarz (USD):
-                        </label>
-                        <span className="text-[11px] text-neutral-500">
-                          Oxirgi summadan qarz miqdorini belgilang
-                        </span>
-                      </div>
-
-                      <div className="relative">
-                        <input
-                          type="number"
-                          min="0"
-                          step="any"
-                          value={creditDebtAmount === '' ? '' : creditDebtAmount}
-                          onChange={(e) => {
-                            setHasManuallyEditedDebt(true);
-                            setCreditDebtAmount(
-                              e.target.value === '' ? '' : parseFloat(e.target.value) || 0
-                            );
-                          }}
-                          placeholder={totalProductsSum.toString()}
-                          className="w-full px-3.5 py-2.5 bg-white rounded-xl border border-rose-300 focus:border-rose-600 focus:ring-1 focus:ring-rose-300 text-sm font-bold text-neutral-900 font-mono tabular-nums outline-none"
-                        />
-                      </div>
-
-                      <div className="flex items-center justify-between text-[11px] font-mono text-rose-800">
-                        <span>Belgilangan qarz: {formatMoney(effectiveDebt)}</span>
-                        {totalProductsSum > effectiveDebt && (
-                          <span className="text-emerald-700 font-sans font-semibold">
-                            (Naqd to'langan qismi: {formatMoney(totalProductsSum - effectiveDebt)})
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
             </div>
             )}

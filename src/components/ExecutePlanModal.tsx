@@ -620,7 +620,11 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     const dp = soldData.deliveryPayment;
     if (!dp || dp.paymentType === 'qarzga' || (dp.paidAmount || 0) <= 0) {
-      setDeliveryPayMode('qarzga');
+      const isZeroFullDiscount =
+        !!dp &&
+        (dp.totalAmount || 0) <= 0 &&
+        dp.paymentType !== 'qarzga';
+      setDeliveryPayMode(isZeroFullDiscount ? 'full' : 'qarzga');
       setIsDeliveryUzsMode(false);
       setSelectedDeliveryMethods(['naqd']);
       setDeliveryAmountsUsd({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
@@ -1108,11 +1112,24 @@ export const ExecutePlanModal: React.FC<Props> = ({
     return Math.max(0, Math.round((rowDiscountedDeliveredSum - extraDisc) * 100) / 100);
   }, [rowDiscountedDeliveredSum, orderDiscountAmount]);
 
+  // Umumiy summadan (yoki barcha qatorlardan) 100% chegirma berilganda to'lov/nasiya bo'limlari yopiladi
+  const isFullDeliveryDiscount = useMemo(() => {
+    return (
+      (rawBaseDeliveredSum > 0 && totalDeliveredSum <= 0) ||
+      (typeof orderDiscountPercent === 'number' && orderDiscountPercent >= 100)
+    );
+  }, [rawBaseDeliveredSum, totalDeliveredSum, orderDiscountPercent]);
+
   // Sync delivery paid amount when total delivery price changes in 'full' mode (with 1 selected method)
   useEffect(() => {
-    if (deliveryPayMode === 'qarzga') {
+    if (isFullDeliveryDiscount || deliveryPayMode === 'qarzga') {
       setDeliveryAmountsUsd({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
       setDeliveryAmountsUzs({ naqd: '', bank_otkazma: '', karta_otkazma: '', qr_otkazma: '' });
+      if (isFullDeliveryDiscount) {
+        setIsDeliveryUzsMode(false);
+        setHasExtraDeliveryDirectUsd(false);
+        setExtraDeliveryDirectUsdAmount('');
+      }
     } else if (deliveryPayMode === 'full' && selectedDeliveryMethods.length === 1 && !hasExtraDeliveryDirectUsd) {
       const mId = selectedDeliveryMethods[0];
       setDeliveryAmountsUsd({
@@ -1132,7 +1149,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
         });
       }
     }
-  }, [totalDeliveredSum, deliveryPayMode, selectedDeliveryMethods.length, hasExtraDeliveryDirectUsd]);
+  }, [totalDeliveredSum, deliveryPayMode, selectedDeliveryMethods.length, hasExtraDeliveryDirectUsd, isFullDeliveryDiscount]);
 
   const handleToggleDeliveryMethod = (methodId: FinancialMethodType) => {
     setSelectedDeliveryMethods((prev) => {
@@ -1184,7 +1201,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
   };
 
   const activeDeliverySplits = useMemo<FinancialPaymentSplit[]>(() => {
-    if (deliveryPayMode === 'qarzga') return [];
+    if (isFullDeliveryDiscount || deliveryPayMode === 'qarzga') return [];
     const baseSplits = selectedDeliveryMethods
       .map((mId) => {
         const meta = FINANCIAL_PAYMENT_METHODS.find((m) => m.id === mId);
@@ -1227,6 +1244,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
 
     return baseSplits;
   }, [
+    isFullDeliveryDiscount,
     deliveryPayMode,
     selectedDeliveryMethods,
     deliveryAmountsUsd,
@@ -1239,25 +1257,33 @@ export const ExecutePlanModal: React.FC<Props> = ({
   ]);
 
   const totalDeliveryPaidUsd = useMemo(() => {
-    if (deliveryPayMode === 'qarzga') return 0;
+    if (isFullDeliveryDiscount || deliveryPayMode === 'qarzga') return 0;
     const sum = activeDeliverySplits.reduce((acc, s) => acc + s.amount, 0);
     return Math.round(sum * 100) / 100;
-  }, [deliveryPayMode, activeDeliverySplits]);
+  }, [isFullDeliveryDiscount, deliveryPayMode, activeDeliverySplits]);
 
   const totalDeliveryPaidUzs = useMemo(() => {
-    if (deliveryPayMode === 'qarzga' || !isDeliveryUzsMode) return 0;
+    if (isFullDeliveryDiscount || deliveryPayMode === 'qarzga' || !isDeliveryUzsMode) return 0;
     return activeDeliverySplits.reduce(
       (acc, s) => acc + (s.amountUzs !== undefined && s.amountUzs > 0 ? s.amountUzs : 0),
       0
     );
-  }, [deliveryPayMode, isDeliveryUzsMode, activeDeliverySplits]);
+  }, [isFullDeliveryDiscount, deliveryPayMode, isDeliveryUzsMode, activeDeliverySplits]);
 
   const remainingDeliveryDebtUsd = useMemo(() => {
+    if (isFullDeliveryDiscount) return 0;
     if (deliveryPayMode === 'qarzga') return totalDeliveredSum;
     return Math.max(0, Math.round((totalDeliveredSum - totalDeliveryPaidUsd) * 100) / 100);
-  }, [deliveryPayMode, totalDeliveredSum, totalDeliveryPaidUsd]);
+  }, [isFullDeliveryDiscount, deliveryPayMode, totalDeliveredSum, totalDeliveryPaidUsd]);
 
   const deliveryPaymentSummary = useMemo(() => {
+    if (isFullDeliveryDiscount) {
+      return {
+        paymentType: 'naqd' as DeliveryPaymentType,
+        paymentLabel: '100% chegirma (0 USD)',
+      };
+    }
+
     if (deliveryPayMode === 'qarzga' || totalDeliveryPaidUsd <= 0) {
       return {
         paymentType: 'qarzga' as DeliveryPaymentType,
@@ -1294,7 +1320,7 @@ export const ExecutePlanModal: React.FC<Props> = ({
       paymentType: mappedType,
       paymentLabel: finalLabel,
     };
-  }, [deliveryPayMode, totalDeliveryPaidUsd, activeDeliverySplits, selectedDeliveryMethods, remainingDeliveryDebtUsd]);
+  }, [isFullDeliveryDiscount, deliveryPayMode, totalDeliveryPaidUsd, activeDeliverySplits, selectedDeliveryMethods, remainingDeliveryDebtUsd]);
 
   // Section 3: Add / remove product row (Yangi mahsulot tepada paydo bo'ladi, eskisi pastga suriladi)
   const handleAddProductRow = () => {
@@ -1657,9 +1683,35 @@ export const ExecutePlanModal: React.FC<Props> = ({
   const handleOpenNakladnoy = () => {
     if (!planItem) return;
 
-    const validDelivered = hasProducts
+    const extraOrderDisc = typeof orderDiscountAmount === 'number' ? orderDiscountAmount : 0;
+    const rawValidDelivered = hasProducts
       ? products.filter((p) => p.name.trim() !== '')
       : [];
+    let remainingDiscForNakladnoy = extraOrderDisc;
+    const validDelivered = rawValidDelivered.map((p, idx, arr) => {
+      if (extraOrderDisc <= 0 || rowDiscountedDeliveredSum <= 0) return p;
+      const rowVal = p.totalPrice !== undefined ? p.totalPrice : (p.quantity || 0) * (p.unitPrice || 0);
+      const share =
+        idx === arr.length - 1
+          ? remainingDiscForNakladnoy
+          : Math.min(rowVal, Math.round((extraOrderDisc * (rowVal / rowDiscountedDeliveredSum)) * 100) / 100);
+      remainingDiscForNakladnoy = Math.max(0, Math.round((remainingDiscForNakladnoy - share) * 100) / 100);
+      const adjustedTotal = Math.max(0, Math.round((rowVal - share) * 100) / 100);
+      const baseRowVal = (p.quantity || 0) * (p.originalUnitPrice ?? p.unitPrice ?? 0);
+      const newDiscountAmount = Math.round(((p.discountAmount || 0) + share) * 100) / 100;
+      const newDiscountPercent =
+        adjustedTotal <= 0 && baseRowVal > 0
+          ? 100
+          : baseRowVal > 0
+          ? Math.min(100, Math.round((newDiscountAmount / baseRowVal) * 100 * 100) / 100)
+          : p.discountPercent || 0;
+      return {
+        ...p,
+        discountPercent: newDiscountPercent,
+        discountAmount: newDiscountAmount,
+        totalPrice: adjustedTotal,
+      };
+    });
 
     const directReturned = hasReturns
       ? Object.entries(returnsMap)
@@ -1771,9 +1823,18 @@ export const ExecutePlanModal: React.FC<Props> = ({
           : Math.min(rowVal, Math.round((extraOrderDisc * (rowVal / rowDiscountedDeliveredSum)) * 100) / 100);
       remainingDiscToDistribute = Math.max(0, Math.round((remainingDiscToDistribute - share) * 100) / 100);
       const adjustedTotal = Math.max(0, Math.round((rowVal - share) * 100) / 100);
+      const baseRowVal = (p.quantity || 0) * (p.originalUnitPrice ?? p.unitPrice ?? 0);
+      const newDiscountAmount = Math.round(((p.discountAmount || 0) + share) * 100) / 100;
+      const newDiscountPercent =
+        adjustedTotal <= 0 && baseRowVal > 0
+          ? 100
+          : baseRowVal > 0
+          ? Math.min(100, Math.round((newDiscountAmount / baseRowVal) * 100 * 100) / 100)
+          : p.discountPercent || 0;
       return {
         ...p,
-        discountAmount: Math.round(((p.discountAmount || 0) + share) * 100) / 100,
+        discountPercent: newDiscountPercent,
+        discountAmount: newDiscountAmount,
         totalPrice: adjustedTotal,
       };
     });
@@ -1955,9 +2016,18 @@ export const ExecutePlanModal: React.FC<Props> = ({
           : Math.min(rowVal, Math.round((extraOrderDisc * (rowVal / rowDiscountedDeliveredSum)) * 100) / 100);
       remainingDiscToDistribute = Math.max(0, Math.round((remainingDiscToDistribute - share) * 100) / 100);
       const adjustedTotal = Math.max(0, Math.round((rowVal - share) * 100) / 100);
+      const baseRowVal = (p.quantity || 0) * (p.originalUnitPrice ?? p.unitPrice ?? 0);
+      const newDiscountAmount = Math.round(((p.discountAmount || 0) + share) * 100) / 100;
+      const newDiscountPercent =
+        adjustedTotal <= 0 && baseRowVal > 0
+          ? 100
+          : baseRowVal > 0
+          ? Math.min(100, Math.round((newDiscountAmount / baseRowVal) * 100 * 100) / 100)
+          : p.discountPercent || 0;
       return {
         ...p,
-        discountAmount: Math.round(((p.discountAmount || 0) + share) * 100) / 100,
+        discountPercent: newDiscountPercent,
+        discountAmount: newDiscountAmount,
         totalPrice: adjustedTotal,
       };
     });
@@ -3686,7 +3756,21 @@ export const ExecutePlanModal: React.FC<Props> = ({
                         </span>
                       </div>
 
-                      {/* 2. MAHSULOT UCHUN HISOB-KITOB REJIMI: TO'LIQ TO'LOV | QISMAN TO'LOV + QISMAN QARZ (NASIYA) | TO'LIQ NASIYA */}
+                      {/* 2. MAHSULOT UCHUN HISOB-KITOB REJIMI: 100% CHEGIRMA BO'LSA AVTOMATIK YOPILADI */}
+                      {isFullDeliveryDiscount ? (
+                        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 flex items-start gap-2.5 animate-in fade-in duration-150">
+                          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                          <div>
+                            <strong className="block text-emerald-950">
+                              100% chegirma qo&apos;llanildi (0 USD)
+                            </strong>
+                            <span className="text-emerald-800">
+                              Umumiy summadan 100% chegirma berilgani sababli to&apos;lov va nasiyaga (qarzga) berish bo&apos;limlari avtomatik yopildi. Mijozga qo&apos;shimcha to&apos;lov yoki qarz yozilmaydi.
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
                       <div className="space-y-2.5">
                         <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wide">
                           Mahsulot uchun to'lov va nasiya holati <span className="text-rose-600">*</span>
@@ -4269,6 +4353,8 @@ export const ExecutePlanModal: React.FC<Props> = ({
                             mijozning joriy qarzdorligiga qo'shiladi.
                           </div>
                         </div>
+                      )}
+                        </>
                       )}
                     </div>
                   )}

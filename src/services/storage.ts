@@ -1983,7 +1983,9 @@ class StorageService {
           .join(', ');
 
         const payDesc =
-          payType === 'qarzga'
+          totalDeliveredValue <= 0 && paidAmt <= 0 && debtAdded <= 0
+            ? "100% chegirma (0 USD — to'lov va qarz yozilmadi)"
+            : payType === 'qarzga'
             ? `Qarzga berildi (+${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD qarzga yozildi)`
             : `To'lov shakli: ${deliveryPay?.paymentLabel || payType} (${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(paidAmt)} USD)${debtAdded > 0 ? `, qoldiq qarz: +${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD` : ''}`;
 
@@ -2381,7 +2383,9 @@ class StorageService {
         : "Mahsulotlar bekor qilindi";
     const debtAdded = Math.max(0, Math.round((newTotalValue - newPaidAmt) * 100) / 100);
     const payDesc =
-      newPayType === 'qarzga'
+      newTotalValue <= 0 && newPaidAmt <= 0 && debtAdded <= 0
+        ? "100% chegirma (0 USD — to'lov va qarz yozilmadi)"
+        : newPayType === 'qarzga'
         ? `Nasiyaga (Qarzga: +${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD)`
         : `To'lov turi: ${newDeliveryPayment.paymentLabel || newPayType} (To'landi: ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(newPaidAmt)} USD${debtAdded > 0 ? `, Qarzga: +${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(debtAdded)} USD` : ''})`;
 
