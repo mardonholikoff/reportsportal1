@@ -2434,7 +2434,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
                   <div className="rounded-2xl border border-neutral-200 overflow-hidden">
                     <StickyTableWrapper maxHeightClassName="max-h-[520px]">
                       <table className="w-full min-w-[920px] text-left text-xs">
-                        <thead className="bg-neutral-900 text-white text-[11px] font-bold sticky top-0 z-10">
+                        <thead className="bg-rose-50 text-black text-[11px] font-bold sticky top-0 z-10">
                           <tr>
                             <th className="py-3 px-3 w-10 text-center">№</th>
                             <th className="py-3 px-3">Mijoz</th>
@@ -2969,7 +2969,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
                   <div className="rounded-2xl border border-neutral-200 overflow-hidden">
                     <StickyTableWrapper maxHeightClassName="max-h-[520px]">
                       <table className="w-full min-w-[780px] text-left text-xs">
-                        <thead className="bg-neutral-900 text-white text-[11px] font-bold sticky top-0 z-10">
+                        <thead className="bg-rose-50 text-black text-[11px] font-bold sticky top-0 z-10">
                           <tr>
                             <th className="py-3 px-3 w-10 text-center">№</th>
                             <th className="py-3 px-3">Mahsulot</th>
