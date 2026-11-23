@@ -173,6 +173,9 @@ async function readServerFirestoreDoc(docId: string): Promise<any | null> {
 }
 
 let serverHasPulledCloudOnce = false;
+let lastPulledCloudMetaUpdatedAt = '';
+let cachedSerializedJson = '';
+let cachedSerializedAt = -1;
 
 async function pushServerStateToFirestoreCloud(): Promise<void> {
   if (!firebaseCfg || !firebaseCfg.projectId || !firebaseCfg.apiKey) return;
@@ -249,7 +252,8 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
       }
       if (aborted) break;
 
-      await patchServerFirestoreDoc(
+      const pushedAt = new Date().toISOString();
+      const metaRes = await patchServerFirestoreDoc(
         SNAP_META_DOC_ID,
         JSON.stringify({
           clientChunksCount: clientChunks.length,
@@ -260,20 +264,32 @@ async function pushServerStateToFirestoreCloud(): Promise<void> {
           deletedClientIds: snapshot.deletedClientIds || [],
           deletedWarehouseIds: snapshot.deletedWarehouseIds || [],
           deletedPlanIds: snapshot.deletedPlanIds || [],
-          updatedAt: new Date().toISOString(),
+          updatedAt: pushedAt,
         })
       );
+      if (metaRes === 'ok') {
+        lastPulledCloudMetaUpdatedAt = pushedAt;
+      }
     } while (cloudPushQueued);
   } finally {
     cloudPushInFlight = false;
   }
 }
 
-async function pullServerStateFromFirestoreCloud(): Promise<void> {
+async function pullServerStateFromFirestoreCloud(forceFull = false): Promise<void> {
   if (!firebaseCfg || !firebaseCfg.projectId || !firebaseCfg.apiKey) return;
   try {
     const meta = await readServerFirestoreDoc(SNAP_META_DOC_ID);
     if (meta && typeof meta === 'object') {
+      const metaUpdatedAt = typeof meta.updatedAt === 'string' ? meta.updatedAt : '';
+      if (
+        !forceFull &&
+        serverHasPulledCloudOnce &&
+        metaUpdatedAt &&
+        metaUpdatedAt === lastPulledCloudMetaUpdatedAt
+      ) {
+        return;
+      }
       const clientChunksCount = Math.max(Number(meta.clientChunksCount) || 0, 1);
       const warehouseChunksCount = Math.max(Number(meta.warehouseChunksCount) || 0, 1);
       const planChunksCount = Math.max(Number(meta.planChunksCount) || 0, 1);
@@ -319,6 +335,9 @@ async function pullServerStateFromFirestoreCloud(): Promise<void> {
         },
         false
       );
+      if (metaUpdatedAt) {
+        lastPulledCloudMetaUpdatedAt = metaUpdatedAt;
+      }
       serverHasPulledCloudOnce = true;
       return;
     }
@@ -560,26 +579,40 @@ function serializeStateResponse() {
   };
 }
 
+function getCachedSerializedStateJson(): string {
+  if (cachedSerializedAt === sharedState.updatedAt && cachedSerializedJson) {
+    return cachedSerializedJson;
+  }
+  cachedSerializedJson = JSON.stringify(serializeStateResponse());
+  cachedSerializedAt = sharedState.updatedAt;
+  return cachedSerializedJson;
+}
+
 async function startServer() {
   // Initial pull from Firestore cloud snapshot on startup
-  pullServerStateFromFirestoreCloud();
+  pullServerStateFromFirestoreCloud(true);
   setInterval(() => {
-    pullServerStateFromFirestoreCloud();
-  }, 4000);
+    pullServerStateFromFirestoreCloud(false);
+  }, 15000);
 
   const app = express();
   app.use(express.json({ limit: '50mb' }));
 
-  app.get('/api/sync-state', (_req, res) => {
+  app.get('/api/sync-state', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.json(serializeStateResponse());
+    const sinceParam = Number(req.query.since || 0);
+    if (sinceParam > 0 && sinceParam === sharedState.updatedAt) {
+      res.json({ unchanged: true, updatedAt: sharedState.updatedAt });
+      return;
+    }
+    res.type('application/json').send(getCachedSerializedStateJson());
   });
 
   app.post('/api/sync-state', (req, res) => {
     try {
       mergePayloadIntoState(req.body, true);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json(serializeStateResponse());
+      res.type('application/json').send(getCachedSerializedStateJson());
     } catch (err) {
       console.error('Error in POST /api/sync-state:', err);
       res.status(500).json({ error: 'Failed to merge sync state' });

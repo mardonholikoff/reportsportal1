@@ -36,7 +36,7 @@ import {
 } from '../utils/exportClientDailyActionsMatrixExcel';
 import { StickyTableWrapper } from './StickyTableWrapper';
 import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
-import { buildWarehouseProductChronology, ProductChronologyResult } from '../utils/warehouseChronology';
+import { buildWarehouseChronologyMap, ProductChronologyResult } from '../utils/warehouseChronology';
 import {
   Package,
   History,
@@ -156,21 +156,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   const [block1SnapshotDate, setBlock1SnapshotDate] = useState<string>('');
 
   const block1ChronologyMap = useMemo(() => {
-    const map = new Map<string, ProductChronologyResult>();
+    if (effectiveBlockView !== 'block1') return new Map<string, ProductChronologyResult>();
     const plansForChron = propPlans !== undefined ? propPlans : storageService.getDailyPlans();
     const clientsForChron = propClients !== undefined ? propClients : storageService.getClients();
-    internalProducts.forEach((p) => {
-      map.set(
-        p.id,
-        buildWarehouseProductChronology(p, plansForChron, clientsForChron, undefined, internalProducts)
-      );
-    });
-    return map;
-  }, [internalProducts, propPlans, propClients]);
+    return buildWarehouseChronologyMap(internalProducts, plansForChron, clientsForChron);
+  }, [effectiveBlockView, internalProducts, propPlans, propClients]);
 
   const getBlock1EffectivePieces = (p: WarehouseProduct): number => {
-    if (!block1SnapshotDate) return p.totalPieces || 0;
     const chron = block1ChronologyMap.get(p.id);
+    if (!block1SnapshotDate) return chron ? chron.currentPieces : p.totalPieces || 0;
     return chron ? chron.getStockAtDate(block1SnapshotDate).pieces : p.totalPieces || 0;
   };
 
@@ -192,6 +186,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   }, [internalProducts]);
 
   const filteredProducts = useMemo(() => {
+    if (effectiveBlockView !== 'block1') return [];
     let list = internalProducts.filter((p) => {
       if (deferredStockSearch.trim()) {
         const q = deferredStockSearch.toLowerCase().trim();
@@ -238,6 +233,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
     return list;
   }, [
+    effectiveBlockView,
     internalProducts,
     deferredStockSearch,
     selectedBrand,
@@ -261,6 +257,15 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   }, [filteredProducts, block1PageSize, safeBlock1Page]);
 
   const stockStats = useMemo(() => {
+    if (effectiveBlockView !== 'block1') {
+      return {
+        totalProducts: internalProducts.length,
+        totalPieces: 0,
+        totalInitialPieces: 0,
+        lowStockCount: 0,
+        outOfStockCount: 0,
+      };
+    }
     let totalPieces = 0;
     let totalInitialPieces = 0;
     let lowStockCount = 0;
@@ -285,7 +290,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       lowStockCount,
       outOfStockCount,
     };
-  }, [internalProducts, block1SnapshotDate, block1ChronologyMap]);
+  }, [effectiveBlockView, internalProducts, block1SnapshotDate, block1ChronologyMap]);
 
   const handleExportStockExcel = async () => {
     try {
@@ -365,6 +370,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   // Pre-compute per-client balance for Block 2 based on b2StartDate / b2EndDate
   const clientB2BalanceMap = useMemo(() => {
     const map = new Map<string, { debt: number; advance: number; hadActivityInPeriod: boolean }>();
+    if (effectiveBlockView !== 'block2') return map;
     const startStr = b2StartDate || '';
     const endStr = b2EndDate || b2StartDate || '';
 
@@ -432,7 +438,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
       }
     }
     return map;
-  }, [internalClients, isB2DateActive, b2StartDate, b2EndDate, b2DateCalcMode]);
+  }, [effectiveBlockView, internalClients, isB2DateActive, b2StartDate, b2EndDate, b2DateCalcMode]);
 
   // Pre-compute global balance counts for Block 2 filter buttons in a single O(N) pass
   const globalClientBalanceCounts = useMemo(() => {
@@ -554,6 +560,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   };
 
   const filteredAnnualClients = useMemo(() => {
+    if (effectiveBlockView !== 'block2') return [];
     let list: ClientAnnualData[] = internalClients.map((c) => {
       const bal = clientB2BalanceMap.get(c.id);
       return {
@@ -649,6 +656,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
     return list;
   }, [
+    effectiveBlockView,
     internalClients,
     deferredClientSearch,
     selectedRegion,
@@ -927,6 +935,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   };
 
   const filteredDeliveryClients = useMemo(() => {
+    if (effectiveBlockView !== 'block3') return [];
     let list: ClientProductAnnualItem[] = internalClients.map((c) => {
       const months = computeClientProductDeliveries(c, delivYear, delivStartDate, delivEndDate);
       let totalDeliveredCreditSum = 0;
@@ -1004,6 +1013,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
     return list;
   }, [
+    effectiveBlockView,
     internalClients,
     internalPlansByClientMap,
     deferredDelivSearch,
@@ -1113,6 +1123,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
   // Rule: If a client was selected for a plan on a given day and the plan was closed (with action),
   // even if multiple financial or product operations were performed on that day, it counts as 1 action (1 marta) for that day.
   const allActionItems = useMemo(() => {
+    if (effectiveBlockView !== 'block4') return [];
     const dailyClientMap = new Map<string, ActionExportItem>();
 
     internalPlans.forEach((plan) => {
@@ -1409,7 +1420,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     });
 
     return Array.from(dailyClientMap.values());
-  }, [internalPlans, internalClientsMap]);
+  }, [effectiveBlockView, internalPlans, internalClientsMap]);
 
   // Unique agents in 4-blok
   const uniqueActionAgents = useMemo(() => {
@@ -1888,6 +1899,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
   // Extract all payment transactions (both UZS-to-USD converted & direct USD payments, for plain payments & product deliveries)
   const allUzsConversionItems = useMemo<UzsConversionAnalyticsItem[]>(() => {
+    if (effectiveBlockView !== 'block5') return [];
     const items: UzsConversionAnalyticsItem[] = [];
 
     // 1. From DailyPlans (actionsHistory & top-level fields)
@@ -2115,7 +2127,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     });
 
     return items;
-  }, [internalPlans, internalClients, internalClientsMap]);
+  }, [effectiveBlockView, internalPlans, internalClients, internalClientsMap]);
 
   const uniqueB5Authors = useMemo(() => {
     const set = new Set<string>();
@@ -2385,6 +2397,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
 
   // Build lookup of completed & closed actions per (clientId, dateStr) -> { hasT, hasB, agents }
   const b6MatrixRows: ClientDailyMatrixRow[] = useMemo(() => {
+    if (effectiveBlockView !== 'block6') return [];
     const dateSet = new Set(b6DatesList);
     // Map: clientId -> dateStr -> { hasT: boolean; hasB: boolean; agents: Set<string> }
     const clientDayMap = new Map<
@@ -2536,6 +2549,7 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
     result.sort((a, b) => a.clientName.localeCompare(b.clientName, 'uz'));
     return result;
   }, [
+    effectiveBlockView,
     internalClients,
     internalPlans,
     b6DatesList,
@@ -2672,7 +2686,10 @@ export const AdminDashboardAnalytics: React.FC<Props> = ({
             }`}
           >
             <Calculator className="w-4 h-4" />
-            <span>5-Blok: To'lovlar va konvertatsiya ({allUzsConversionItems.length})</span>
+            <span>
+              5-Blok: To'lovlar va konvertatsiya
+              {effectiveBlockView === 'block5' ? ` (${allUzsConversionItems.length})` : ''}
+            </span>
           </button>
 
           <button

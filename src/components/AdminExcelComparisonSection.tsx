@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 import { Client, DailyPlanItem, WarehouseProduct } from '../types';
 import { formatMoney, formatNumber } from '../utils/format';
-import { buildWarehouseProductChronology } from '../utils/warehouseChronology';
+import { buildWarehouseChronologyMap } from '../utils/warehouseChronology';
 import { storageService } from '../services/storage';
 import { StickyTableWrapper } from './StickyTableWrapper';
 import {
@@ -1186,6 +1186,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
 
     const resolvedPlans =
       dailyPlans && dailyPlans.length > 0 ? dailyPlans : storageService.getDailyPlans();
+    const chronMap = buildWarehouseChronologyMap(warehouseProducts, resolvedPlans, clients);
     const dbLivePiecesMap = new Map<string, number>();
     const dbTokenCache: Array<{
       product: WarehouseProduct;
@@ -1195,13 +1196,7 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
     }> = [];
 
     warehouseProducts.forEach((w) => {
-      const chron = buildWarehouseProductChronology(
-        w,
-        resolvedPlans,
-        clients,
-        undefined,
-        warehouseProducts
-      );
+      const chron = chronMap.get(w.id);
       dbLivePiecesMap.set(w.id, Math.round((chron ? chron.currentPieces : Number(w.totalPieces) || 0) * 100) / 100);
 
       const m1 = normalizeLooseKey(w.mark1);

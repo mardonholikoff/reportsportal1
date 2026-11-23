@@ -592,14 +592,29 @@ function parseMonthlySnapshotDocs(
   }
 }
 
-async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
+let lastReadFirestoreMetaUpdatedAt = '';
+let cachedFirestoreSnapshot: CloudStatePayload | null = null;
+let lastReadCloudWasUnchanged = false;
+
+async function readFirestoreCloudSnapshot(forceFull = false): Promise<CloudStatePayload | null> {
   if (typeof window === 'undefined') return null;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return null;
+  lastReadCloudWasUnchanged = false;
   let restResult: CloudStatePayload | null = null;
   try {
     // 1. Try reading chunked v2 metadata + chunks via REST first
     const meta = await readFirestoreDocJson(SNAP_META_DOC_ID);
     if (meta && typeof meta === 'object') {
+      const metaUpdatedAt = typeof meta.updatedAt === 'string' ? meta.updatedAt : '';
+      if (
+        !forceFull &&
+        metaUpdatedAt &&
+        metaUpdatedAt === lastReadFirestoreMetaUpdatedAt &&
+        cachedFirestoreSnapshot
+      ) {
+        lastReadCloudWasUnchanged = true;
+        return cachedFirestoreSnapshot;
+      }
       const metaClientChunks = Number(meta.clientChunksCount) || 0;
       const metaWarehouseChunks = Number(meta.warehouseChunksCount) || 0;
       const metaPlanChunks = Number(meta.planChunksCount) || 0;
@@ -728,6 +743,10 @@ async function readFirestoreCloudSnapshot(): Promise<CloudStatePayload | null> {
       restResult.warehouseProducts.length > 0 ||
       restResult.dailyPlans.length > 0)
   ) {
+    if (restResult.updatedAt) {
+      lastReadFirestoreMetaUpdatedAt = restResult.updatedAt;
+    }
+    cachedFirestoreSnapshot = restResult;
     return restResult;
   }
 
@@ -1073,6 +1092,15 @@ async function writeFirestoreCloudSnapshot(payload: CloudStatePayload): Promise<
       const metaSt = await patchFirestoreDocJson(SNAP_META_DOC_ID, metaJson);
       if (metaSt === 'ok') {
         lastSavedCloudSignature = currentSig;
+        lastReadFirestoreMetaUpdatedAt = newUpdatedAt;
+        cachedFirestoreSnapshot = {
+          ...currentPayload,
+          updatedAt: newUpdatedAt,
+          _metaClientChunks: clientChunks.length,
+          _metaWarehouseChunks: warehouseChunks.length,
+          _metaPlanChunks: planChunks.length,
+          _metaLogChunks: logChunks.length,
+        };
         lastSuccess = true;
       } else {
         lastSuccess = false;
@@ -1437,7 +1465,63 @@ export async function deleteMonthlyPlanFromFirestore(_planId: string): Promise<v
   scheduleCloudStatePush(100);
 }
 
-// Helper to apply incoming cloud snapshot state to callbacks
+// Per-slice signature cache so identical cloud/relay polls NEVER trigger redundant localStorage writes or full React re-renders
+const lastAppliedSliceSigs = {
+  clients: '',
+  warehouse: '',
+  plans: '',
+  monthlyPlans: '',
+  logs: '',
+};
+
+function computeClientsSliceSig(items: Client[]): string {
+  return items
+    .map(
+      (c) =>
+        `${c.id}:${c.updatedAt || ''}:${c.initialDebt ?? ''}:${c.currentDebt}:${c.currentAdvance ?? 0}:${(c.logs || []).length}:${(c.products || []).length}`
+    )
+    .sort()
+    .join('|');
+}
+
+function computeWarehouseSliceSig(items: WarehouseProduct[]): string {
+  return items
+    .map(
+      (w) =>
+        `${w.id}:${(w as any).updatedAt || ''}:${w.totalPieces}:${w.initialTotalPieces ?? ''}:${w.initialEditCount ?? 0}:${(w.stockHistory || []).length}`
+    )
+    .sort()
+    .join('|');
+}
+
+function computePlansSliceSig(items: DailyPlanItem[]): string {
+  return items
+    .map(
+      (p) =>
+        `${p.id}:${p.status}:${p.isClosed ? 1 : 0}:${p.lastExecutedAt || ''}:${p.closedAt || ''}:${p.reopenedAt || ''}:${(p.actionsHistory || []).length}`
+    )
+    .sort()
+    .join('|');
+}
+
+function computeMonthlyPlansSliceSig(items: MonthlyPlan[]): string {
+  return items
+    .map(
+      (m) =>
+        `${m.id}:${m.updatedAt || m.createdAt || ''}:${(m.editHistory || []).length}`
+    )
+    .sort()
+    .join('|');
+}
+
+function computeLogsSliceSig(items: SystemLog[]): string {
+  if (items.length === 0) return '0';
+  const first = items[0];
+  const last = items[items.length - 1];
+  return `${items.length}:${first?.id || ''}:${first?.timestamp || ''}:${last?.id || ''}`;
+}
+
+// Helper to apply incoming cloud snapshot state to callbacks (only fires callbacks for slices that actually changed)
 function applyIncomingStateToCallbacks(
   data: Partial<CloudStatePayload>,
   callbacks: {
@@ -1446,9 +1530,11 @@ function applyIncomingStateToCallbacks(
     onWarehouseChange?: (products: WarehouseProduct[]) => void;
     onLogsChange?: (logs: SystemLog[]) => void;
     onMonthlyPlansChange?: (plans: MonthlyPlan[]) => void;
-  }
-): void {
-  if (!data) return;
+  },
+  forceApply = false
+): boolean {
+  if (!data) return false;
+  let anyChanged = false;
 
   if (Array.isArray(data.deletedClientIds)) {
     data.deletedClientIds.forEach((id: string) => markClientAsDeleted(id));
@@ -1468,14 +1554,24 @@ function applyIncomingStateToCallbacks(
     const cleanClients = (data.clients as Client[]).filter(
       (c) => c && c.id && !deletedIds.has(c.id) && !isLegacyWipedRecord(c.id)
     );
-    callbacks.onClientsChange(cleanClients);
+    const sig = computeClientsSliceSig(cleanClients);
+    if (forceApply || sig !== lastAppliedSliceSigs.clients) {
+      lastAppliedSliceSigs.clients = sig;
+      callbacks.onClientsChange(cleanClients);
+      anyChanged = true;
+    }
   }
 
   if (callbacks.onWarehouseChange && Array.isArray(data.warehouseProducts)) {
     const cleanWh = (data.warehouseProducts as WarehouseProduct[]).filter(
       (w) => w && w.id && !deletedWhIds.has(w.id) && !isLegacyWipedRecord(w.id)
     );
-    callbacks.onWarehouseChange(cleanWh);
+    const sig = computeWarehouseSliceSig(cleanWh);
+    if (forceApply || sig !== lastAppliedSliceSigs.warehouse) {
+      lastAppliedSliceSigs.warehouse = sig;
+      callbacks.onWarehouseChange(cleanWh);
+      anyChanged = true;
+    }
   }
 
   if (callbacks.onPlansChange && Array.isArray(data.dailyPlans)) {
@@ -1494,22 +1590,39 @@ function applyIncomingStateToCallbacks(
         cleanPlans.push(item);
       }
     }
-    callbacks.onPlansChange(cleanPlans);
+    const sig = computePlansSliceSig(cleanPlans);
+    if (forceApply || sig !== lastAppliedSliceSigs.plans) {
+      lastAppliedSliceSigs.plans = sig;
+      callbacks.onPlansChange(cleanPlans);
+      anyChanged = true;
+    }
   }
 
   if (callbacks.onMonthlyPlansChange && Array.isArray(data.monthlyPlans)) {
     const cleanMp = (data.monthlyPlans as MonthlyPlan[]).filter(
       (m) => m && m.id && !isLegacyWipedRecord(m.id)
     );
-    callbacks.onMonthlyPlansChange(cleanMp);
+    const sig = computeMonthlyPlansSliceSig(cleanMp);
+    if (forceApply || sig !== lastAppliedSliceSigs.monthlyPlans) {
+      lastAppliedSliceSigs.monthlyPlans = sig;
+      callbacks.onMonthlyPlansChange(cleanMp);
+      anyChanged = true;
+    }
   }
 
   if (callbacks.onLogsChange && Array.isArray(data.systemLogs)) {
     const cleanLogs = (data.systemLogs as SystemLog[]).filter(
       (l) => l && l.id && !isLegacyWipedRecord(l.id)
     );
-    callbacks.onLogsChange(cleanLogs);
+    const sig = computeLogsSliceSig(cleanLogs);
+    if (forceApply || sig !== lastAppliedSliceSigs.logs) {
+      lastAppliedSliceSigs.logs = sig;
+      callbacks.onLogsChange(cleanLogs);
+      anyChanged = true;
+    }
   }
+
+  return anyChanged;
 }
 
 function recordSuccessfulSyncTimestamp() {
@@ -1536,8 +1649,8 @@ export function subscribeToFirestoreData(callbacks: {
   // Listen to monthlyPlans collection which also holds our real-time chunked sync snapshots!
   const unsubCloudState = onSnapshot(
     collection(db, 'monthlyPlans'),
-    { includeMetadataChanges: true },
     (snapshot) => {
+      if (snapshot.metadata.hasPendingWrites) return;
       const monthlyList: MonthlyPlan[] = [];
       let hasV2Update = false;
       snapshot.forEach((d) => {
@@ -1570,6 +1683,10 @@ export function subscribeToFirestoreData(callbacks: {
             directSnap.dailyPlans.length > 0)
         ) {
           latestOnSnapshotCloudPayload = directSnap;
+          if (directSnap.updatedAt) {
+            lastReadFirestoreMetaUpdatedAt = directSnap.updatedAt;
+            cachedFirestoreSnapshot = directSnap;
+          }
           applyIncomingStateToCallbacks(directSnap, callbacks);
           if (!snapshot.metadata.fromCache) {
             hasCompletedInitialCloudMerge = true;
@@ -1586,7 +1703,11 @@ export function subscribeToFirestoreData(callbacks: {
         }
       }
       if (callbacks.onMonthlyPlansChange) {
-        callbacks.onMonthlyPlansChange(monthlyList);
+        const mpSig = computeMonthlyPlansSliceSig(monthlyList);
+        if (mpSig !== lastAppliedSliceSigs.monthlyPlans) {
+          lastAppliedSliceSigs.monthlyPlans = mpSig;
+          callbacks.onMonthlyPlansChange(monthlyList);
+        }
       }
     },
     (error) => {
@@ -1595,10 +1716,11 @@ export function subscribeToFirestoreData(callbacks: {
   );
   unsubscribers.push(unsubCloudState);
 
-  // Bidirectional Cloud Snapshot + Server Relay poll every 2.5s
+  // Lightweight conditional Cloud Snapshot + Server Relay poll every 10s (short-circuits in <1ms when idle)
   const relayTimer = setInterval(() => {
-    syncBidirectionalCloudAndRelay(callbacks);
-  }, 2500);
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    syncBidirectionalCloudAndRelay(callbacks, false);
+  }, 10000);
   unsubscribers.push(() => clearInterval(relayTimer));
 
   return () => {
@@ -1628,13 +1750,20 @@ export async function bootstrapFirestoreData(
   }
 }
 
-async function syncBidirectionalCloudAndRelay(callbacks: {
-  onClientsChange?: (clients: Client[]) => void;
-  onPlansChange?: (plans: DailyPlanItem[]) => void;
-  onWarehouseChange?: (products: WarehouseProduct[]) => void;
-  onLogsChange?: (logs: SystemLog[]) => void;
-  onMonthlyPlansChange?: (plans: MonthlyPlan[]) => void;
-}): Promise<boolean> {
+let lastRelayUpdatedAt = 0;
+let cachedRelayData: any = null;
+let lastMergedLocalSig = '';
+
+async function syncBidirectionalCloudAndRelay(
+  callbacks: {
+    onClientsChange?: (clients: Client[]) => void;
+    onPlansChange?: (plans: DailyPlanItem[]) => void;
+    onWarehouseChange?: (products: WarehouseProduct[]) => void;
+    onLogsChange?: (logs: SystemLog[]) => void;
+    onMonthlyPlansChange?: (plans: MonthlyPlan[]) => void;
+  },
+  forceFull = false
+): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return false;
   if (activeBidirectionalSyncPromise) {
@@ -1643,10 +1772,15 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
 
   activeBidirectionalSyncPromise = (async () => {
     try {
-      // 1. Read both Firestore Cloud Snapshot and Server Relay in parallel
-      const [cloudSnap, relayData] = await Promise.all([
-        readFirestoreCloudSnapshot(),
-        fetchWithTimeout('/api/sync-state', { cache: 'no-store' }, 12000)
+      // 1. Read both Firestore Cloud Snapshot (meta-gated) and Server Relay (?since= conditional) in parallel
+      const relayUrl =
+        !forceFull && lastRelayUpdatedAt > 0
+          ? `/api/sync-state?since=${lastRelayUpdatedAt}`
+          : '/api/sync-state';
+
+      const [cloudSnap, relayResp] = await Promise.all([
+        readFirestoreCloudSnapshot(forceFull),
+        fetchWithTimeout(relayUrl, { cache: 'no-store' }, 12000)
           .then(async (r) => {
             const ct = r.headers.get('content-type') || '';
             if (r.ok && ct.includes('application/json')) return await r.json();
@@ -1654,6 +1788,26 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
           })
           .catch(() => null),
       ]);
+
+      const relayUnchanged = Boolean(relayResp && relayResp.unchanged === true);
+      const relayData = relayUnchanged ? cachedRelayData : relayResp;
+      if (!relayUnchanged && relayResp && typeof relayResp.updatedAt === 'number') {
+        lastRelayUpdatedAt = relayResp.updatedAt;
+        cachedRelayData = relayResp;
+      }
+
+      // Fast idle short-circuit: if neither Cloud nor Relay changed AND initial merge already completed
+      if (
+        !forceFull &&
+        hasCompletedInitialCloudMerge &&
+        lastReadCloudWasUnchanged &&
+        relayUnchanged
+      ) {
+        const localNowSig = `${storageService.getClients().length}:${storageService.getWarehouseProducts().length}:${storageService.getDailyPlans().length}:${getLocalSystemLogs().length}`;
+        if (localNowSig === lastMergedLocalSig) {
+          return true;
+        }
+      }
 
       // 2. Union deleted IDs across Local + Cloud Snapshot + Server Relay
       const allDeletedClients = new Set<string>(getDeletedClientIds());
@@ -1793,21 +1947,38 @@ async function syncBidirectionalCloudAndRelay(callbacks: {
         updatedAt: new Date().toISOString(),
       };
 
-      // 7. Apply merged state directly to storage + callbacks & mark initial hydration complete
+      // 7. Apply merged state directly to storage + callbacks (only for slices that changed!) & mark initial hydration complete
       if (!callbacks.onClientsChange) {
-        storageService.saveClients(mergedClients);
+        const cSig = computeClientsSliceSig(mergedClients);
+        if (forceFull || cSig !== lastAppliedSliceSigs.clients) {
+          lastAppliedSliceSigs.clients = cSig;
+          storageService.saveClients(mergedClients);
+        }
       }
       if (!callbacks.onWarehouseChange) {
-        storageService.saveWarehouseProducts(mergedWh);
+        const wSig = computeWarehouseSliceSig(mergedWh);
+        if (forceFull || wSig !== lastAppliedSliceSigs.warehouse) {
+          lastAppliedSliceSigs.warehouse = wSig;
+          storageService.saveWarehouseProducts(mergedWh);
+        }
       }
       if (!callbacks.onPlansChange) {
-        storageService.saveDailyPlans(mergedPlans);
+        const pSig = computePlansSliceSig(mergedPlans);
+        if (forceFull || pSig !== lastAppliedSliceSigs.plans) {
+          lastAppliedSliceSigs.plans = pSig;
+          storageService.saveDailyPlans(mergedPlans);
+        }
       }
       if (!callbacks.onLogsChange) {
-        saveLocalSystemLogs(mergedPayload.systemLogs);
+        const lSig = computeLogsSliceSig(mergedPayload.systemLogs);
+        if (forceFull || lSig !== lastAppliedSliceSigs.logs) {
+          lastAppliedSliceSigs.logs = lSig;
+          saveLocalSystemLogs(mergedPayload.systemLogs);
+        }
       }
-      applyIncomingStateToCallbacks(mergedPayload, callbacks);
+      applyIncomingStateToCallbacks(mergedPayload, callbacks, forceFull);
       hasCompletedInitialCloudMerge = true;
+      lastMergedLocalSig = `${mergedClients.length}:${mergedWh.length}:${mergedPlans.length}:${mergedPayload.systemLogs.length}`;
 
       // 8. Check if our merged state has data missing from Firestore Cloud Snapshot or if meta was zeroed
       const snapSig = cloudSnap ? computeStateSignature(cloudSnap) : '';
@@ -1880,7 +2051,7 @@ export async function forceCloudSyncNow(callbacks?: {
   if (activeBidirectionalSyncPromise) {
     await activeBidirectionalSyncPromise;
   }
-  const ok = await syncBidirectionalCloudAndRelay(callbacks || {});
+  const ok = await syncBidirectionalCloudAndRelay(callbacks || {}, true);
   const clientsCount = storageService.getClients().length;
   const whCount = storageService.getWarehouseProducts().length;
   const plansCount = storageService.getDailyPlans().length;

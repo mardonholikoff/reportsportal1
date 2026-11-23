@@ -22,7 +22,7 @@ import {
 import { WarehouseProduct } from '../types';
 import { storageService } from '../services/storage';
 import { formatWarehouseStock, calculateProfitMargin, formatNumber, formatMoney } from '../utils/format';
-import { buildWarehouseProductChronology, ProductChronologyResult } from '../utils/warehouseChronology';
+import { buildWarehouseChronologyMap, ProductChronologyResult } from '../utils/warehouseChronology';
 import { exportWarehouseInventoryToXLSX } from '../utils/excelExport';
 import { ProductDeliveryHistoryModal } from './ProductDeliveryHistoryModal';
 
@@ -74,14 +74,10 @@ export const WarehouseInventoryModal: React.FC<Props> = ({
   };
 
   const chronologyMap = useMemo(() => {
-    const map = new Map<string, ProductChronologyResult>();
-    if (!isOpen) return map;
+    if (!isOpen) return new Map<string, ProductChronologyResult>();
     const plans = storageService.getDailyPlans() || [];
     const clients = storageService.getClients() || [];
-    products.forEach((p) => {
-      map.set(p.id, buildWarehouseProductChronology(p, plans, clients, undefined, products));
-    });
-    return map;
+    return buildWarehouseChronologyMap(products, plans, clients);
   }, [isOpen, products]);
 
   const uniqueBrands = useMemo(() => {

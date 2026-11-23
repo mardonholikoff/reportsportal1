@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { WarehouseProduct } from '../types';
 import { storageService } from '../services/storage';
-import { buildWarehouseProductChronology, ProductChronologyResult } from '../utils/warehouseChronology';
+import { buildWarehouseChronologyMap } from '../utils/warehouseChronology';
 import { StickyTableWrapper } from './StickyTableWrapper';
 import {
   Search,
@@ -60,13 +60,9 @@ export const AgentWarehouseTable: React.FC<Props> = ({ products }) => {
   };
 
   const chronologyMap = useMemo(() => {
-    const map = new Map<string, ProductChronologyResult>();
     const plans = storageService.getDailyPlans() || [];
     const clients = storageService.getClients() || [];
-    products.forEach((p) => {
-      map.set(p.id, buildWarehouseProductChronology(p, plans, clients, undefined, products));
-    });
-    return map;
+    return buildWarehouseChronologyMap(products, plans, clients);
   }, [products]);
 
   const getEffectivePieces = (p: WarehouseProduct): number => {

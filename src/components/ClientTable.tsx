@@ -227,8 +227,16 @@ export const ClientTable: React.FC<Props> = ({
     warehouseProducts.forEach((w) => {
       if (w && w.id) whById.set(w.id, w);
     });
+    const cache = new Map<
+      string,
+      { key: string; displayName: string; whProduct: WarehouseProduct | undefined }
+    >();
 
     return (prod: Partial<ProductItem> & { name?: string }) => {
+      const cacheKey = `${prod.warehouseId || ''}|${prod.id || ''}|${(prod as any).brand || ''}|${prod.name || ''}|${(prod as any).mark1 || ''}`;
+      const hit = cache.get(cacheKey);
+      if (hit) return hit;
+
       let matchedWh: WarehouseProduct | undefined;
       if (prod.warehouseId && whById.has(prod.warehouseId)) {
         matchedWh = whById.get(prod.warehouseId);
@@ -241,19 +249,19 @@ export const ClientTable: React.FC<Props> = ({
           isMatchingWarehouseProduct(wh, prod as ProductItem, warehouseProducts)
         );
       }
-      if (matchedWh) {
-        return {
-          key: `wh:${matchedWh.id}`,
-          displayName: buildWarehouseDisplayName(matchedWh),
-          whProduct: matchedWh,
-        };
-      }
-      const cleanName = normalizeSpaces(prod.name);
-      return {
-        key: `name:${cleanName.toLowerCase()}`,
-        displayName: cleanName,
-        whProduct: undefined as WarehouseProduct | undefined,
-      };
+      const res = matchedWh
+        ? {
+            key: `wh:${matchedWh.id}`,
+            displayName: buildWarehouseDisplayName(matchedWh),
+            whProduct: matchedWh,
+          }
+        : {
+            key: `name:${normalizeSpaces(prod.name).toLowerCase()}`,
+            displayName: normalizeSpaces(prod.name),
+            whProduct: undefined as WarehouseProduct | undefined,
+          };
+      cache.set(cacheKey, res);
+      return res;
     };
   }, [warehouseProducts]);
 
@@ -701,6 +709,7 @@ export const ClientTable: React.FC<Props> = ({
   // Har bir mijozga qachon, qaysi mahsulot, necha marta, qanchasi nasiyasiz va qanchasi nasiyaga berilganini yig'amiz
   const allDeliveryOccurrencesByClient = useMemo(() => {
     const map = new Map<string, ProductDeliveryOccurrence[]>();
+    if (activeClientBlock !== 'block2') return map;
 
     const plansByClient = new Map<string, DailyPlanItem[]>();
     resolvedDailyPlans.forEach((plan) => {
@@ -1262,7 +1271,7 @@ export const ClientTable: React.FC<Props> = ({
     });
 
     return map;
-  }, [clients, resolvedDailyPlans, resolveCanonicalProduct]);
+  }, [activeClientBlock, clients, resolvedDailyPlans, resolveCanonicalProduct]);
 
   // Normalize reversed date range automatically if start > end
   const { effectiveBlock2Start, effectiveBlock2End } = useMemo(() => {
@@ -1792,7 +1801,7 @@ export const ClientTable: React.FC<Props> = ({
                 : 'bg-white text-neutral-700 border border-neutral-200'
             }`}
           >
-            {block2FilteredRows.length} ta
+            {activeClientBlock === 'block2' ? `${block2FilteredRows.length} ta` : 'Ochish'}
           </span>
         </button>
       </div>

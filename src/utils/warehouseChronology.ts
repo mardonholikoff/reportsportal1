@@ -279,309 +279,209 @@ export function isMatchingWarehouseProduct(
   return false;
 }
 
-export function buildWarehouseProductChronology(
-  product: WarehouseProduct,
-  dailyPlans: DailyPlanItem[],
-  clients: Client[],
-  systemLogs?: SystemLog[],
-  allWarehouseProducts: WarehouseProduct[] = []
-): WarehouseProductChronologyResult {
-  const nowYmd = new Date().toISOString().slice(0, 10);
-  const clientsMap = new Map<string, Client>();
-  clients.forEach((c) => clientsMap.set(c.id, c));
+interface RawFlowEvent {
+  id: string;
+  timestamp: string;
+  dateStr: string;
+  type: 'sale' | 'return' | 'adjustment';
+  author: string;
+  clientId?: string;
+  clientName?: string;
+  pieces: number; // positive magnitude; for adjustment can be signed
+  quantityDisplay: string;
+  unitPrice?: number;
+  totalPrice?: number;
+  paymentType?: string;
+  note?: string;
+}
 
-  const resolveEffectiveDate = (
-    dp: DailyPlanItem,
-    prod: ProductItem,
-    fallbackTime?: string
-  ): { timestamp: string; dateStr: string } => {
-    const prodDateRaw = (prod as any).date || (prod as any).deliveredAt;
-    const prodDateKey = prodDateRaw
-      ? getPlanDateKey({ createdAt: prodDateRaw } as DailyPlanItem)
-      : '';
-    const planTargetDate = getClosedDateKey(dp) || getPlanDateKey(dp);
-    const rawTime = prodDateRaw || fallbackTime || dp.completedAt || dp.closedAt || dp.createdAt || '';
-    const rawDateKey = rawTime ? getPlanDateKey({ createdAt: rawTime } as DailyPlanItem) : '';
+const cleanStrFast = (s?: string) => (s || '').toLowerCase().trim();
+const normAlnumFast = (s?: string) => cleanStrFast(s).replace(/[^a-z0-9]/g, '');
 
-    const effectiveDateStr = planTargetDate || prodDateKey || rawDateKey || nowYmd;
-    const timeSuffix =
-      rawTime && rawTime.includes('T') ? rawTime.slice(10) : 'T12:00:00.000Z';
-    const effectiveTimestamp =
-      rawTime && rawTime.startsWith(effectiveDateStr)
-        ? rawTime
-        : `${effectiveDateStr}${timeSuffix}`;
+function extractVolumeTokensFast(str: string): string[] {
+  const tokens: string[] = [];
+  const regex = /\b(\d+(?:\.\d+)?)\s*(l|lt|litr|liter|kg|g|ml|w\d+)?\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(str)) !== null) {
+    const num = match[1];
+    const unit = (match[2] || '').toLowerCase();
+    if (unit.startsWith('l') || unit.startsWith('lit')) {
+      tokens.push(`${num}l`);
+    } else if (unit) {
+      tokens.push(`${num}${unit}`);
+    } else {
+      tokens.push(num);
+    }
+  }
+  return tokens;
+}
 
-    return { timestamp: effectiveTimestamp, dateStr: effectiveDateStr };
+interface PrecomputedWhMatchData {
+  product: WarehouseProduct;
+  identityKey: string;
+  pNameClean: string;
+  pBrandClean: string;
+  pMark1Clean: string;
+  pLiters: string[];
+  pNums: string[];
+  normPFull: string;
+  normPPrimary: string;
+  normPNameMark1: string;
+  normPName: string;
+  normPMark1: string;
+  normPBrand: string;
+}
+
+function precomputeWhMatchData(p: WarehouseProduct): PrecomputedWhMatchData {
+  const pNameClean = cleanStrFast(p.name);
+  const pBrandClean = cleanStrFast(p.brand);
+  const pMark1Clean = cleanStrFast(p.mark1);
+  const pMark2Clean = cleanStrFast(p.mark2);
+  const fullP = [pBrandClean, pNameClean, pMark1Clean, pMark2Clean, ...(p.extraMarks || []).map(cleanStrFast)]
+    .filter(Boolean)
+    .join(' ');
+  const pPrimary = [pBrandClean, pNameClean, pMark1Clean].filter(Boolean).join(' ');
+  const pNameAndMark1 = [pNameClean, pMark1Clean].filter(Boolean).join(' ');
+  const pVolTokens = extractVolumeTokensFast(fullP);
+  const pLiters = pVolTokens.filter((t) => t.endsWith('l'));
+  const pNums = pVolTokens.filter((t) => !t.endsWith('l') && !isNaN(Number(t)));
+  const normPName = normAlnumFast(pNameClean);
+  const normPBrand = normAlnumFast(pBrandClean);
+  const normPMark1 = normAlnumFast(pMark1Clean);
+
+  return {
+    product: p,
+    identityKey: `${normPName}|${normPBrand}|${normPMark1}`,
+    pNameClean,
+    pBrandClean,
+    pMark1Clean,
+    pLiters,
+    pNums,
+    normPFull: normAlnumFast(fullP),
+    normPPrimary: normAlnumFast(pPrimary),
+    normPNameMark1: normAlnumFast(pNameAndMark1),
+    normPName,
+    normPMark1,
+    normPBrand,
   };
+}
 
-  interface RawFlowEvent {
-    id: string;
-    timestamp: string;
-    dateStr: string;
-    type: 'sale' | 'return' | 'adjustment';
-    author: string;
-    clientId?: string;
-    clientName?: string;
-    pieces: number; // positive magnitude; for adjustment can be signed
-    quantityDisplay: string;
-    unitPrice?: number;
-    totalPrice?: number;
-    paymentType?: string;
-    note?: string;
+function matchPrecomputedWhByText(
+  wh: PrecomputedWhMatchData,
+  prodNameClean: string,
+  prodBrandClean: string,
+  prodMark1Clean: string,
+  prodLiters: string[],
+  prodNums: string[],
+  normProdFull: string,
+  normProdName: string
+): boolean {
+  if (!prodNameClean) return false;
+
+  if (wh.pLiters.length > 0 && prodLiters.length > 0) {
+    const isLiterMatch = wh.pLiters.some((pl) => prodLiters.includes(pl));
+    if (!isLiterMatch) return false;
+  } else if (wh.pLiters.length > 0 && prodLiters.length === 0) {
+    return false;
   }
 
-  const flowEvents: RawFlowEvent[] = [];
-  const clientsWithSale = new Set<string>();
-
-  // 1. Collect sales & returns from dailyPlans
-  dailyPlans.forEach((dp) => {
-    if (!dp) return;
-    const clientObj = clientsMap.get(dp.clientId);
-    const cName = dp.clientName || clientObj?.name || 'Mijoz';
-    const seenInPlan = new Set<string>();
-
-    if (dp.actionsHistory && dp.actionsHistory.length > 0) {
-      dp.actionsHistory.forEach((act, actIdx) => {
-        if (act && act.productsDelivered && act.productsDelivered.length > 0) {
-          act.productsDelivered.forEach((prod, pIdx) => {
-            if (isMatchingWarehouseProduct(product, prod, allWarehouseProducts)) {
-              const dedupKey = `sale_${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
-              if (seenInPlan.has(dedupKey)) return;
-              seenInPlan.add(dedupKey);
-
-              const { timestamp, dateStr } = resolveEffectiveDate(dp, prod, act.timestamp);
-              const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
-              if (pieces > 0) {
-                flowEvents.push({
-                  id: `sale_act_${dp.id}_${actIdx}_${pIdx}`,
-                  timestamp,
-                  dateStr,
-                  type: 'sale',
-                  author: act.author || dp.lastExecutedBy || dp.agentUsername || 'adminc',
-                  clientId: dp.clientId,
-                  clientName: cName,
-                  pieces,
-                  quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
-                  unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
-                  totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
-                  paymentType: act.deliveryPayment?.paymentType || dp.deliveryPayment?.paymentType || 'qarz',
-                  note: act.reportNote || dp.reportNote || dp.planNote,
-                });
-                clientsWithSale.add(dp.clientId);
-              }
-            }
-          });
-        }
-        if (act && act.productsReturned && act.productsReturned.length > 0) {
-          act.productsReturned.forEach((ret, rIdx) => {
-            const retAsProd: ProductItem = {
-              id: ret.productId || '',
-              name: ret.name,
-              unit: ret.unit,
-              quantity: ret.quantity,
-              unitPrice: ret.unitPrice || 0,
-              totalPrice: 0,
-              warehouseId: ret.warehouseId,
-            };
-            if (isMatchingWarehouseProduct(product, retAsProd, allWarehouseProducts)) {
-              const dedupKey = `ret_${ret.productId || rIdx}_${ret.quantity}`;
-              if (seenInPlan.has(dedupKey)) return;
-              seenInPlan.add(dedupKey);
-
-              const { timestamp, dateStr } = resolveEffectiveDate(dp, retAsProd, act.timestamp);
-              const pieces = convertQuantityToPieces(product, ret.quantity || 0, ret.unit);
-              if (pieces > 0) {
-                flowEvents.push({
-                  id: `ret_act_${dp.id}_${actIdx}_${rIdx}`,
-                  timestamp,
-                  dateStr,
-                  type: 'return',
-                  author: act.author || dp.lastExecutedBy || dp.agentUsername || 'adminc',
-                  clientId: dp.clientId,
-                  clientName: cName,
-                  pieces,
-                  quantityDisplay: `${ret.quantity} ${ret.unit || product.pieceUnitName || 'dona'}`,
-                  unitPrice: ret.unitPrice || product.minSellingPrice || product.price || 0,
-                  note: act.reportNote || dp.reportNote || 'Mijozdan omborga qaytarildi',
-                });
-              }
-            }
-          });
-        }
-      });
+  if (wh.pLiters.length === 0 && prodLiters.length === 0 && wh.pNums.length > 0 && prodNums.length > 0) {
+    const hasMatchingNum = wh.pNums.some((pn) => prodNums.includes(pn));
+    if (!hasMatchingNum && (wh.pNums.length === 1 || prodNums.length === 1)) {
+      return false;
     }
+  }
 
-    if (dp.productsDelivered && dp.productsDelivered.length > 0) {
-      dp.productsDelivered.forEach((prod, pIdx) => {
-        if (isMatchingWarehouseProduct(product, prod, allWarehouseProducts)) {
-          const dedupKey = `sale_${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
-          if (seenInPlan.has(dedupKey)) return;
-          seenInPlan.add(dedupKey);
+  if (wh.pBrandClean && prodBrandClean && wh.pBrandClean !== prodBrandClean) {
+    return false;
+  }
+  if (wh.pMark1Clean && prodMark1Clean && wh.pMark1Clean !== prodMark1Clean) {
+    return false;
+  }
 
-          const { timestamp, dateStr } = resolveEffectiveDate(dp, prod);
-          const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
-          if (pieces > 0) {
-            flowEvents.push({
-              id: `sale_plan_${dp.id}_${pIdx}`,
-              timestamp,
-              dateStr,
-              type: 'sale',
-              author: dp.lastExecutedBy || dp.agentUsername || 'adminc',
-              clientId: dp.clientId,
-              clientName: cName,
-              pieces,
-              quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
-              unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
-              totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
-              paymentType: dp.deliveryPayment?.paymentType || 'qarz',
-              note: dp.reportNote || dp.planNote,
-            });
-            clientsWithSale.add(dp.clientId);
-          }
-        }
-      });
+  if (
+    normProdFull === wh.normPFull ||
+    normProdFull === wh.normPPrimary ||
+    normProdFull === wh.normPNameMark1 ||
+    normProdName === wh.normPPrimary ||
+    normProdName === wh.normPNameMark1 ||
+    normProdName === wh.normPName
+  ) {
+    if (wh.normPMark1 && !normProdFull.includes(wh.normPMark1)) {
+      const hasLiterEquiv = wh.pLiters.length > 0 && prodLiters.some((pl) => wh.pLiters.includes(pl));
+      if (!hasLiterEquiv) return false;
     }
+    return true;
+  }
 
-    if (dp.productsReturned && dp.productsReturned.length > 0) {
-      dp.productsReturned.forEach((ret, rIdx) => {
-        const retAsProd: ProductItem = {
-          id: ret.productId || '',
-          name: ret.name,
-          unit: ret.unit,
-          quantity: ret.quantity,
-          unitPrice: ret.unitPrice || 0,
-          totalPrice: 0,
-          warehouseId: ret.warehouseId,
-        };
-        if (isMatchingWarehouseProduct(product, retAsProd, allWarehouseProducts)) {
-          const dedupKey = `ret_${ret.productId || rIdx}_${ret.quantity}`;
-          if (seenInPlan.has(dedupKey)) return;
-          seenInPlan.add(dedupKey);
-
-          const { timestamp, dateStr } = resolveEffectiveDate(dp, retAsProd);
-          const pieces = convertQuantityToPieces(product, ret.quantity || 0, ret.unit);
-          if (pieces > 0) {
-            flowEvents.push({
-              id: `ret_plan_${dp.id}_${rIdx}`,
-              timestamp,
-              dateStr,
-              type: 'return',
-              author: dp.lastExecutedBy || dp.agentUsername || 'adminc',
-              clientId: dp.clientId,
-              clientName: cName,
-              pieces,
-              quantityDisplay: `${ret.quantity} ${ret.unit || product.pieceUnitName || 'dona'}`,
-              unitPrice: ret.unitPrice || product.minSellingPrice || product.price || 0,
-              note: dp.reportNote || 'Mijozdan omborga qaytarildi',
-            });
-          }
-        }
-      });
+  if (wh.normPName.length >= 2 && normProdFull.includes(wh.normPName)) {
+    if (wh.normPMark1 && !normProdFull.includes(wh.normPMark1)) {
+      const hasLiterEquiv = wh.pLiters.length > 0 && prodLiters.some((pl) => wh.pLiters.includes(pl));
+      if (!hasLiterEquiv) return false;
     }
-  });
-
-  // 2. Fallback sales from client.products & client.logs
-  clients.forEach((client) => {
-    if (!client || !client.id || clientsWithSale.has(client.id)) return;
-    const clientLogs = Array.isArray(client.logs) ? client.logs : [];
-    const prodAddLog = clientLogs.find(
-      (l) => l && l.type === 'product_added' && l.title !== 'Mahsulot omborga qaytarildi'
-    );
-    const latestCloseLog = clientLogs.find(
-      (l) =>
-        l &&
-        (l.id?.endsWith('_close') ||
-          l.title === 'Reja yakunlandi va yopildi' ||
-          l.title === 'Reja bajarilmasdan yopildi')
-    );
-
-    const inferClientDate = (prod?: ProductItem): { timestamp: string; dateStr: string } => {
-      const prodDateRaw = prod ? (prod as any).date || (prod as any).deliveredAt : '';
-      if (prodDateRaw) {
-        const dKey = getPlanDateKey({ createdAt: prodDateRaw } as DailyPlanItem) || nowYmd;
-        return {
-          timestamp: prodDateRaw.includes('T') ? prodDateRaw : `${dKey}T12:00:00.000Z`,
-          dateStr: dKey,
-        };
-      }
-      const closeTime = latestCloseLog?.timestamp || client.lastPlanClosedAt || '';
-      if (closeTime) {
-        const closeKey = getPlanDateKey({ createdAt: closeTime } as DailyPlanItem);
-        if (closeKey) {
-          return {
-            timestamp: closeTime.includes('T') ? closeTime : `${closeKey}T12:00:00.000Z`,
-            dateStr: closeKey,
-          };
-        }
-      }
-      const logTime = prodAddLog?.timestamp || client.updatedAt || client.createdAt || '';
-      const logKey = logTime
-        ? getPlanDateKey({ createdAt: logTime } as DailyPlanItem) || nowYmd
-        : nowYmd;
-      return {
-        timestamp: logTime && logTime.includes('T') ? logTime : `${logKey}T12:00:00.000Z`,
-        dateStr: logKey,
-      };
-    };
-
-    const matchingProds = (client.products || []).filter((prod) =>
-      isMatchingWarehouseProduct(product, prod, allWarehouseProducts)
-    );
-    if (matchingProds.length > 0) {
-      matchingProds.forEach((prod, idx) => {
-        const { timestamp, dateStr } = inferClientDate(prod);
-        const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
-        if (pieces > 0) {
-          flowEvents.push({
-            id: `sale_client_${client.id}_${prod.id || idx}`,
-            timestamp,
-            dateStr,
-            type: 'sale',
-            author:
-              prodAddLog?.author ||
-              latestCloseLog?.author ||
-              client.lastPlanClosedBy ||
-              client.createdBy ||
-              'adminc',
-            clientId: client.id,
-            clientName: client.name || 'Mijoz',
-            pieces,
-            quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
-            unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
-            totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
-            paymentType: prodAddLog?.paymentMethodLabel || 'qarz',
-            note: prodAddLog?.details,
-          });
-        }
-      });
-      clientsWithSale.add(client.id);
+    if (wh.normPBrand && !normProdFull.includes(wh.normPBrand)) {
+      if (prodBrandClean) return false;
     }
-  });
+    return true;
+  }
 
-  // 3. Collect stockHistory & systemLogs for initial intake and manual edits
-  const resolvedSystemLogs = systemLogs && systemLogs.length > 0 ? systemLogs : getLocalSystemLogs();
+  return false;
+}
+
+function resolveEffectiveDateFast(
+  dp: DailyPlanItem,
+  prod: ProductItem,
+  nowYmd: string,
+  fallbackTime?: string
+): { timestamp: string; dateStr: string } {
+  const prodDateRaw = (prod as any).date || (prod as any).deliveredAt;
+  const prodDateKey = prodDateRaw
+    ? getPlanDateKey({ createdAt: prodDateRaw } as DailyPlanItem)
+    : '';
+  const planTargetDate = getClosedDateKey(dp) || getPlanDateKey(dp);
+  const rawTime = prodDateRaw || fallbackTime || dp.completedAt || dp.closedAt || dp.createdAt || '';
+  const rawDateKey = rawTime ? getPlanDateKey({ createdAt: rawTime } as DailyPlanItem) : '';
+
+  const effectiveDateStr = planTargetDate || prodDateKey || rawDateKey || nowYmd;
+  const timeSuffix =
+    rawTime && rawTime.includes('T') ? rawTime.slice(10) : 'T12:00:00.000Z';
+  const effectiveTimestamp =
+    rawTime && rawTime.startsWith(effectiveDateStr)
+      ? rawTime
+      : `${effectiveDateStr}${timeSuffix}`;
+
+  return { timestamp: effectiveTimestamp, dateStr: effectiveDateStr };
+}
+
+function assembleProductChronology(
+  product: WarehouseProduct,
+  flowEvents: RawFlowEvent[],
+  editSystemLogs: SystemLog[],
+  nowYmd: string
+): WarehouseProductChronologyResult {
   const rawHistory: WarehouseStockChangeLog[] = Array.isArray(product.stockHistory)
     ? [...product.stockHistory]
     : [];
 
   // Reconstruct any missing edit logs from systemLogs ('ombor_kirimi' with 'Ombor mahsuloti tahrirlandi')
-  const prodTitleMatch = `${product.brand} - ${product.name}`.toLowerCase();
-  resolvedSystemLogs.forEach((sl) => {
-    if (!sl || sl.actionType !== 'ombor_kirimi') return;
-    const isThisProd =
-      sl.metadata?.productId === product.id ||
-      (sl.actionTitle && sl.actionTitle.toLowerCase().includes(prodTitleMatch));
-    if (!isThisProd) return;
+  if (editSystemLogs.length > 0) {
+    const prodTitleMatch = `${product.brand} - ${product.name}`.toLowerCase();
+    for (let i = 0; i < editSystemLogs.length; i++) {
+      const sl = editSystemLogs[i];
+      const isThisProd =
+        sl.metadata?.productId === product.id ||
+        (sl.actionTitle && sl.actionTitle.toLowerCase().includes(prodTitleMatch));
+      if (!isThisProd) continue;
 
-    const isEdit = sl.actionTitle?.toLowerCase().includes('tahrirlandi');
-    if (isEdit) {
       const slTime = sl.timestamp || sl.createdAt || '';
+      if (!slTime) continue;
+      const slMs = new Date(slTime).getTime();
       const alreadyInHistory = rawHistory.some(
         (h) =>
           h.changeType !== 'initial_intake' &&
-          Math.abs(new Date(h.timestamp).getTime() - new Date(slTime).getTime()) < 5000
+          Math.abs(new Date(h.timestamp).getTime() - slMs) < 5000
       );
-      if (!alreadyInHistory && slTime) {
+      if (!alreadyInHistory) {
         const qMatch = (sl.details || '').match(/Qoldiq:\s*([\d.]+)\s*dona/i);
         const newP = qMatch ? parseFloat(qMatch[1]) || product.totalPieces : product.totalPieces;
         rawHistory.push({
@@ -597,14 +497,15 @@ export function buildWarehouseProductChronology(
         });
       }
     }
-  });
+  }
 
-  const totalSoldPieces = flowEvents
-    .filter((e) => e.type === 'sale')
-    .reduce((s, e) => s + e.pieces, 0);
-  const totalReturnedPieces = flowEvents
-    .filter((e) => e.type === 'return')
-    .reduce((s, e) => s + e.pieces, 0);
+  let totalSoldPieces = 0;
+  let totalReturnedPieces = 0;
+  for (let i = 0; i < flowEvents.length; i++) {
+    const e = flowEvents[i];
+    if (e.type === 'sale') totalSoldPieces += e.pieces;
+    else if (e.type === 'return') totalReturnedPieces += e.pieces;
+  }
 
   const initialEditLogsOnly = rawHistory
     .filter((h) => h && h.changeType === 'initial_edit')
@@ -614,9 +515,10 @@ export function buildWarehouseProductChronology(
     .filter((h) => h && h.changeType === 'restock_intake' && (Number(h.deltaPieces) || 0) >= 0)
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-  const totalRestockedPieces = Math.round(
-    restockLogsOnly.reduce((sum, h) => sum + Math.max(0, Number(h.deltaPieces) || 0), 0) * 100
-  ) / 100;
+  const totalRestockedPieces =
+    Math.round(
+      restockLogsOnly.reduce((sum, h) => sum + Math.max(0, Number(h.deltaPieces) || 0), 0) * 100
+    ) / 100;
 
   const editLogsOnly = rawHistory
     .filter((h) => h && (h.changeType === 'initial_edit' || h.changeType === 'manual_adjustment'))
@@ -742,7 +644,6 @@ export function buildWarehouseProductChronology(
   });
 
   // Build unified step-by-step timeline in chronological order (oldest -> newest) then reverse for display
-  // Barcha sotuv va qaytarish amallari yangilangan bosh qoldiqdan (initialPieces) boshlab hisoblanadi
   const rawTimeline: Array<{
     id: string;
     timestamp: string;
@@ -761,45 +662,44 @@ export function buildWarehouseProductChronology(
     note?: string;
   }> = [];
 
-  flowEvents
-    .filter((fe) => fe.type === 'sale' || fe.type === 'return')
-    .forEach((fe) => {
-      if (fe.type === 'sale') {
-        rawTimeline.push({
-          id: fe.id,
-          timestamp: fe.timestamp,
-          dateStr: fe.dateStr,
-          eventType: 'sale',
-          title: `Mijozga sotildi: ${fe.clientName || 'Mijoz'}`,
-          subtitle: `${fe.quantityDisplay} (${formatPiecesForWarehouseProduct(product, fe.pieces).primary})`,
-          author: fe.author,
-          clientId: fe.clientId,
-          clientName: fe.clientName,
-          quantityDisplay: `-${fe.pieces} dona (${fe.quantityDisplay})`,
-          deltaPieces: -fe.pieces,
-          unitPrice: fe.unitPrice,
-          totalPrice: fe.totalPrice,
-          paymentType: fe.paymentType,
-          note: fe.note,
-        });
-      } else {
-        rawTimeline.push({
-          id: fe.id,
-          timestamp: fe.timestamp,
-          dateStr: fe.dateStr,
-          eventType: 'return',
-          title: `Mijozdan omborga qaytarildi: ${fe.clientName || 'Mijoz'}`,
-          subtitle: `${fe.quantityDisplay} omborga qayta kirim qilindi`,
-          author: fe.author,
-          clientId: fe.clientId,
-          clientName: fe.clientName,
-          quantityDisplay: `+${fe.pieces} dona (${fe.quantityDisplay})`,
-          deltaPieces: fe.pieces,
-          unitPrice: fe.unitPrice,
-          note: fe.note,
-        });
-      }
-    });
+  for (let i = 0; i < flowEvents.length; i++) {
+    const fe = flowEvents[i];
+    if (fe.type === 'sale') {
+      rawTimeline.push({
+        id: fe.id,
+        timestamp: fe.timestamp,
+        dateStr: fe.dateStr,
+        eventType: 'sale',
+        title: `Mijozga sotildi: ${fe.clientName || 'Mijoz'}`,
+        subtitle: `${fe.quantityDisplay} (${formatPiecesForWarehouseProduct(product, fe.pieces).primary})`,
+        author: fe.author,
+        clientId: fe.clientId,
+        clientName: fe.clientName,
+        quantityDisplay: `-${fe.pieces} dona (${fe.quantityDisplay})`,
+        deltaPieces: -fe.pieces,
+        unitPrice: fe.unitPrice,
+        totalPrice: fe.totalPrice,
+        paymentType: fe.paymentType,
+        note: fe.note,
+      });
+    } else if (fe.type === 'return') {
+      rawTimeline.push({
+        id: fe.id,
+        timestamp: fe.timestamp,
+        dateStr: fe.dateStr,
+        eventType: 'return',
+        title: `Mijozdan omborga qaytarildi: ${fe.clientName || 'Mijoz'}`,
+        subtitle: `${fe.quantityDisplay} omborga qayta kirim qilindi`,
+        author: fe.author,
+        clientId: fe.clientId,
+        clientName: fe.clientName,
+        quantityDisplay: `+${fe.pieces} dona (${fe.quantityDisplay})`,
+        deltaPieces: fe.pieces,
+        unitPrice: fe.unitPrice,
+        note: fe.note,
+      });
+    }
+  }
 
   restockLogsOnly.forEach((rl) => {
     const added = Math.max(0, Number(rl.deltaPieces) || 0);
@@ -821,7 +721,9 @@ export function buildWarehouseProductChronology(
     });
   });
 
-  rawTimeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  if (rawTimeline.length > 1) {
+    rawTimeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }
 
   const earliestEventDate =
     rawTimeline.length > 0 && rawTimeline[0].dateStr < initialDate
@@ -885,7 +787,6 @@ export function buildWarehouseProductChronology(
     });
   });
 
-  // Reverse so newest operations appear at the top (with initial intake clearly visible at the bottom of the chronology)
   const timelineEventsDesc = [...timelineWithBalances].reverse();
 
   const getStockAtDate = (dateYmd: string): ProductDateStockSnapshot => {
@@ -963,4 +864,708 @@ export function buildWarehouseProductChronology(
     timelineEvents: timelineEventsDesc,
     getStockAtDate,
   };
+}
+
+/**
+ * High-performance O(W + P + C + L) batch chronology builder for all warehouse products.
+ * Produces 100% identical results to calling buildWarehouseProductChronology for each product,
+ * while avoiding O(W * (P + C + L)) repeated scans and repeated localStorage JSON parsing.
+ */
+export function buildWarehouseChronologyMap(
+  products: WarehouseProduct[],
+  dailyPlans: DailyPlanItem[],
+  clients: Client[],
+  systemLogs?: SystemLog[]
+): Map<string, WarehouseProductChronologyResult> {
+  const result = new Map<string, WarehouseProductChronologyResult>();
+  if (!products || products.length === 0) return result;
+
+  const nowYmd = new Date().toISOString().slice(0, 10);
+
+  // 1. Precompute warehouse product indices & normalized matching tokens ONCE
+  const precomputedList: PrecomputedWhMatchData[] = new Array(products.length);
+  const precomputedById = new Map<string, PrecomputedWhMatchData>();
+  const identityGroups = new Map<string, PrecomputedWhMatchData[]>();
+  const flowEventsByProdId = new Map<string, RawFlowEvent[]>();
+  const clientsWithSaleByProdId = new Map<string, Set<string>>();
+
+  for (let i = 0; i < products.length; i++) {
+    const p = products[i];
+    const pre = precomputeWhMatchData(p);
+    precomputedList[i] = pre;
+    precomputedById.set(p.id, pre);
+    const group = identityGroups.get(pre.identityKey);
+    if (group) {
+      group.push(pre);
+    } else {
+      identityGroups.set(pre.identityKey, [pre]);
+    }
+    flowEventsByProdId.set(p.id, []);
+    clientsWithSaleByProdId.set(p.id, new Set());
+  }
+
+  // Memoized matcher from any ProductItem -> matching WarehouseProduct[]
+  const matchCache = new Map<string, WarehouseProduct[]>();
+  const findMatchingProducts = (prod: ProductItem): WarehouseProduct[] => {
+    if (!prod) return [];
+    const prodWhId = prod.warehouseId || '';
+    const prodItemId = (prod as any).id || '';
+
+    // Fast path: warehouseId points to a known warehouse product
+    if (prodWhId && precomputedById.has(prodWhId)) {
+      const targetPre = precomputedById.get(prodWhId)!;
+      const group = identityGroups.get(targetPre.identityKey);
+      const idMatchPre = prodItemId && prodItemId !== prodWhId ? precomputedById.get(prodItemId) : undefined;
+
+      // Common case: unique identity and no cross-id match -> instant O(1)!
+      if ((!group || group.length === 1) && !idMatchPre) {
+        return [targetPre.product];
+      }
+
+      const matched: WarehouseProduct[] = [targetPre.product];
+      if (idMatchPre && idMatchPre.product.id !== targetPre.product.id) {
+        matched.push(idMatchPre.product);
+      }
+      if (group && group.length > 1 && prod.name) {
+        const prodNameClean = cleanStrFast(prod.name);
+        const prodBrandClean = cleanStrFast((prod as any).brand);
+        const prodMark1Clean = cleanStrFast((prod as any).mark1);
+        const prodMark2Clean = cleanStrFast((prod as any).mark2);
+        const fullProd = [prodBrandClean, prodNameClean, prodMark1Clean, prodMark2Clean]
+          .filter(Boolean)
+          .join(' ');
+        const prodVolTokens = extractVolumeTokensFast(fullProd);
+        const prodLiters = prodVolTokens.filter((t) => t.endsWith('l'));
+        const prodNums = prodVolTokens.filter((t) => !t.endsWith('l') && !isNaN(Number(t)));
+        const normProdFull = normAlnumFast(fullProd);
+        const normProdName = normAlnumFast(prodNameClean);
+
+        for (let i = 0; i < group.length; i++) {
+          const sib = group[i];
+          if (sib.product.id === targetPre.product.id) continue;
+          if (idMatchPre && sib.product.id === idMatchPre.product.id) continue;
+          if (
+            matchPrecomputedWhByText(
+              sib,
+              prodNameClean,
+              prodBrandClean,
+              prodMark1Clean,
+              prodLiters,
+              prodNums,
+              normProdFull,
+              normProdName
+            )
+          ) {
+            matched.push(sib.product);
+          }
+        }
+      }
+      return matched;
+    }
+
+    // Fallback: cache by (id, warehouseId, brand, name, mark1, mark2)
+    const cacheKey = `${prodItemId}|${prodWhId}|${(prod as any).brand || ''}|${prod.name || ''}|${(prod as any).mark1 || ''}|${(prod as any).mark2 || ''}`;
+    const cached = matchCache.get(cacheKey);
+    if (cached) return cached;
+
+    const matched: WarehouseProduct[] = [];
+    const prodNameClean = cleanStrFast(prod.name);
+    const prodBrandClean = cleanStrFast((prod as any).brand);
+    const prodMark1Clean = cleanStrFast((prod as any).mark1);
+    const prodMark2Clean = cleanStrFast((prod as any).mark2);
+    const fullProd = prodNameClean
+      ? [prodBrandClean, prodNameClean, prodMark1Clean, prodMark2Clean].filter(Boolean).join(' ')
+      : '';
+    const prodVolTokens = fullProd ? extractVolumeTokensFast(fullProd) : [];
+    const prodLiters = prodVolTokens.filter((t) => t.endsWith('l'));
+    const prodNums = prodVolTokens.filter((t) => !t.endsWith('l') && !isNaN(Number(t)));
+    const normProdFull = fullProd ? normAlnumFast(fullProd) : '';
+    const normProdName = prodNameClean ? normAlnumFast(prodNameClean) : '';
+
+    for (let i = 0; i < precomputedList.length; i++) {
+      const wh = precomputedList[i];
+      if ((prodWhId && prodWhId === wh.product.id) || (prodItemId && prodItemId === wh.product.id)) {
+        matched.push(wh.product);
+        continue;
+      }
+      if (
+        prodNameClean &&
+        matchPrecomputedWhByText(
+          wh,
+          prodNameClean,
+          prodBrandClean,
+          prodMark1Clean,
+          prodLiters,
+          prodNums,
+          normProdFull,
+          normProdName
+        )
+      ) {
+        matched.push(wh.product);
+      }
+    }
+
+    matchCache.set(cacheKey, matched);
+    return matched;
+  };
+
+  // 2. Build clientsMap ONCE
+  const clientsMap = new Map<string, Client>();
+  for (let i = 0; i < clients.length; i++) {
+    const c = clients[i];
+    if (c && c.id) clientsMap.set(c.id, c);
+  }
+
+  // 3. Single pass over dailyPlans
+  for (let dIdx = 0; dIdx < dailyPlans.length; dIdx++) {
+    const dp = dailyPlans[dIdx];
+    if (!dp) continue;
+    const clientObj = clientsMap.get(dp.clientId);
+    const cName = dp.clientName || clientObj?.name || 'Mijoz';
+    const seenByProdId = new Map<string, Set<string>>();
+
+    const getSeenSet = (whId: string): Set<string> => {
+      let s = seenByProdId.get(whId);
+      if (!s) {
+        s = new Set<string>();
+        seenByProdId.set(whId, s);
+      }
+      return s;
+    };
+
+    if (dp.actionsHistory && dp.actionsHistory.length > 0) {
+      for (let actIdx = 0; actIdx < dp.actionsHistory.length; actIdx++) {
+        const act = dp.actionsHistory[actIdx];
+        if (!act) continue;
+        if (act.productsDelivered && act.productsDelivered.length > 0) {
+          for (let pIdx = 0; pIdx < act.productsDelivered.length; pIdx++) {
+            const prod = act.productsDelivered[pIdx];
+            const matchedWhs = findMatchingProducts(prod);
+            if (matchedWhs.length === 0) continue;
+            const dedupKey = `sale_${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
+            const { timestamp, dateStr } = resolveEffectiveDateFast(dp, prod, nowYmd, act.timestamp);
+            for (let mIdx = 0; mIdx < matchedWhs.length; mIdx++) {
+              const product = matchedWhs[mIdx];
+              const seen = getSeenSet(product.id);
+              if (seen.has(dedupKey)) continue;
+              seen.add(dedupKey);
+              const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
+              if (pieces > 0) {
+                flowEventsByProdId.get(product.id)!.push({
+                  id: `sale_act_${dp.id}_${actIdx}_${pIdx}`,
+                  timestamp,
+                  dateStr,
+                  type: 'sale',
+                  author: act.author || dp.lastExecutedBy || dp.agentUsername || 'adminc',
+                  clientId: dp.clientId,
+                  clientName: cName,
+                  pieces,
+                  quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
+                  unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
+                  totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
+                  paymentType: act.deliveryPayment?.paymentType || dp.deliveryPayment?.paymentType || 'qarz',
+                  note: act.reportNote || dp.reportNote || dp.planNote,
+                });
+                clientsWithSaleByProdId.get(product.id)!.add(dp.clientId);
+              }
+            }
+          }
+        }
+        if (act.productsReturned && act.productsReturned.length > 0) {
+          for (let rIdx = 0; rIdx < act.productsReturned.length; rIdx++) {
+            const ret = act.productsReturned[rIdx];
+            const retAsProd: ProductItem = {
+              id: ret.productId || '',
+              name: ret.name,
+              unit: ret.unit,
+              quantity: ret.quantity,
+              unitPrice: ret.unitPrice || 0,
+              totalPrice: 0,
+              warehouseId: ret.warehouseId,
+            };
+            const matchedWhs = findMatchingProducts(retAsProd);
+            if (matchedWhs.length === 0) continue;
+            const dedupKey = `ret_${ret.productId || rIdx}_${ret.quantity}`;
+            const { timestamp, dateStr } = resolveEffectiveDateFast(dp, retAsProd, nowYmd, act.timestamp);
+            for (let mIdx = 0; mIdx < matchedWhs.length; mIdx++) {
+              const product = matchedWhs[mIdx];
+              const seen = getSeenSet(product.id);
+              if (seen.has(dedupKey)) continue;
+              seen.add(dedupKey);
+              const pieces = convertQuantityToPieces(product, ret.quantity || 0, ret.unit);
+              if (pieces > 0) {
+                flowEventsByProdId.get(product.id)!.push({
+                  id: `ret_act_${dp.id}_${actIdx}_${rIdx}`,
+                  timestamp,
+                  dateStr,
+                  type: 'return',
+                  author: act.author || dp.lastExecutedBy || dp.agentUsername || 'adminc',
+                  clientId: dp.clientId,
+                  clientName: cName,
+                  pieces,
+                  quantityDisplay: `${ret.quantity} ${ret.unit || product.pieceUnitName || 'dona'}`,
+                  unitPrice: ret.unitPrice || product.minSellingPrice || product.price || 0,
+                  note: act.reportNote || dp.reportNote || 'Mijozdan omborga qaytarildi',
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (dp.productsDelivered && dp.productsDelivered.length > 0) {
+      for (let pIdx = 0; pIdx < dp.productsDelivered.length; pIdx++) {
+        const prod = dp.productsDelivered[pIdx];
+        const matchedWhs = findMatchingProducts(prod);
+        if (matchedWhs.length === 0) continue;
+        const dedupKey = `sale_${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
+        const { timestamp, dateStr } = resolveEffectiveDateFast(dp, prod, nowYmd);
+        for (let mIdx = 0; mIdx < matchedWhs.length; mIdx++) {
+          const product = matchedWhs[mIdx];
+          const seen = getSeenSet(product.id);
+          if (seen.has(dedupKey)) continue;
+          seen.add(dedupKey);
+          const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
+          if (pieces > 0) {
+            flowEventsByProdId.get(product.id)!.push({
+              id: `sale_plan_${dp.id}_${pIdx}`,
+              timestamp,
+              dateStr,
+              type: 'sale',
+              author: dp.lastExecutedBy || dp.agentUsername || 'adminc',
+              clientId: dp.clientId,
+              clientName: cName,
+              pieces,
+              quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
+              unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
+              totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
+              paymentType: dp.deliveryPayment?.paymentType || 'qarz',
+              note: dp.reportNote || dp.planNote,
+            });
+            clientsWithSaleByProdId.get(product.id)!.add(dp.clientId);
+          }
+        }
+      }
+    }
+
+    if (dp.productsReturned && dp.productsReturned.length > 0) {
+      for (let rIdx = 0; rIdx < dp.productsReturned.length; rIdx++) {
+        const ret = dp.productsReturned[rIdx];
+        const retAsProd: ProductItem = {
+          id: ret.productId || '',
+          name: ret.name,
+          unit: ret.unit,
+          quantity: ret.quantity,
+          unitPrice: ret.unitPrice || 0,
+          totalPrice: 0,
+          warehouseId: ret.warehouseId,
+        };
+        const matchedWhs = findMatchingProducts(retAsProd);
+        if (matchedWhs.length === 0) continue;
+        const dedupKey = `ret_${ret.productId || rIdx}_${ret.quantity}`;
+        const { timestamp, dateStr } = resolveEffectiveDateFast(dp, retAsProd, nowYmd);
+        for (let mIdx = 0; mIdx < matchedWhs.length; mIdx++) {
+          const product = matchedWhs[mIdx];
+          const seen = getSeenSet(product.id);
+          if (seen.has(dedupKey)) continue;
+          seen.add(dedupKey);
+          const pieces = convertQuantityToPieces(product, ret.quantity || 0, ret.unit);
+          if (pieces > 0) {
+            flowEventsByProdId.get(product.id)!.push({
+              id: `ret_plan_${dp.id}_${rIdx}`,
+              timestamp,
+              dateStr,
+              type: 'return',
+              author: dp.lastExecutedBy || dp.agentUsername || 'adminc',
+              clientId: dp.clientId,
+              clientName: cName,
+              pieces,
+              quantityDisplay: `${ret.quantity} ${ret.unit || product.pieceUnitName || 'dona'}`,
+              unitPrice: ret.unitPrice || product.minSellingPrice || product.price || 0,
+              note: dp.reportNote || 'Mijozdan omborga qaytarildi',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Single pass over clients fallback sales
+  for (let cIdx = 0; cIdx < clients.length; cIdx++) {
+    const client = clients[cIdx];
+    if (!client || !client.id || !client.products || client.products.length === 0) continue;
+
+    let cachedProdAddLog: any | undefined;
+    let cachedLatestCloseLog: any | undefined;
+    let parsedClientLogs = false;
+
+    const ensureClientLogs = () => {
+      if (parsedClientLogs) return;
+      parsedClientLogs = true;
+      const clientLogs = Array.isArray(client.logs) ? client.logs : [];
+      cachedProdAddLog = clientLogs.find(
+        (l) => l && l.type === 'product_added' && l.title !== 'Mahsulot omborga qaytarildi'
+      );
+      cachedLatestCloseLog = clientLogs.find(
+        (l) =>
+          l &&
+          (l.id?.endsWith('_close') ||
+            l.title === 'Reja yakunlandi va yopildi' ||
+            l.title === 'Reja bajarilmasdan yopildi')
+      );
+    };
+
+    const inferClientDate = (prod?: ProductItem): { timestamp: string; dateStr: string } => {
+      const prodDateRaw = prod ? (prod as any).date || (prod as any).deliveredAt : '';
+      if (prodDateRaw) {
+        const dKey = getPlanDateKey({ createdAt: prodDateRaw } as DailyPlanItem) || nowYmd;
+        return {
+          timestamp: prodDateRaw.includes('T') ? prodDateRaw : `${dKey}T12:00:00.000Z`,
+          dateStr: dKey,
+        };
+      }
+      ensureClientLogs();
+      const closeTime = cachedLatestCloseLog?.timestamp || client.lastPlanClosedAt || '';
+      if (closeTime) {
+        const closeKey = getPlanDateKey({ createdAt: closeTime } as DailyPlanItem);
+        if (closeKey) {
+          return {
+            timestamp: closeTime.includes('T') ? closeTime : `${closeKey}T12:00:00.000Z`,
+            dateStr: closeKey,
+          };
+        }
+      }
+      const logTime = cachedProdAddLog?.timestamp || client.updatedAt || client.createdAt || '';
+      const logKey = logTime
+        ? getPlanDateKey({ createdAt: logTime } as DailyPlanItem) || nowYmd
+        : nowYmd;
+      return {
+        timestamp: logTime && logTime.includes('T') ? logTime : `${logKey}T12:00:00.000Z`,
+        dateStr: logKey,
+      };
+    };
+
+    // Group matching products per warehouse product to mirror exact original idx numbering
+    const matchingByWhId = new Map<string, { product: WarehouseProduct; prods: ProductItem[] }>();
+    for (let pIdx = 0; pIdx < client.products.length; pIdx++) {
+      const prod = client.products[pIdx];
+      const matchedWhs = findMatchingProducts(prod);
+      for (let mIdx = 0; mIdx < matchedWhs.length; mIdx++) {
+        const wh = matchedWhs[mIdx];
+        if (clientsWithSaleByProdId.get(wh.id)!.has(client.id)) continue;
+        let bucket = matchingByWhId.get(wh.id);
+        if (!bucket) {
+          bucket = { product: wh, prods: [] };
+          matchingByWhId.set(wh.id, bucket);
+        }
+        bucket.prods.push(prod);
+      }
+    }
+
+    matchingByWhId.forEach(({ product, prods }) => {
+      ensureClientLogs();
+      prods.forEach((prod, idx) => {
+        const { timestamp, dateStr } = inferClientDate(prod);
+        const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
+        if (pieces > 0) {
+          flowEventsByProdId.get(product.id)!.push({
+            id: `sale_client_${client.id}_${prod.id || idx}`,
+            timestamp,
+            dateStr,
+            type: 'sale',
+            author:
+              cachedProdAddLog?.author ||
+              cachedLatestCloseLog?.author ||
+              client.lastPlanClosedBy ||
+              client.createdBy ||
+              'adminc',
+            clientId: client.id,
+            clientName: client.name || 'Mijoz',
+            pieces,
+            quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
+            unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
+            totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
+            paymentType: cachedProdAddLog?.paymentMethodLabel || 'qarz',
+            note: cachedProdAddLog?.details,
+          });
+        }
+      });
+      clientsWithSaleByProdId.get(product.id)!.add(client.id);
+    });
+  }
+
+  // 5. Read & pre-filter edit systemLogs ONCE (not 297x!)
+  const resolvedSystemLogs =
+    systemLogs && systemLogs.length > 0 ? systemLogs : getLocalSystemLogs();
+  const editSystemLogs = resolvedSystemLogs.filter(
+    (sl) =>
+      sl &&
+      sl.actionType === 'ombor_kirimi' &&
+      sl.actionTitle &&
+      sl.actionTitle.toLowerCase().includes('tahrirlandi')
+  );
+
+  // 6. Assemble chronology for every product
+  for (let i = 0; i < products.length; i++) {
+    const p = products[i];
+    result.set(
+      p.id,
+      assembleProductChronology(p, flowEventsByProdId.get(p.id) || [], editSystemLogs, nowYmd)
+    );
+  }
+
+  return result;
+}
+
+export function buildWarehouseProductChronology(
+  product: WarehouseProduct,
+  dailyPlans: DailyPlanItem[],
+  clients: Client[],
+  systemLogs?: SystemLog[],
+  allWarehouseProducts: WarehouseProduct[] = []
+): WarehouseProductChronologyResult {
+  const nowYmd = new Date().toISOString().slice(0, 10);
+  const clientsMap = new Map<string, Client>();
+  clients.forEach((c) => clientsMap.set(c.id, c));
+
+  const flowEvents: RawFlowEvent[] = [];
+  const clientsWithSale = new Set<string>();
+
+  // 1. Collect sales & returns from dailyPlans
+  dailyPlans.forEach((dp) => {
+    if (!dp) return;
+    const clientObj = clientsMap.get(dp.clientId);
+    const cName = dp.clientName || clientObj?.name || 'Mijoz';
+    const seenInPlan = new Set<string>();
+
+    if (dp.actionsHistory && dp.actionsHistory.length > 0) {
+      dp.actionsHistory.forEach((act, actIdx) => {
+        if (act && act.productsDelivered && act.productsDelivered.length > 0) {
+          act.productsDelivered.forEach((prod, pIdx) => {
+            if (isMatchingWarehouseProduct(product, prod, allWarehouseProducts)) {
+              const dedupKey = `sale_${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
+              if (seenInPlan.has(dedupKey)) return;
+              seenInPlan.add(dedupKey);
+
+              const { timestamp, dateStr } = resolveEffectiveDateFast(dp, prod, nowYmd, act.timestamp);
+              const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
+              if (pieces > 0) {
+                flowEvents.push({
+                  id: `sale_act_${dp.id}_${actIdx}_${pIdx}`,
+                  timestamp,
+                  dateStr,
+                  type: 'sale',
+                  author: act.author || dp.lastExecutedBy || dp.agentUsername || 'adminc',
+                  clientId: dp.clientId,
+                  clientName: cName,
+                  pieces,
+                  quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
+                  unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
+                  totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
+                  paymentType: act.deliveryPayment?.paymentType || dp.deliveryPayment?.paymentType || 'qarz',
+                  note: act.reportNote || dp.reportNote || dp.planNote,
+                });
+                clientsWithSale.add(dp.clientId);
+              }
+            }
+          });
+        }
+        if (act && act.productsReturned && act.productsReturned.length > 0) {
+          act.productsReturned.forEach((ret, rIdx) => {
+            const retAsProd: ProductItem = {
+              id: ret.productId || '',
+              name: ret.name,
+              unit: ret.unit,
+              quantity: ret.quantity,
+              unitPrice: ret.unitPrice || 0,
+              totalPrice: 0,
+              warehouseId: ret.warehouseId,
+            };
+            if (isMatchingWarehouseProduct(product, retAsProd, allWarehouseProducts)) {
+              const dedupKey = `ret_${ret.productId || rIdx}_${ret.quantity}`;
+              if (seenInPlan.has(dedupKey)) return;
+              seenInPlan.add(dedupKey);
+
+              const { timestamp, dateStr } = resolveEffectiveDateFast(dp, retAsProd, nowYmd, act.timestamp);
+              const pieces = convertQuantityToPieces(product, ret.quantity || 0, ret.unit);
+              if (pieces > 0) {
+                flowEvents.push({
+                  id: `ret_act_${dp.id}_${actIdx}_${rIdx}`,
+                  timestamp,
+                  dateStr,
+                  type: 'return',
+                  author: act.author || dp.lastExecutedBy || dp.agentUsername || 'adminc',
+                  clientId: dp.clientId,
+                  clientName: cName,
+                  pieces,
+                  quantityDisplay: `${ret.quantity} ${ret.unit || product.pieceUnitName || 'dona'}`,
+                  unitPrice: ret.unitPrice || product.minSellingPrice || product.price || 0,
+                  note: act.reportNote || dp.reportNote || 'Mijozdan omborga qaytarildi',
+                });
+              }
+            }
+          });
+        }
+      });
+    }
+
+    if (dp.productsDelivered && dp.productsDelivered.length > 0) {
+      dp.productsDelivered.forEach((prod, pIdx) => {
+        if (isMatchingWarehouseProduct(product, prod, allWarehouseProducts)) {
+          const dedupKey = `sale_${prod.id || pIdx}_${prod.quantity}_${prod.unitPrice}`;
+          if (seenInPlan.has(dedupKey)) return;
+          seenInPlan.add(dedupKey);
+
+          const { timestamp, dateStr } = resolveEffectiveDateFast(dp, prod, nowYmd);
+          const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
+          if (pieces > 0) {
+            flowEvents.push({
+              id: `sale_plan_${dp.id}_${pIdx}`,
+              timestamp,
+              dateStr,
+              type: 'sale',
+              author: dp.lastExecutedBy || dp.agentUsername || 'adminc',
+              clientId: dp.clientId,
+              clientName: cName,
+              pieces,
+              quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
+              unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
+              totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
+              paymentType: dp.deliveryPayment?.paymentType || 'qarz',
+              note: dp.reportNote || dp.planNote,
+            });
+            clientsWithSale.add(dp.clientId);
+          }
+        }
+      });
+    }
+
+    if (dp.productsReturned && dp.productsReturned.length > 0) {
+      dp.productsReturned.forEach((ret, rIdx) => {
+        const retAsProd: ProductItem = {
+          id: ret.productId || '',
+          name: ret.name,
+          unit: ret.unit,
+          quantity: ret.quantity,
+          unitPrice: ret.unitPrice || 0,
+          totalPrice: 0,
+          warehouseId: ret.warehouseId,
+        };
+        if (isMatchingWarehouseProduct(product, retAsProd, allWarehouseProducts)) {
+          const dedupKey = `ret_${ret.productId || rIdx}_${ret.quantity}`;
+          if (seenInPlan.has(dedupKey)) return;
+          seenInPlan.add(dedupKey);
+
+          const { timestamp, dateStr } = resolveEffectiveDateFast(dp, retAsProd, nowYmd);
+          const pieces = convertQuantityToPieces(product, ret.quantity || 0, ret.unit);
+          if (pieces > 0) {
+            flowEvents.push({
+              id: `ret_plan_${dp.id}_${rIdx}`,
+              timestamp,
+              dateStr,
+              type: 'return',
+              author: dp.lastExecutedBy || dp.agentUsername || 'adminc',
+              clientId: dp.clientId,
+              clientName: cName,
+              pieces,
+              quantityDisplay: `${ret.quantity} ${ret.unit || product.pieceUnitName || 'dona'}`,
+              unitPrice: ret.unitPrice || product.minSellingPrice || product.price || 0,
+              note: dp.reportNote || 'Mijozdan omborga qaytarildi',
+            });
+          }
+        }
+      });
+    }
+  });
+
+  // 2. Fallback sales from client.products & client.logs
+  clients.forEach((client) => {
+    if (!client || !client.id || clientsWithSale.has(client.id)) return;
+    const clientLogs = Array.isArray(client.logs) ? client.logs : [];
+    const prodAddLog = clientLogs.find(
+      (l) => l && l.type === 'product_added' && l.title !== 'Mahsulot omborga qaytarildi'
+    );
+    const latestCloseLog = clientLogs.find(
+      (l) =>
+        l &&
+        (l.id?.endsWith('_close') ||
+          l.title === 'Reja yakunlandi va yopildi' ||
+          l.title === 'Reja bajarilmasdan yopildi')
+    );
+
+    const inferClientDate = (prod?: ProductItem): { timestamp: string; dateStr: string } => {
+      const prodDateRaw = prod ? (prod as any).date || (prod as any).deliveredAt : '';
+      if (prodDateRaw) {
+        const dKey = getPlanDateKey({ createdAt: prodDateRaw } as DailyPlanItem) || nowYmd;
+        return {
+          timestamp: prodDateRaw.includes('T') ? prodDateRaw : `${dKey}T12:00:00.000Z`,
+          dateStr: dKey,
+        };
+      }
+      const closeTime = latestCloseLog?.timestamp || client.lastPlanClosedAt || '';
+      if (closeTime) {
+        const closeKey = getPlanDateKey({ createdAt: closeTime } as DailyPlanItem);
+        if (closeKey) {
+          return {
+            timestamp: closeTime.includes('T') ? closeTime : `${closeKey}T12:00:00.000Z`,
+            dateStr: closeKey,
+          };
+        }
+      }
+      const logTime = prodAddLog?.timestamp || client.updatedAt || client.createdAt || '';
+      const logKey = logTime
+        ? getPlanDateKey({ createdAt: logTime } as DailyPlanItem) || nowYmd
+        : nowYmd;
+      return {
+        timestamp: logTime && logTime.includes('T') ? logTime : `${logKey}T12:00:00.000Z`,
+        dateStr: logKey,
+      };
+    };
+
+    const matchingProds = (client.products || []).filter((prod) =>
+      isMatchingWarehouseProduct(product, prod, allWarehouseProducts)
+    );
+    if (matchingProds.length > 0) {
+      matchingProds.forEach((prod, idx) => {
+        const { timestamp, dateStr } = inferClientDate(prod);
+        const pieces = convertQuantityToPieces(product, prod.quantity || 0, prod.unit);
+        if (pieces > 0) {
+          flowEvents.push({
+            id: `sale_client_${client.id}_${prod.id || idx}`,
+            timestamp,
+            dateStr,
+            type: 'sale',
+            author:
+              prodAddLog?.author ||
+              latestCloseLog?.author ||
+              client.lastPlanClosedBy ||
+              client.createdBy ||
+              'adminc',
+            clientId: client.id,
+            clientName: client.name || 'Mijoz',
+            pieces,
+            quantityDisplay: `${prod.quantity} ${prod.unit || product.pieceUnitName || 'dona'}`,
+            unitPrice: prod.unitPrice || product.minSellingPrice || product.price || 0,
+            totalPrice: prod.totalPrice || (prod.quantity || 0) * (prod.unitPrice || 0),
+            paymentType: prodAddLog?.paymentMethodLabel || 'qarz',
+            note: prodAddLog?.details,
+          });
+        }
+      });
+      clientsWithSale.add(client.id);
+    }
+  });
+
+  const resolvedSystemLogs =
+    systemLogs && systemLogs.length > 0 ? systemLogs : getLocalSystemLogs();
+  const editSystemLogs = resolvedSystemLogs.filter(
+    (sl) =>
+      sl &&
+      sl.actionType === 'ombor_kirimi' &&
+      sl.actionTitle &&
+      sl.actionTitle.toLowerCase().includes('tahrirlandi')
+  );
+
+  return assembleProductChronology(product, flowEvents, editSystemLogs, nowYmd);
 }

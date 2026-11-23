@@ -1101,26 +1101,69 @@ export default function App() {
     // Immediate pull on app entry / login
     runSilentAutoSync();
 
+    let lastClientsRef: Client[] | null = null;
+    let lastWarehouseRef: WarehouseProduct[] | null = null;
+    let lastMonthlyRef: MonthlyPlan[] | null = null;
+    let lastPlansSig = '';
+    let lastLogsSig = '';
+    let lastPendingCount = -1;
+
     const updateFromStorage = () => {
       const freshClients = storageService.getClients();
+      if (freshClients !== lastClientsRef) {
+        lastClientsRef = freshClients;
+        setClients([...freshClients]);
+        setSelectedClient((prev) => (prev ? freshClients.find((c) => c.id === prev.id) || prev : null));
+      }
+
       const freshPlans = storageService.getActive24hPlans();
-      setClients([...freshClients]);
-      setDailyPlans([...freshPlans]);
-      setMonthlyPlans([...storageService.getMonthlyPlans()]);
-      setWarehouseProducts([...storageService.getWarehouseProducts()]);
-      setPendingSyncCount(storageService.getSyncQueue().length);
-      setSystemLogs([...getLocalSystemLogs()]);
-      setSelectedClient((prev) => (prev ? freshClients.find((c) => c.id === prev.id) || prev : null));
+      const plansSig = freshPlans
+        .map(
+          (p) =>
+            `${p.id}:${p.status}:${p.isClosed ? 1 : 0}:${p.lastExecutedAt || ''}:${p.closedAt || ''}:${p.reopenedAt || ''}:${(p.actionsHistory || []).length}`
+        )
+        .join('|');
+      if (plansSig !== lastPlansSig) {
+        lastPlansSig = plansSig;
+        setDailyPlans([...freshPlans]);
+      }
+
+      const freshMonthly = storageService.getMonthlyPlans();
+      if (freshMonthly !== lastMonthlyRef) {
+        lastMonthlyRef = freshMonthly;
+        setMonthlyPlans([...freshMonthly]);
+      }
+
+      const freshWarehouse = storageService.getWarehouseProducts();
+      if (freshWarehouse !== lastWarehouseRef) {
+        lastWarehouseRef = freshWarehouse;
+        setWarehouseProducts([...freshWarehouse]);
+      }
+
+      const pendingCnt = storageService.getSyncQueue().length;
+      if (pendingCnt !== lastPendingCount) {
+        lastPendingCount = pendingCnt;
+        setPendingSyncCount(pendingCnt);
+      }
+
+      const freshLogs = getLocalSystemLogs();
+      const logsSig = `${freshLogs.length}:${freshLogs[0]?.id || ''}:${freshLogs[0]?.timestamp || ''}`;
+      if (logsSig !== lastLogsSig) {
+        lastLogsSig = logsSig;
+        setSystemLogs([...freshLogs]);
+      }
     };
 
     updateFromStorage();
     const unsubscribe = storageService.subscribe(updateFromStorage);
 
-    // Sync immediately when tab/PWA regains visibility, window focus, pageshow, or network online
+    // Sync when tab/PWA regains visibility, window focus, pageshow, or network online (throttled to avoid focus storms)
+    let lastFocusSyncAt = 0;
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
-        storageService.invalidateAllCaches();
-        updateFromStorage();
+        const now = Date.now();
+        if (now - lastFocusSyncAt < 3000) return;
+        lastFocusSyncAt = now;
         runSilentAutoSync();
       }
     };
@@ -1140,12 +1183,12 @@ export default function App() {
     window.addEventListener('storage', handleCrossTabStorage);
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
-    // Continuous 8-second heartbeat so PWA/Web never drifts even if a mobile carrier drops idle WebSockets
+    // Lightweight 45-second heartbeat backup (realtime listener + 10s conditional relay already handle active updates)
     const heartbeatTimer = setInterval(() => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
         runSilentAutoSync();
       }
-    }, 8000);
+    }, 45000);
 
     return () => {
       clearInterval(heartbeatTimer);
@@ -2856,23 +2899,26 @@ export default function App() {
       )}
 
       {/* Add / Edit Client Modal */}
-      <ClientFormModal
-        isOpen={isFormModalOpen}
-        onClose={() => {
-          setIsFormModalOpen(false);
-          setEditingClient(null);
-          setClientFormInitialMode('single');
-        }}
-        onSave={handleSaveClient}
-        onBulkImport={handleBulkImportClients}
-        editingClient={editingClient}
-        currentUserUsername={user.username}
-        userRole={user.role}
-        initialMode={clientFormInitialMode}
-      />
+      {isFormModalOpen && (
+        <ClientFormModal
+          isOpen={isFormModalOpen}
+          onClose={() => {
+            setIsFormModalOpen(false);
+            setEditingClient(null);
+            setClientFormInitialMode('single');
+          }}
+          onSave={handleSaveClient}
+          onBulkImport={handleBulkImportClients}
+          editingClient={editingClient}
+          currentUserUsername={user.username}
+          userRole={user.role}
+          initialMode={clientFormInitialMode}
+        />
+      )}
 
       {/* Client Detail View & Printable Invoice Modal (With Logs) */}
-      <ClientDetailModal
+      {isDetailModalOpen && selectedClient && (
+        <ClientDetailModal
         client={selectedClient}
         dailyPlans={dailyPlans}
         isOpen={isDetailModalOpen}
@@ -3021,134 +3067,153 @@ export default function App() {
         userRole={user.role}
         currentUsername={user.username}
       />
+      )}
 
       {/* Quick Payment / Debt Update Modal */}
-      <QuickPaymentModal
-        client={paymentClient}
-        isOpen={isPaymentModalOpen}
-        onClose={() => {
-          setIsPaymentModalOpen(false);
-          setPaymentClient(null);
-        }}
-        onSavePayment={handleSavePayment}
-      />
+      {isPaymentModalOpen && (
+        <QuickPaymentModal
+          client={paymentClient}
+          isOpen={isPaymentModalOpen}
+          onClose={() => {
+            setIsPaymentModalOpen(false);
+            setPaymentClient(null);
+          }}
+          onSavePayment={handleSavePayment}
+        />
+      )}
 
       {/* Admin (adminc / adminc1): Add Warehouse Debt to Client Modal */}
-      <AddWarehouseDebtModal
-        isOpen={isAddWarehouseDebtOpen}
-        onClose={() => {
-          setIsAddWarehouseDebtOpen(false);
-          setWarehouseDebtClient(null);
-        }}
-        clients={clients}
-        initialClient={warehouseDebtClient}
-        warehouseProducts={warehouseProducts}
-        currentUsername={user.username}
-        onSaveWarehouseDebt={handleSaveWarehouseDebt}
-      />
+      {isAddWarehouseDebtOpen && (
+        <AddWarehouseDebtModal
+          isOpen={isAddWarehouseDebtOpen}
+          onClose={() => {
+            setIsAddWarehouseDebtOpen(false);
+            setWarehouseDebtClient(null);
+          }}
+          clients={clients}
+          initialClient={warehouseDebtClient}
+          warehouseProducts={warehouseProducts}
+          currentUsername={user.username}
+          onSaveWarehouseDebt={handleSaveWarehouseDebt}
+        />
+      )}
 
       {/* Agent & Admin: Create 1-Month Debt Recovery Plan Modal */}
-      <CreateMonthlyPlanModal
-        isOpen={isCreateMonthlyPlanOpen}
-        onClose={() => setIsCreateMonthlyPlanOpen(false)}
-        warehouseProducts={warehouseProducts}
-        currentUsername={user.username}
-        existingPlan={activeMonthlyPlan}
-        onSavePlan={handleSaveMonthlyPlan}
-      />
+      {isCreateMonthlyPlanOpen && (
+        <CreateMonthlyPlanModal
+          isOpen={isCreateMonthlyPlanOpen}
+          onClose={() => setIsCreateMonthlyPlanOpen(false)}
+          warehouseProducts={warehouseProducts}
+          currentUsername={user.username}
+          existingPlan={activeMonthlyPlan}
+          onSavePlan={handleSaveMonthlyPlan}
+        />
+      )}
 
       {/* Agent & Admin: Create 1-Month Product Delivery Plan Modal */}
-      <CreateMonthlyProductPlanModal
-        isOpen={isCreateMonthlyProductPlanOpen}
-        onClose={() => setIsCreateMonthlyProductPlanOpen(false)}
-        warehouseProducts={warehouseProducts}
-        currentUsername={user.username}
-        existingPlan={activeMonthlyProductPlan}
-        onSavePlan={handleSaveMonthlyProductPlan}
-      />
+      {isCreateMonthlyProductPlanOpen && (
+        <CreateMonthlyProductPlanModal
+          isOpen={isCreateMonthlyProductPlanOpen}
+          onClose={() => setIsCreateMonthlyProductPlanOpen(false)}
+          warehouseProducts={warehouseProducts}
+          currentUsername={user.username}
+          existingPlan={activeMonthlyProductPlan}
+          onSavePlan={handleSaveMonthlyProductPlan}
+        />
+      )}
 
       {/* Agent: Create Daily Plan Modal */}
-      <CreateDailyPlanModal
-        isOpen={isCreatePlanOpen}
-        onClose={() => setIsCreatePlanOpen(false)}
-        clients={clients}
-        existingPlans={dailyPlans}
-        onConfirmPlan={handleConfirmPlan}
-      />
+      {isCreatePlanOpen && (
+        <CreateDailyPlanModal
+          isOpen={isCreatePlanOpen}
+          onClose={() => setIsCreatePlanOpen(false)}
+          clients={clients}
+          existingPlans={dailyPlans}
+          onConfirmPlan={handleConfirmPlan}
+        />
+      )}
 
       {/* Agent: Execute Daily Plan Report Modal */}
-      <ExecutePlanModal
-        planItem={executingPlanItem}
-        isOpen={!!executingPlanItem}
-        initialEditSoldProducts={executingPlanEditSoldMode}
-        initialEditFinancialAction={executingPlanEditFinancialMode}
-        onClose={() => {
-          setExecutingPlanItem(null);
-          setExecutingPlanEditSoldMode(false);
-          setExecutingPlanEditFinancialMode(false);
-        }}
-        onSaveReport={handleSavePlanReport}
-        onUpdateSoldProducts={handleUpdateSoldProducts}
-        onUpdateFinancialAction={handleUpdateFinancialAction}
-        onCloseWithoutAction={(planId, reason, closeDate) => handleClosePlanItem(planId, reason, true, closeDate)}
-        onSaveReminder={handleSaveReminder}
-        onQuickReopen={async (planId) => {
-          await handleReopenPlanItems([planId], "Hisob-kitobga tuzatish kiritish uchun");
-          const fresh = storageService.getActive24hPlans().find((p) => p.id === planId);
-          if (fresh) {
-            setExecutingPlanItem({ ...fresh, isClosed: false, status: 'rejalashtirilgan' });
-          }
-        }}
-        client={executingPlanItem ? clients.find((c) => c.id === executingPlanItem.clientId) : null}
-        warehouseProducts={warehouseProducts}
-      />
+      {Boolean(executingPlanItem) && (
+        <ExecutePlanModal
+          planItem={executingPlanItem}
+          isOpen={!!executingPlanItem}
+          initialEditSoldProducts={executingPlanEditSoldMode}
+          initialEditFinancialAction={executingPlanEditFinancialMode}
+          onClose={() => {
+            setExecutingPlanItem(null);
+            setExecutingPlanEditSoldMode(false);
+            setExecutingPlanEditFinancialMode(false);
+          }}
+          onSaveReport={handleSavePlanReport}
+          onUpdateSoldProducts={handleUpdateSoldProducts}
+          onUpdateFinancialAction={handleUpdateFinancialAction}
+          onCloseWithoutAction={(planId, reason, closeDate) => handleClosePlanItem(planId, reason, true, closeDate)}
+          onSaveReminder={handleSaveReminder}
+          onQuickReopen={async (planId) => {
+            await handleReopenPlanItems([planId], "Hisob-kitobga tuzatish kiritish uchun");
+            const fresh = storageService.getActive24hPlans().find((p) => p.id === planId);
+            if (fresh) {
+              setExecutingPlanItem({ ...fresh, isClosed: false, status: 'rejalashtirilgan' });
+            }
+          }}
+          client={executingPlanItem ? clients.find((c) => c.id === executingPlanItem.clientId) : null}
+          warehouseProducts={warehouseProducts}
+        />
+      )}
 
       {/* Firebase Cloud Sync Configuration Modal */}
-      <FirebaseSyncModal
-        isOpen={isFirebaseModalOpen}
-        onClose={() => setIsFirebaseModalOpen(false)}
-        onSyncCompleted={() => {
-          storageService.invalidateAllCaches();
-          setClients([...storageService.getClients()]);
-          setWarehouseProducts([...storageService.getWarehouseProducts()]);
-          setDailyPlans([
-            ...storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined),
-          ]);
-          setSystemLogs([...getLocalSystemLogs()]);
-          setPendingSyncCount(storageService.getSyncQueue().length);
-        }}
-      />
+      {isFirebaseModalOpen && (
+        <FirebaseSyncModal
+          isOpen={isFirebaseModalOpen}
+          onClose={() => setIsFirebaseModalOpen(false)}
+          onSyncCompleted={() => {
+            storageService.invalidateAllCaches();
+            setClients([...storageService.getClients()]);
+            setWarehouseProducts([...storageService.getWarehouseProducts()]);
+            setDailyPlans([
+              ...storageService.getActive24hPlans(user?.role === 'agent' ? user.username : undefined),
+            ]);
+            setSystemLogs([...getLocalSystemLogs()]);
+            setPendingSyncCount(storageService.getSyncQueue().length);
+          }}
+        />
+      )}
 
       {/* Admin: Warehouse Intake / Edit Modal (Omborga mahsulotlar kiritish va tahrirlash) */}
-      <WarehouseIntakeModal
-        isOpen={isWarehouseModalOpen}
-        onClose={() => {
-          setIsWarehouseModalOpen(false);
-          setEditingWarehouseProduct(null);
-        }}
-        onSave={handleSaveWarehouseProduct}
-        onBulkImport={handleBulkImportWarehouseProducts}
-        onUpdate={handleUpdateWarehouseProduct}
-        editingProduct={editingWarehouseProduct}
-        currentUsername={user.username}
-      />
+      {isWarehouseModalOpen && (
+        <WarehouseIntakeModal
+          isOpen={isWarehouseModalOpen}
+          onClose={() => {
+            setIsWarehouseModalOpen(false);
+            setEditingWarehouseProduct(null);
+          }}
+          onSave={handleSaveWarehouseProduct}
+          onBulkImport={handleBulkImportWarehouseProducts}
+          onUpdate={handleUpdateWarehouseProduct}
+          editingProduct={editingWarehouseProduct}
+          currentUsername={user.username}
+        />
+      )}
 
       {/* Admin: Warehouse Inventory Modal (Ombordagi zaxiralar) */}
-      <WarehouseInventoryModal
-        isOpen={isWarehouseInventoryModalOpen}
-        onClose={() => setIsWarehouseInventoryModalOpen(false)}
-        products={warehouseProducts}
-        onEditProduct={(prod) => {
-          setIsWarehouseInventoryModalOpen(false);
-          setEditingWarehouseProduct(prod);
-          setIsWarehouseModalOpen(true);
-        }}
-        onDeleteProduct={handleDeleteWarehouseProduct}
-        onOpenIntakeModal={() => {
-          setEditingWarehouseProduct(null);
-          setIsWarehouseModalOpen(true);
-        }}
-      />
+      {isWarehouseInventoryModalOpen && (
+        <WarehouseInventoryModal
+          isOpen={isWarehouseInventoryModalOpen}
+          onClose={() => setIsWarehouseInventoryModalOpen(false)}
+          products={warehouseProducts}
+          onEditProduct={(prod) => {
+            setIsWarehouseInventoryModalOpen(false);
+            setEditingWarehouseProduct(prod);
+            setIsWarehouseModalOpen(true);
+          }}
+          onDeleteProduct={handleDeleteWarehouseProduct}
+          onOpenIntakeModal={() => {
+            setEditingWarehouseProduct(null);
+            setIsWarehouseModalOpen(true);
+          }}
+        />
+      )}
     </div>
   );
 }
