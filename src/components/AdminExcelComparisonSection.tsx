@@ -207,24 +207,51 @@ function levenshteinDistance(a: string, b: string): number {
   return prev[b.length];
 }
 
+function toVisualCanonical(raw: string): string {
+  // Maps visually identical Cyrillic letters to Latin counterparts so accidental keyboard-layout typos match (e.g. МF vs MF, 41х33х26 vs 41x33x26, 60еа vs 60ea)
+  const map: Record<string, string> = {
+    а: 'a',
+    в: 'b',
+    е: 'e',
+    ё: 'e',
+    к: 'k',
+    м: 'm',
+    н: 'h',
+    о: 'o',
+    р: 'p',
+    с: 'c',
+    т: 't',
+    у: 'y',
+    х: 'x',
+  };
+  return raw.replace(/[авеёкмнорстух]/g, (ch) => map[ch] || ch);
+}
+
 function tokenizeProductForMatch(raw?: string | null): string[] {
   if (!raw) return [];
   let s = normalizeText(raw);
   if (!s) return [];
-  // Normalize common oil/unit patterns so "5w-30" == "5w30", "5 kg" == "5kg", "4 l" == "4l"
+  // Normalize Cyrillic 'х' in dimensions (e.g. 41х33х26 -> 41x33x26) and common unit/viscosity/pack patterns
   s = s
+    .replace(/(\d+(?:[.,]\d+)?)\s*[xх×]\s*(\d+(?:[.,]\d+)?)/gi, '$1x$2')
+    .replace(/(\d+(?:[.,]\d+)?)\s*[xх×]\s*(\d+(?:[.,]\d+)?)/gi, '$1x$2')
+    // Split glued unit + following number/dimension (e.g. "60ea41x33x26" -> "60ea 41x33x26", "40pcs37x30x16" -> "40pcs 37x30x16")
+    .replace(/(\d+(?:[.,]\d+)?(?:ea|еа|pcs|рсs|kg|кг|ml|мл|gr|гр|шт|dona|litr|liter|литр|lt))(?=\d)/gi, '$1 ')
+    // Split glued word/code + dimension (e.g. "fix41x33x26" -> "fix 41x33x26")
+    .replace(/([a-zа-яёўқғҳ])(\d+(?:\.\d+)?x\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?)?)/gi, '$1 $2')
     .replace(/\b(\d{1,2})\s*w\s*[-]?\s*(\d{2})\b/gi, '$1w$2')
     .replace(/\b(\d+(?:[.,]\d+)?)\s*(l|lt|litr|liter|л|литр)\b/gi, (_, num) => `${num.replace(',', '.')}l`)
     .replace(/\b(\d+(?:[.,]\d+)?)\s*(kg|кг)\b/gi, (_, num) => `${num.replace(',', '.')}kg`)
     .replace(/\b(\d+(?:[.,]\d+)?)\s*(ml|мл)\b/gi, (_, num) => `${num.replace(',', '.')}ml`)
     .replace(/\b(\d+(?:[.,]\d+)?)\s*(gr|g|гр|г)\b/gi, (_, num) => `${num.replace(',', '.')}g`)
-    .replace(/\b(\d+)\s*(pcs|шт|dona)\b/gi, '$1pcs')
+    .replace(/\b(\d+)\s*(pcs|рсs|шт|dona)\b/gi, '$1pcs')
+    .replace(/\b(\d+)\s*(ea|еа)\b/gi, '$1ea')
     .replace(/(\d+),(\d+)/g, '$1.$2');
 
   const rawTokens = s
     .replace(/[^a-z0-9а-яёўқғҳ.]+/gi, ' ')
     .split(/\s+/)
-    .map((t) => t.replace(/^\.+|\.+$/g, ''))
+    .map((t) => toVisualCanonical(t.replace(/^\.+|\.+$/g, '')))
     .filter(Boolean);
 
   return rawTokens;
@@ -310,15 +337,103 @@ function computeProductOrderInsensitiveSimilarity(tokensA: string[], tokensB: st
     }
   }
 
+  // Pass 1.5: Glued-token matching (handles missing spaces in either DB or Excel,
+  // e.g. "60ea41x33x26" vs ["60ea", "41x33x26"], "nexia94797406" vs ["nexia", "94797406"], "segmotol" vs ["motol", "seg"])
+  const usedA = new Set<number>();
+  const tryMatchGlued = (
+    singleList: string[],
+    singleUnmatched: number[],
+    singleUsed: Set<number>,
+    multiList: string[],
+    multiUnmatched: number[],
+    multiUsed: Set<number>
+  ) => {
+    for (const sIdx of singleUnmatched) {
+      if (singleUsed.has(sIdx)) continue;
+      const target = singleList[sIdx];
+      if (target.length < 4) continue;
+      const availMulti = multiUnmatched.filter((mIdx) => !multiUsed.has(mIdx));
+      if (availMulti.length < 2) continue;
+
+      let matchedPair: [number, number] | null = null;
+      for (let x = 0; x < availMulti.length && !matchedPair; x++) {
+        const i1 = availMulti[x];
+        const t1 = multiList[i1];
+        if (!target.includes(t1)) continue;
+        for (let y = x + 1; y < availMulti.length; y++) {
+          const i2 = availMulti[y];
+          const t2 = multiList[i2];
+          if (t1.length + t2.length !== target.length) continue;
+          if (t1 + t2 === target || t2 + t1 === target) {
+            matchedPair = [i1, i2];
+            break;
+          }
+        }
+      }
+
+      if (matchedPair) {
+        singleUsed.add(sIdx);
+        multiUsed.add(matchedPair[0]);
+        multiUsed.add(matchedPair[1]);
+        matchedWeight += target.length;
+      }
+    }
+  };
+
+  const unmatchedBIdx: number[] = [];
+  for (let j = 0; j < b.length; j++) {
+    if (!usedB.has(j)) unmatchedBIdx.push(j);
+  }
+  if (unmatchedAIdx.length > 0 && unmatchedBIdx.length > 0) {
+    // Match glued token in B against 2 tokens in A
+    tryMatchGlued(b, unmatchedBIdx, usedB, a, unmatchedAIdx, usedA);
+    // Match glued token in A against 2 tokens in B
+    tryMatchGlued(a, unmatchedAIdx, usedA, b, unmatchedBIdx, usedB);
+  }
+
+  // Pass 1.75: Reject opposing side/position indicators or conflicting unmatched part codes
+  const remainingA = unmatchedAIdx.filter((i) => !usedA.has(i)).map((i) => a[i]);
+  const remainingB = unmatchedBIdx.filter((j) => !usedB.has(j)).map((j) => b[j]);
+  if (remainingA.length > 0 && remainingB.length > 0) {
+    const remASet = new Set(remainingA);
+    const remBSet = new Set(remainingB);
+    const opposingPairs: Array<[string, string]> = [
+      ['rh', 'lh'],
+      ['right', 'left'],
+      ['front', 'rear'],
+      ['fr', 'rr'],
+    ];
+    for (const [p1, p2] of opposingPairs) {
+      if ((remASet.has(p1) && remBSet.has(p2)) || (remASet.has(p2) && remBSet.has(p1))) {
+        return 0;
+      }
+    }
+
+    const extractPartDigits = (tokens: string[]): string[] =>
+      tokens
+        .filter((t) => !/x/i.test(t) && !/^\d+(?:\.\d+)?(l|kg|ml|g|ea|pcs)$/i.test(t))
+        .map((t) => t.replace(/\D/g, ''))
+        .filter((d) => d.length >= 4);
+
+    const partDigitsA = extractPartDigits(remainingA);
+    const partDigitsB = extractPartDigits(remainingB);
+    if (partDigitsA.length > 0 && partDigitsB.length > 0) {
+      return 0;
+    }
+  }
+
   // Second pass: fuzzy token matches for remaining tokens (handles minor spelling diffs)
   const pairCandidates: Array<{ i: number; j: number; sim: number }> = [];
   for (const i of unmatchedAIdx) {
+    if (usedA.has(i)) continue;
     const tA = a[i];
-    for (let j = 0; j < b.length; j++) {
+    const digitsA = tA.replace(/\D/g, '');
+    for (const j of unmatchedBIdx) {
       if (usedB.has(j)) continue;
       const tB = b[j];
-      // Do not fuzzy-match purely numeric tokens with different numbers (e.g. 564 vs 565)
-      if (/^\d+(?:\.\d+)?$/.test(tA) && /^\d+(?:\.\d+)?$/.test(tB) && tA !== tB) continue;
+      const digitsB = tB.replace(/\D/g, '');
+      // Do not fuzzy-match tokens with different numbers/part-codes (e.g. 564 vs 565, b0907 vs b0906)
+      if ((digitsA.length > 0 || digitsB.length > 0) && digitsA !== digitsB) continue;
       const maxLen = Math.max(tA.length, tB.length);
       if (maxLen === 0) continue;
       const dist = levenshteinDistance(tA, tB);
@@ -329,7 +444,6 @@ function computeProductOrderInsensitiveSimilarity(tokensA: string[], tokensB: st
     }
   }
   pairCandidates.sort((x, y) => y.sim - x.sim);
-  const usedA = new Set<number>();
   for (const cand of pairCandidates) {
     if (usedA.has(cand.i) || usedB.has(cand.j)) continue;
     usedA.add(cand.i);
@@ -341,12 +455,17 @@ function computeProductOrderInsensitiveSimilarity(tokensA: string[], tokensB: st
   const maxTotalWeight = Math.max(totalWeightA, totalWeightB);
   const weightedTokenSim = maxTotalWeight > 0 ? matchedWeight / maxTotalWeight : 0;
 
-  // 2. Sorted-token string Levenshtein similarity
-  const maxJoinedLen = Math.max(joinedA.length, joinedB.length);
-  const sortedLevenshteinSim =
-    maxJoinedLen > 0 ? 1 - levenshteinDistance(joinedA, joinedB) / maxJoinedLen : 0;
+  // 2. Sorted-token string Levenshtein similarity (disabled when both sides still have unmatched digit tokens,
+  // so model/part code differences like IS300/GSE36 vs IS250/GSE25 cannot bypass token-level protection)
+  const hasUnmatchedDigitsA = unmatchedAIdx.some((i) => !usedA.has(i) && /\d/.test(a[i]));
+  const hasUnmatchedDigitsB = unmatchedBIdx.some((j) => !usedB.has(j) && /\d/.test(b[j]));
+  let sortedLevenshteinSim = 0;
+  if (!(hasUnmatchedDigitsA && hasUnmatchedDigitsB)) {
+    const maxJoinedLen = Math.max(joinedA.length, joinedB.length);
+    sortedLevenshteinSim =
+      maxJoinedLen > 0 ? 1 - levenshteinDistance(joinedA, joinedB) / maxJoinedLen : 0;
+  }
 
-  // Also check loose-key sorted chars/tokens similarity when word spacing differs (e.g. "motol seg" vs "segmotol")
   const score = Math.max(weightedTokenSim, sortedLevenshteinSim);
   return Math.min(1, Math.max(0, score));
 }
@@ -1207,7 +1326,6 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       }
       const fullStr = `${w.brand || ''} ${w.name || ''}`.trim();
       const fullDashStr = `${w.brand || ''} - ${w.name || ''}`.trim();
-      const fullWithMarkStr = `${w.brand || ''} ${w.name || ''} ${w.mark1 || ''}`.trim();
       const nFull = normalizeText(fullStr);
       const nDash = normalizeText(fullDashStr);
       const nName = normalizeText(w.name);
@@ -1220,11 +1338,19 @@ export const AdminExcelComparisonSection: React.FC<Props> = ({
       if (lFull && !dbByLooseFull.has(lFull)) dbByLooseFull.set(lFull, w);
       if (lName && !dbByLooseName.has(lName)) dbByLooseName.set(lName, w);
 
+      const brandNorm = normalizeText(w.brand);
+      const nameNorm = normalizeText(w.name);
+      const fullDedupStr =
+        brandNorm && nameNorm.includes(brandNorm)
+          ? (w.name || '').trim()
+          : fullStr;
+      const fullWithMarkDedupStr = `${fullDedupStr} ${w.mark1 || ''}`.trim();
+
       dbTokenCache.push({
         product: w,
         nameTokens: tokenizeProductForMatch(w.name),
-        fullTokens: tokenizeProductForMatch(fullStr),
-        fullWithMarkTokens: tokenizeProductForMatch(fullWithMarkStr),
+        fullTokens: tokenizeProductForMatch(fullDedupStr),
+        fullWithMarkTokens: tokenizeProductForMatch(fullWithMarkDedupStr),
       });
     });
 
